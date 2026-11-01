@@ -1,20 +1,29 @@
 # Accounting Core — Rust DDD Workspace
 
-This Cargo workspace is the direct Rust port of `accounting_kernel.py` and `accounting-core-kernel-v1.sql`.
+This Cargo workspace provides a clean, decoupled Domain-Driven Design (DDD) architecture based on the [Kernel Interface Specification](docs/KERNEL_INTERFACE_SPEC.md).
 
-## Workspace Layout
+## Architecture & Ports
 
-- `schema/accounting-core-kernel-v1.sql`: Frozen 6-table SQLite Core Kernel DDL with database triggers enforcing `SUM(debits) == SUM(credits)` per `(entity_id, currency)`, immutable posted entries, and zero-residual settlement groups.
-- `crates/accounting-kernel`: Core DDD domain primitives (`Money`, `Currency`, `AccountElement`, `PostingSide`, `AccountRole`, `EntityVisibility`, `PostingPrimitive`, `JournalEntryDraft`, `EquationSnapshot`) and the SQLite transactional repository (`AccountingKernel`).
-- `crates/accounting-recipes`: Application-ring `RecipeCompiler` and the full integration acceptance suite (`tests/acceptance_suite.rs` covering `AT-001`, `AT-003`, `AT-005..007`, `AT-013`, `AT-016`, `AT-019..020`, `AT-030`).
-- `crates/accounting-cli`: M0 milestone deterministic CLI fixture runner.
+1. **Pure Double-Entry Core Kernel (`crates/accounting-kernel`)**:
+   - Defines pure Value Objects, Aggregates, and the `pub trait LedgerStore` Port.
+   - Zero storage leaks: `KernelError` contains no database-specific types.
+   - Includes `SqliteLedgerAdapter` implementing `LedgerStore` backed by `schema/accounting-core-kernel-v1.sql`.
+
+2. **Application Recipes Ring (`crates/accounting-recipes`)**:
+   - Consumes the kernel strictly through `LedgerStore`.
+   - Records workflow execution provenance in `recipe_executions` (`crates/accounting-recipes/schema/accounting-recipes-v1.sql`).
+   - Contains integration acceptance tests (`tests/acceptance_suite.rs`).
+
+3. **CLI Runner (`crates/accounting-cli`)**:
+   - Milestone M0 CLI fixture runner demonstrating in-memory double-entry posting and balance proof reporting.
+
+## Documentation
+
+See [`docs/KERNEL_INTERFACE_SPEC.md`](docs/KERNEL_INTERFACE_SPEC.md) for full terminology definitions, mathematical invariant equations, and architectural boundary rules.
 
 ## Quickstart
 
 ```bash
-# Run all unit and integration acceptance tests across the workspace
 cargo test --workspace
-
-# Run the M0 CLI fixture runner
 cargo run -p accounting-cli
 ```

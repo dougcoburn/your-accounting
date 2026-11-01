@@ -49,10 +49,8 @@ CREATE TABLE ledger_accounts (
     name                TEXT NOT NULL,
     currency            TEXT NOT NULL CHECK (length(currency) = 3),
     element             TEXT NOT NULL CHECK (element IN ('asset', 'liability', 'equity', 'revenue', 'expense')),
-    role                TEXT NOT NULL DEFAULT 'standard' CHECK (role IN ('standard', 'clearing', 'inter_entity', 'contra')),
-    counterparty_id     TEXT REFERENCES entities(id), -- Required when role = 'inter_entity'
+    role                TEXT NOT NULL DEFAULT 'standard' CHECK (role IN ('standard', 'clearing', 'contra')),
     is_active           INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
-    CHECK (role != 'inter_entity' OR (counterparty_id IS NOT NULL AND counterparty_id != entity_id AND element IN ('asset', 'liability'))),
     CHECK (role != 'clearing' OR element IN ('asset', 'liability'))
 );
 
@@ -77,7 +75,6 @@ CREATE TABLE journal_entries (
     id                      TEXT PRIMARY KEY,
     posting_date            TEXT NOT NULL, -- YYYY-MM-DD
     effective_date          TEXT NOT NULL, -- Defaults to posting_date unless accrual override
-    recipe_id             TEXT NOT NULL, -- e.g., 'recipe:purchase:v1', 'recipe:transfer:v1'
     description             TEXT NOT NULL DEFAULT '',
     status                  TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'posted')),
     replaces_entry_id       TEXT REFERENCES journal_entries(id),
@@ -239,7 +236,7 @@ SELECT
     la.currency,
     la.element,
     la.role,
-    la.counterparty_id,
+    
     COALESCE(SUM(CASE WHEN jp.side = 'debit'  THEN jp.amount_minor ELSE 0 END), 0) AS total_debits_minor,
     COALESCE(SUM(CASE WHEN jp.side = 'credit' THEN jp.amount_minor ELSE 0 END), 0) AS total_credits_minor,
     COALESCE(SUM(
@@ -254,7 +251,7 @@ FROM ledger_accounts la
 LEFT JOIN journal_postings jp ON jp.ledger_account_id = la.id
 LEFT JOIN journal_entries je ON je.id = jp.entry_id AND je.status = 'posted'
 WHERE je.id IS NOT NULL OR jp.id IS NULL
-GROUP BY la.id, la.entity_id, la.name, la.currency, la.element, la.role, la.counterparty_id;
+GROUP BY la.id, la.entity_id, la.name, la.currency, la.element, la.role;
 
 -- Live verification of the Fundamental Accounting Equation per (entity_id, currency):
 --   Assets == Liabilities + Contributed_Equity + (Revenue - Expenses)

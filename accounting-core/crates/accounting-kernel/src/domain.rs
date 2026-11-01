@@ -1,10 +1,7 @@
-//! Core Value Objects and Aggregate Roots for the DDD Accounting Kernel.
+//! Pure Domain Value Objects, Aggregate Roots, and Port Traits for Double-Entry Bookkeeping.
 //!
-//! Enforces:
-//! - Exact integer minor-unit arithmetic (`i64`, never IEEE float)
-//! - 3-letter uppercase ISO-4217 `Currency` codes
-//! - 5 fundamental accounting elements (`Asset`, `Liability`, `Equity`, `Revenue`, `Expense`)
-//! - Partitioned Trial Balance (`SUM(debits) == SUM(credits)` per `(entity_id, currency)`)
+//! This module contains zero dependencies on database engines or SQL drivers.
+//! Storage is abstracted behind the `LedgerStore` trait.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -18,10 +15,10 @@ pub fn next_deterministic_id(prefix: &str) -> String {
 }
 
 // =============================================================================
-// ERRORS
+// DOMAIN ERRORS (NO INFRASTRUCTURE LEAKS)
 // =============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KernelError {
     InvalidCurrency(String),
     NonPositiveAmount(i64),
@@ -32,7 +29,7 @@ pub enum KernelError {
     UnknownLedgerAccount(String),
     UnknownEntityPartition { entity_id: String, currency: String },
     EquationViolation(EquationSnapshot),
-    Storage(rusqlite::Error),
+    Storage(String),
 }
 
 impl fmt::Display for KernelError {
@@ -62,25 +59,12 @@ impl fmt::Display for KernelError {
             Self::EquationViolation(snap) => {
                 write!(f, "Accounting equation violated: {snap:?}")
             }
-            Self::Storage(err) => write!(f, "SQLite storage error: {err}"),
+            Self::Storage(msg) => write!(f, "Storage failure: {msg}"),
         }
     }
 }
 
-impl std::error::Error for KernelError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Storage(err) => Some(err),
-            _ => None,
-        }
-    }
-}
-
-impl From<rusqlite::Error> for KernelError {
-    fn from(err: rusqlite::Error) -> Self {
-        Self::Storage(err)
-    }
-}
+impl std::error::Error for KernelError {}
 
 // =============================================================================
 // 1. CORE VALUE OBJECTS (IMMUTABLE PRIMITIVES)
@@ -132,7 +116,6 @@ impl AccountElement {
         }
     }
 
-    /// Effect on the account's normal balance (`+` when matching normal side, `-` when opposite).
     pub const fn signed_delta(self, side: PostingSide, amount_minor: i64) -> i64 {
         match (self.normal_side(), side) {
             (PostingSide::Debit, PostingSide::Debit)
@@ -146,7 +129,6 @@ impl AccountElement {
 pub enum AccountRole {
     Standard,
     Clearing,
-    InterEntity,
     Contra,
 }
 
@@ -155,7 +137,6 @@ impl AccountRole {
         match self {
             Self::Standard => "standard",
             Self::Clearing => "clearing",
-            Self::InterEntity => "inter_entity",
             Self::Contra => "contra",
         }
     }
@@ -266,7 +247,7 @@ impl PostingPrimitive {
 }
 
 // =============================================================================
-// 2. CORE AGGREGATE ROOTS
+// 2. CORE AGGREGATE ROOTS (PURE DOUBLE-ENTRY KERNEL)
 // =============================================================================
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -274,7 +255,6 @@ pub struct JournalEntryDraft {
     pub id: String,
     pub posting_date: String,
     pub effective_date: Option<String>,
-    pub recipe_id: String,
     pub description: String,
     pub replaces_entry_id: Option<String>,
     pub postings: Vec<PostingPrimitive>,
@@ -283,7 +263,6 @@ pub struct JournalEntryDraft {
 impl JournalEntryDraft {
     pub fn new(
         posting_date: impl Into<String>,
-        recipe_id: impl Into<String>,
         description: impl Into<String>,
         postings: Vec<PostingPrimitive>,
     ) -> Self {
@@ -291,7 +270,6 @@ impl JournalEntryDraft {
             id: next_deterministic_id("je"),
             posting_date: posting_date.into(),
             effective_date: None,
-            recipe_id: recipe_id.into(),
             description: description.into(),
             replaces_entry_id: None,
             postings,
@@ -354,4 +332,54 @@ impl EquationSnapshot {
             && self.assets_minor == (self.liabilities_minor + self.total_equity_minor)
             && self.equation_discrepancy_minor == 0
     }
+}
+
+// =============================================================================
+// 3. THE PRIMARY DOMAIN PORT (TRAIT LEDGERSTORE)
+// =============================================================================
+
+/// Primary Port defining the abstract double-entry bookkeeping engine capabilities.
+/// Outer application rings (recipes, sub-ledgers, reports) communicate ONLY via this trait.
+pub trait LedgerStore {
+    /// Registers an accounting entity (transparent with full books, or opaque external party).
+    fn register_entity(
+        &mut self,
+        entity_id: &str,
+        name: &str,
+        visibility: EntityVisibility,
+    ) -> Result<(), KernelError>;
+
+    /// Creates an engine-managed ledger account classified into one of the 5 elements.
+    fn create_ledger_account(
+        &mut self,
+        account_id: &str,
+        entity_id: &str,
+        name: &str,
+        currency: &str,
+        element: AccountElement,
+        role: AccountRole,
+    ) -> Result<(), KernelError>;
+
+    /// Atomically validates in-memory, posts, and seals a JournalEntryDraft.
+    /// Returns the assigned entry ID.
+    fn post_entry(&mut self, draft: &JournalEntryDraft) -> Result<String, KernelError>;
+
+    /// Atomically links clearing postings and seals a settlement group, verifying that
+    /// every linked clearing partition nets to exact zero.
+    fn settle_group(
+        &mut self,
+        group_id: &str,
+        name: &str,
+        posting_ids: &[&str],
+    ) -> Result<(), KernelError>;
+
+    /// Reads the current signed normal balance for an account.
+    fn get_account_balance(&self, account_id: &str) -> Result<i64, KernelError>;
+
+    /// Computes and verifies the Fundamental Accounting Equation for (entity, currency).
+    fn verify_accounting_equation(
+        &self,
+        entity_id: &str,
+        currency: &str,
+    ) -> Result<EquationSnapshot, KernelError>;
 }

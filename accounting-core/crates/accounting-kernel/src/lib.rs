@@ -1,10 +1,11 @@
-//! `accounting-kernel` — Immutable DDD Core Kernel for Double-Entry Bookkeeping.
+//! `accounting-kernel` — Pure DDD Core Kernel & Port Traits for Double-Entry Bookkeeping.
 
 pub mod domain;
 pub mod sqlite_repo;
 
 pub use domain::{
-    AccountElement, AccountRole, Currency, EntityVisibility, EquationSnapshot, JournalEntryDraft,
-    KernelError, Money, PostingPrimitive, PostingSide,
+    next_deterministic_id, AccountElement, AccountRole, Currency, EntityVisibility,
+    EquationSnapshot, JournalEntryDraft, KernelError, LedgerStore, Money, PostingPrimitive,
+    PostingSide,
 };
-pub use sqlite_repo::{AccountingKernel, KERNEL_SCHEMA_SQL};
+pub use sqlite_repo::{SqliteLedgerAdapter, KERNEL_SCHEMA_SQL};

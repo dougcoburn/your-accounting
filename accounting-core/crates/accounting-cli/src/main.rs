@@ -1,90 +1,83 @@
-//! M0 CLI Fixture Runner: executes core recipes and prints the Accounting Equation proof table.
+//! M0 CLI Fixture Runner: executes core scenarios via the abstract `LedgerStore` Port.
 
 use accounting_kernel::{
-    AccountElement, AccountRole, AccountingKernel, EntityVisibility, JournalEntryDraft, Money,
-    PostingPrimitive, PostingSide,
+    AccountElement, AccountRole, EntityVisibility, JournalEntryDraft, LedgerStore, Money,
+    PostingPrimitive, PostingSide, SqliteLedgerAdapter,
 };
-use accounting_recipes::{RecipeCompiler, SplitAllocation};
+use accounting_recipes::{RecipeCompiler, SplitAllocation, RECIPES_SCHEMA_SQL};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut kernel = AccountingKernel::in_memory()?;
+    let mut store = SqliteLedgerAdapter::in_memory()?;
+    store.raw_connection().execute_batch(RECIPES_SCHEMA_SQL)?;
 
     for (id, name) in [
         ("ent_household", "Household"),
         ("ent_business", "Business"),
         ("ent_personal", "Personal"),
     ] {
-        kernel.register_entity(id, name, EntityVisibility::Transparent)?;
+        store.register_entity(id, name, EntityVisibility::Transparent)?;
     }
 
-    kernel.create_ledger_account(
+    store.create_ledger_account(
         "hh_checking",
         "ent_household",
         "Household Checking",
         "USD",
         AccountElement::Asset,
         AccountRole::Standard,
-        None,
     )?;
-    kernel.create_ledger_account(
+    store.create_ledger_account(
         "hh_visa",
         "ent_household",
         "Household Visa",
         "USD",
         AccountElement::Liability,
         AccountRole::Standard,
-        None,
     )?;
-    kernel.create_ledger_account(
+    store.create_ledger_account(
         "hh_opening_eq",
         "ent_household",
         "Opening Equity",
         "USD",
         AccountElement::Equity,
         AccountRole::Standard,
-        None,
     )?;
-    kernel.create_ledger_account(
+    store.create_ledger_account(
         "hh_groceries",
         "ent_household",
         "Groceries",
         "USD",
         AccountElement::Expense,
         AccountRole::Standard,
-        None,
     )?;
-    kernel.create_ledger_account(
+    store.create_ledger_account(
         "hh_due_from_biz",
         "ent_household",
         "Due From Business",
         "USD",
         AccountElement::Asset,
-        AccountRole::InterEntity,
-        Some("ent_business"),
+        AccountRole::Standard,
     )?;
-    kernel.create_ledger_account(
+    store.create_ledger_account(
         "biz_supplies",
         "ent_business",
         "Business Supplies",
         "USD",
         AccountElement::Expense,
         AccountRole::Standard,
-        None,
     )?;
-    kernel.create_ledger_account(
+    store.create_ledger_account(
         "biz_due_to_hh",
         "ent_business",
         "Due To Household",
         "USD",
         AccountElement::Liability,
-        AccountRole::InterEntity,
-        Some("ent_household"),
+        AccountRole::Standard,
     )?;
 
-    // 1. Opening balance $5,000
-    kernel.post_entry(&JournalEntryDraft::new(
+    // 1. Direct manual entry without any recipe
+    store.post_entry(&JournalEntryDraft::new(
         "2026-10-01",
-        "recipe:opening_balance:v1",
         "Opening checking balance",
         vec![
             PostingPrimitive::new(
@@ -105,7 +98,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ))?;
 
     // 2. AT-001 Split purchase ($150 on Household Visa -> $100 Household + $50 Business)
-    let split = RecipeCompiler::split_purchase_across_entities(
+    let output = RecipeCompiler::split_purchase_across_entities(
         "2026-10-31",
         "ent_household",
         "hh_visa",
@@ -129,14 +122,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ],
         "Costco split purchase",
     )?;
-    kernel.post_entry(&split)?;
+    RecipeCompiler::post_recipe(&mut store, &output)?;
 
     println!(
         "{:<16} {:<6} {:>12} {:>12} {:>12} {:>12} {:>8}",
         "ENTITY", "CURR", "ASSETS", "LIABILITIES", "TOTAL_EQUITY", "DISCREPANCY", "BALANCED"
     );
     for entity_id in ["ent_household", "ent_business"] {
-        let eq = kernel.verify_accounting_equation(entity_id, "USD")?;
+        let eq = store.verify_accounting_equation(entity_id, "USD")?;
         println!(
             "{:<16} {:<6} {:>12.2} {:>12.2} {:>12.2} {:>12.2} {:>8}",
             eq.entity_id,

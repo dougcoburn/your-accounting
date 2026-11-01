@@ -1,56 +1,64 @@
-//! SQLite Transaction Boundary (`AccountingKernel`) backed by `accounting-core-kernel-v1.sql`.
+//! SQLite Infrastructure Adapter implementing the `LedgerStore` Port.
 
 use std::path::Path;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::domain::{
-    AccountElement, AccountRole, EntityVisibility, EquationSnapshot, JournalEntryDraft, KernelError,
+    AccountElement, AccountRole, EntityVisibility, EquationSnapshot, JournalEntryDraft,
+    KernelError, LedgerStore,
 };
 
 pub const KERNEL_SCHEMA_SQL: &str = include_str!("../../../schema/accounting-core-kernel-v1.sql");
 
-pub struct AccountingKernel {
+pub struct SqliteLedgerAdapter {
     conn: Connection,
 }
 
-impl AccountingKernel {
-    /// Creates a fresh in-memory SQLite database initialized with `accounting-core-kernel-v1.sql`.
+impl SqliteLedgerAdapter {
+    /// Creates an in-memory SQLite adapter initialized with `accounting-core-kernel-v1.sql`.
     pub fn in_memory() -> Result<Self, KernelError> {
-        let conn = Connection::open_in_memory()?;
+        let conn = Connection::open_in_memory()
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
         Self::from_connection(conn)
     }
 
-    /// Opens or creates a file-backed SQLite database initialized with `accounting-core-kernel-v1.sql`.
+    /// Opens or creates a file-backed SQLite adapter initialized with `accounting-core-kernel-v1.sql`.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, KernelError> {
-        let conn = Connection::open(path)?;
+        let conn = Connection::open(path)
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
         Self::from_connection(conn)
     }
 
     pub fn from_connection(conn: Connection) -> Result<Self, KernelError> {
-        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-        conn.execute_batch(KERNEL_SCHEMA_SQL)?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
+        conn.execute_batch(KERNEL_SCHEMA_SQL)
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
         Ok(Self { conn })
     }
 
-    pub fn connection_mut(&mut self) -> &mut Connection {
+    pub fn raw_connection(&mut self) -> &mut Connection {
         &mut self.conn
     }
+}
 
-    pub fn register_entity(
+impl LedgerStore for SqliteLedgerAdapter {
+    fn register_entity(
         &mut self,
         entity_id: &str,
         name: &str,
         visibility: EntityVisibility,
     ) -> Result<(), KernelError> {
-        self.conn.execute(
-            "INSERT INTO entities (id, name, visibility) VALUES (?1, ?2, ?3)",
-            params![entity_id, name, visibility.as_str()],
-        )?;
+        self.conn
+            .execute(
+                "INSERT INTO entities (id, name, visibility) VALUES (?1, ?2, ?3)",
+                params![entity_id, name, visibility.as_str()],
+            )
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn create_ledger_account(
+    fn create_ledger_account(
         &mut self,
         account_id: &str,
         entity_id: &str,
@@ -58,48 +66,50 @@ impl AccountingKernel {
         currency: &str,
         element: AccountElement,
         role: AccountRole,
-        counterparty_id: Option<&str>,
     ) -> Result<(), KernelError> {
-        self.conn.execute(
-            "INSERT INTO ledger_accounts
-                (id, entity_id, name, currency, element, role, counterparty_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                account_id,
-                entity_id,
-                name,
-                currency,
-                element.as_str(),
-                role.as_str(),
-                counterparty_id
-            ],
-        )?;
+        self.conn
+            .execute(
+                "INSERT INTO ledger_accounts
+                    (id, entity_id, name, currency, element, role)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    account_id,
+                    entity_id,
+                    name,
+                    currency,
+                    element.as_str(),
+                    role.as_str(),
+                ],
+            )
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
         Ok(())
     }
 
-    /// Atomically validates in-memory, inserts as `'draft'`, attaches all `journal_postings`,
-    /// and seals to `'posted'` inside a single SQLite transaction.
-    pub fn post_entry(&mut self, draft: &JournalEntryDraft) -> Result<String, KernelError> {
+    fn post_entry(&mut self, draft: &JournalEntryDraft) -> Result<String, KernelError> {
         draft.validate_trial_balance()?;
         let eff_date = draft
             .effective_date
             .as_deref()
             .unwrap_or(&draft.posting_date);
 
-        let tx = self.conn.transaction()?;
+        let tx = self
+            .conn
+            .transaction()
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
+
         tx.execute(
             "INSERT INTO journal_entries
-                (id, posting_date, effective_date, recipe_id, description, status, replaces_entry_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'draft', ?6)",
+                (id, posting_date, effective_date, description, status, replaces_entry_id)
+             VALUES (?1, ?2, ?3, ?4, 'draft', ?5)",
             params![
                 draft.id,
                 draft.posting_date,
                 eff_date,
-                draft.recipe_id,
                 draft.description,
                 draft.replaces_entry_id
             ],
-        )?;
+        )
+        .map_err(|e| KernelError::Storage(e.to_string()))?;
 
         for p in &draft.postings {
             tx.execute(
@@ -116,49 +126,60 @@ impl AccountingKernel {
                     p.money.amount_minor(),
                     p.memo
                 ],
-            )?;
+            )
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
         }
 
         // Sealing to 'posted' fires SQLite trigger `trg_journal_entry_seal_balance`
         tx.execute(
             "UPDATE journal_entries SET status = 'posted' WHERE id = ?1",
             params![draft.id],
-        )?;
-        tx.commit()?;
+        )
+        .map_err(|e| KernelError::Storage(e.to_string()))?;
+
+        tx.commit()
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
 
         Ok(draft.id.clone())
     }
 
-    /// Atomically links clearing postings and seals the settlement group to `'settled'`.
-    /// SQLite trigger `trg_settlement_group_seal` rejects if any clearing partition != 0.
-    pub fn settle_group(
+    fn settle_group(
         &mut self,
         group_id: &str,
         name: &str,
         posting_ids: &[&str],
     ) -> Result<(), KernelError> {
-        let tx = self.conn.transaction()?;
+        let tx = self
+            .conn
+            .transaction()
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
+
         tx.execute(
             "INSERT INTO settlement_groups (id, name, status) VALUES (?1, ?2, 'open')",
             params![group_id, name],
-        )?;
+        )
+        .map_err(|e| KernelError::Storage(e.to_string()))?;
 
         for pid in posting_ids {
             tx.execute(
                 "INSERT INTO settlement_group_postings (group_id, posting_id) VALUES (?1, ?2)",
                 params![group_id, pid],
-            )?;
+            )
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
         }
 
         tx.execute(
             "UPDATE settlement_groups SET status = 'settled' WHERE id = ?1",
             params![group_id],
-        )?;
-        tx.commit()?;
+        )
+        .map_err(|e| KernelError::Storage(e.to_string()))?;
+
+        tx.commit()
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
         Ok(())
     }
 
-    pub fn get_account_balance(&self, account_id: &str) -> Result<i64, KernelError> {
+    fn get_account_balance(&self, account_id: &str) -> Result<i64, KernelError> {
         let bal: Option<i64> = self
             .conn
             .query_row(
@@ -166,12 +187,13 @@ impl AccountingKernel {
                 params![account_id],
                 |row| row.get(0),
             )
-            .optional()?;
+            .optional()
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
 
         bal.ok_or_else(|| KernelError::UnknownLedgerAccount(account_id.to_string()))
     }
 
-    pub fn verify_accounting_equation(
+    fn verify_accounting_equation(
         &self,
         entity_id: &str,
         currency: &str,
@@ -210,7 +232,8 @@ impl AccountingKernel {
                     })
                 },
             )
-            .optional()?;
+            .optional()
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
 
         let snap = snap.ok_or_else(|| KernelError::UnknownEntityPartition {
             entity_id: entity_id.to_string(),
