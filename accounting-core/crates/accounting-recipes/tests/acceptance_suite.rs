@@ -4,7 +4,7 @@ use accounting_kernel::{
     AccountElement, AccountRole, AccountingKernel, EntityVisibility, JournalEntryDraft,
     KernelError, Money, PostingPrimitive, PostingSide,
 };
-use accounting_scenarios::{ScenarioCompiler, SplitAllocation};
+use accounting_recipes::{RecipeCompiler, SplitAllocation};
 
 fn setup_seeded_kernel() -> AccountingKernel {
     let mut kernel = AccountingKernel::in_memory().expect("in-memory SQLite kernel");
@@ -245,7 +245,7 @@ fn setup_seeded_kernel() -> AccountingKernel {
 fn test_at001_split_purchase_across_entities_preserves_equation() {
     let mut kernel = setup_seeded_kernel();
 
-    let draft = ScenarioCompiler::split_purchase_across_entities(
+    let draft = RecipeCompiler::split_purchase_across_entities(
         "2026-10-31",
         "ent_household",
         "hh_visa",
@@ -301,7 +301,7 @@ fn test_at005_006_007_opaque_receivable_reimbursement_and_forgiveness() {
     kernel
         .post_entry(&JournalEntryDraft::new(
             "2026-10-01",
-            "core:opening_balance:v1",
+            "recipe:opening_balance:v1",
             "Initial checking balance",
             vec![
                 PostingPrimitive::new(
@@ -326,7 +326,7 @@ fn test_at005_006_007_opaque_receivable_reimbursement_and_forgiveness() {
     kernel
         .post_entry(&JournalEntryDraft::new(
             "2026-10-05",
-            "core:opaque_advance:v1",
+            "recipe:opaque_advance:v1",
             "Advance for child school trip",
             vec![
                 PostingPrimitive::new(
@@ -355,7 +355,7 @@ fn test_at005_006_007_opaque_receivable_reimbursement_and_forgiveness() {
     kernel
         .post_entry(&JournalEntryDraft::new(
             "2026-10-12",
-            "core:opaque_reimbursement:v1",
+            "recipe:opaque_reimbursement:v1",
             "Partial repayment from child",
             vec![
                 PostingPrimitive::new(
@@ -384,7 +384,7 @@ fn test_at005_006_007_opaque_receivable_reimbursement_and_forgiveness() {
     kernel
         .post_entry(&JournalEntryDraft::new(
             "2026-10-20",
-            "core:debt_forgiveness:v1",
+            "recipe:debt_forgiveness:v1",
             "Forgive remaining $60 as gift",
             vec![
                 PostingPrimitive::new(
@@ -437,7 +437,7 @@ fn test_at003_and_at030_settlement_group_zero_residual_enforcement() {
     kernel
         .post_entry(&JournalEntryDraft::new(
             "2026-10-10",
-            "core:transfer_out:v1",
+            "recipe:transfer_out:v1",
             "Checking withdrawal to savings",
             vec![p_leg1_clear, p_leg1_bank],
         ))
@@ -473,7 +473,7 @@ fn test_at003_and_at030_settlement_group_zero_residual_enforcement() {
     kernel
         .post_entry(&JournalEntryDraft::new(
             "2026-10-12",
-            "core:transfer_in:v1",
+            "recipe:transfer_in:v1",
             "Savings deposit from checking",
             vec![p_leg2_bank, p_leg2_clear],
         ))
@@ -504,7 +504,7 @@ fn test_at016_cross_entity_refund_to_different_entity_account() {
     kernel
         .post_entry(&JournalEntryDraft::new(
             "2026-09-15",
-            "core:purchase:v1",
+            "recipe:purchase:v1",
             "Original Household purchase",
             vec![
                 PostingPrimitive::new(
@@ -529,7 +529,7 @@ fn test_at016_cross_entity_refund_to_different_entity_account() {
     kernel
         .post_entry(&JournalEntryDraft::new(
             "2026-10-02",
-            "core:cross_entity_refund:v1",
+            "recipe:cross_entity_refund:v1",
             "Refund to Personal Gift Card",
             vec![
                 PostingPrimitive::new(
@@ -596,7 +596,7 @@ fn test_at019_and_at020_payroll_gross_to_net_clearing() {
     kernel
         .post_entry(&JournalEntryDraft::new(
             "2026-10-15",
-            "core:payroll_stub:v1",
+            "recipe:payroll_stub:v1",
             "Oct 15 Paystub",
             vec![
                 p_stub_clear,
@@ -637,7 +637,7 @@ fn test_at019_and_at020_payroll_gross_to_net_clearing() {
     kernel
         .post_entry(&JournalEntryDraft::new(
             "2026-10-15",
-            "core:payroll_net_deposit:v1",
+            "recipe:payroll_net_deposit:v1",
             "Net pay direct deposit",
             vec![
                 PostingPrimitive::new(
@@ -675,7 +675,7 @@ fn test_at019_and_at020_payroll_gross_to_net_clearing() {
     kernel
         .post_entry(&JournalEntryDraft::new(
             "2026-10-17",
-            "core:payroll_hsa_deposit:v1",
+            "recipe:payroll_hsa_deposit:v1",
             "HSA employer contribution deposit",
             vec![
                 PostingPrimitive::new(
@@ -723,7 +723,7 @@ fn test_at013_database_trigger_blocks_unbalanced_or_mutated_postings() {
     let conn = kernel.connection_mut();
 
     conn.execute(
-        "INSERT INTO journal_entries (id, posting_date, effective_date, scenario_id, status)
+        "INSERT INTO journal_entries (id, posting_date, effective_date, recipe_id, status)
          VALUES ('je_bad', '2026-10-31', '2026-10-31', 'raw_test', 'draft')",
         [],
     )

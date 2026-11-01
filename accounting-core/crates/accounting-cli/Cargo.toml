@@ -11,4 +11,4 @@ path = "src/main.rs"
 
 [dependencies]
 accounting-kernel = { workspace = true }
-accounting-scenarios = { workspace = true }
+accounting-recipes = { workspace = true }

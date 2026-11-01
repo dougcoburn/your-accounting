@@ -77,7 +77,7 @@ CREATE TABLE journal_entries (
     id                      TEXT PRIMARY KEY,
     posting_date            TEXT NOT NULL, -- YYYY-MM-DD
     effective_date          TEXT NOT NULL, -- Defaults to posting_date unless accrual override
-    scenario_id             TEXT NOT NULL, -- e.g., 'core:purchase:v1', 'core:transfer:v1'
+    recipe_id             TEXT NOT NULL, -- e.g., 'recipe:purchase:v1', 'recipe:transfer:v1'
     description             TEXT NOT NULL DEFAULT '',
     status                  TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'posted')),
     replaces_entry_id       TEXT REFERENCES journal_entries(id),

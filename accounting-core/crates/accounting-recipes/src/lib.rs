@@ -1,6 +1,6 @@
-//! Application Ring: Scenario Compilers (`ScenarioCompiler`)
+//! Application Ring: Recipe Compilers (`RecipeCompiler`)
 //!
-//! Translates high-level UX intents (cross-entity split purchases, transfers,
+//! Translates high-level UX business intents (cross-entity split purchases, transfers,
 //! opaque-party receivables/reimbursements/forgiveness, cross-entity refunds,
 //! payroll gross-to-net clearing) into balanced `JournalEntryDraft` aggregates
 //! without modifying the 6-table Core Kernel.
@@ -18,9 +18,9 @@ pub struct SplitAllocation<'a> {
     pub target_due_to_account_id: Option<&'a str>,
 }
 
-pub struct ScenarioCompiler;
+pub struct RecipeCompiler;
 
-impl ScenarioCompiler {
+impl RecipeCompiler {
     /// Compiles a single payment funded by `funding_entity_id` into expenses across
     /// one or more transparent entities, automatically generating paired inter-entity
     /// Due-From (`Asset`) and Due-To (`Liability`) postings.
@@ -104,7 +104,7 @@ impl ScenarioCompiler {
 
         Ok(JournalEntryDraft::new(
             posting_date,
-            "core:split_purchase:v1",
+            "recipe:split_purchase:v1",
             description,
             postings,
         ))

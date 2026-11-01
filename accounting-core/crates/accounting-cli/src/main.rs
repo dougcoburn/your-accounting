@@ -1,10 +1,10 @@
-//! M0 CLI Fixture Runner: executes core scenarios and prints the Accounting Equation proof table.
+//! M0 CLI Fixture Runner: executes core recipes and prints the Accounting Equation proof table.
 
 use accounting_kernel::{
     AccountElement, AccountRole, AccountingKernel, EntityVisibility, JournalEntryDraft, Money,
     PostingPrimitive, PostingSide,
 };
-use accounting_scenarios::{ScenarioCompiler, SplitAllocation};
+use accounting_recipes::{RecipeCompiler, SplitAllocation};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut kernel = AccountingKernel::in_memory()?;
@@ -84,7 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Opening balance $5,000
     kernel.post_entry(&JournalEntryDraft::new(
         "2026-10-01",
-        "core:opening_balance:v1",
+        "recipe:opening_balance:v1",
         "Opening checking balance",
         vec![
             PostingPrimitive::new(
@@ -105,7 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ))?;
 
     // 2. AT-001 Split purchase ($150 on Household Visa -> $100 Household + $50 Business)
-    let split = ScenarioCompiler::split_purchase_across_entities(
+    let split = RecipeCompiler::split_purchase_across_entities(
         "2026-10-31",
         "ent_household",
         "hh_visa",

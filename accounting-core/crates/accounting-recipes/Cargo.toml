@@ -1,9 +1,9 @@
 [package]
-name = "accounting-scenarios"
+name = "accounting-recipes"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Scenario Compilers (UX -> Core Kernel primitives) and executable acceptance test suite"
+description = "Recipe Compilers (UX -> Core Kernel primitives) and executable acceptance test suite"
 
 [dependencies]
 accounting-kernel = { workspace = true }

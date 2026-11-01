@@ -89,13 +89,13 @@ impl AccountingKernel {
         let tx = self.conn.transaction()?;
         tx.execute(
             "INSERT INTO journal_entries
-                (id, posting_date, effective_date, scenario_id, description, status, replaces_entry_id)
+                (id, posting_date, effective_date, recipe_id, description, status, replaces_entry_id)
              VALUES (?1, ?2, ?3, ?4, ?5, 'draft', ?6)",
             params![
                 draft.id,
                 draft.posting_date,
                 eff_date,
-                draft.scenario_id,
+                draft.recipe_id,
                 draft.description,
                 draft.replaces_entry_id
             ],

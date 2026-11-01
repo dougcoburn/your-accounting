@@ -274,7 +274,7 @@ pub struct JournalEntryDraft {
     pub id: String,
     pub posting_date: String,
     pub effective_date: Option<String>,
-    pub scenario_id: String,
+    pub recipe_id: String,
     pub description: String,
     pub replaces_entry_id: Option<String>,
     pub postings: Vec<PostingPrimitive>,
@@ -283,7 +283,7 @@ pub struct JournalEntryDraft {
 impl JournalEntryDraft {
     pub fn new(
         posting_date: impl Into<String>,
-        scenario_id: impl Into<String>,
+        recipe_id: impl Into<String>,
         description: impl Into<String>,
         postings: Vec<PostingPrimitive>,
     ) -> Self {
@@ -291,7 +291,7 @@ impl JournalEntryDraft {
             id: next_deterministic_id("je"),
             posting_date: posting_date.into(),
             effective_date: None,
-            scenario_id: scenario_id.into(),
+            recipe_id: recipe_id.into(),
             description: description.into(),
             replaces_entry_id: None,
             postings,
