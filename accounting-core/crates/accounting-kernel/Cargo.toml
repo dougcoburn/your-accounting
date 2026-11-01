@@ -1,0 +1,9 @@
+[package]
+name = "accounting-kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Immutable DDD Core Kernel for double-entry accounting (SUM(Dr)==SUM(Cr) and Assets=Liabilities+Equity)"
+
+[dependencies]
+rusqlite = { workspace = true }
