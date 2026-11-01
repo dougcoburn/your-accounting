@@ -1,8 +1,4 @@
 //! Application Ring: Recipe Compilers & Execution Provenance (`accounting-recipes`)
-//!
-//! Translates high-level UX business intents into balanced `JournalEntryDraft` aggregates
-//! and records execution history into extension tables (`recipe_executions`), consuming
-//! the Core Kernel strictly through the abstract `LedgerStore` trait.
 
 use accounting_kernel::{
     next_deterministic_id, AccountElement, JournalEntryDraft, KernelError, LedgerStore, Money,
@@ -40,7 +36,6 @@ pub struct SplitAllocation<'a> {
 pub struct RecipeCompiler;
 
 impl RecipeCompiler {
-    /// Compiles a split purchase into a balanced JournalEntryDraft and an attached RecipeExecution.
     pub fn split_purchase_across_entities(
         posting_date: &str,
         funding_entity_id: &str,
@@ -59,7 +54,6 @@ impl RecipeCompiler {
 
         let mut postings = Vec::with_capacity(1 + allocations.len() * 3);
 
-        // 1. Funding side payment
         postings.push(PostingPrimitive::new(
             funding_account_id,
             funding_entity_id,
@@ -68,7 +62,6 @@ impl RecipeCompiler {
             format!("Funding payment: {description}"),
         ));
 
-        // 2. Expense allocations + automatic inter-entity obligations
         for alloc in allocations {
             if alloc.target_entity_id == funding_entity_id {
                 postings.push(PostingPrimitive::new(
@@ -134,8 +127,6 @@ impl RecipeCompiler {
         Ok(RecipeOutput { draft, execution })
     }
 
-    /// Posts the compiled recipe output to any store implementing `LedgerStore`.
-    /// Does not require knowing the concrete database driver!
     pub fn post_recipe<S: LedgerStore>(
         store: &mut S,
         output: &RecipeOutput,
@@ -143,7 +134,6 @@ impl RecipeCompiler {
         store.post_entry(&output.draft)
     }
 
-    /// Records the recipe execution metadata into an extension database connection.
     pub fn record_execution(
         conn: &Connection,
         execution: &RecipeExecution,

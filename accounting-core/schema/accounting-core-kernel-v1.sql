@@ -76,7 +76,7 @@ CREATE TABLE journal_entries (
     posting_date            TEXT NOT NULL, -- YYYY-MM-DD
     effective_date          TEXT NOT NULL, -- Defaults to posting_date unless accrual override
     description             TEXT NOT NULL DEFAULT '',
-    status                  TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'posted')),
+    status                  TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'active', 'superseded', 'voided')),
     replaces_entry_id       TEXT REFERENCES journal_entries(id),
     created_at              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
@@ -114,26 +114,26 @@ BEGIN
     SELECT RAISE(ABORT, 'INV-002: journal_posting entity_id and currency must match ledger_account');
 END;
 
--- Guard 2: Cannot add, edit, or delete postings on an already-posted entry.
+-- Guard 2: Cannot add, edit, or delete postings on an active, superseded, or voided entry.
 CREATE TRIGGER trg_posting_immutable_insert
 BEFORE INSERT ON journal_postings
-WHEN (SELECT status FROM journal_entries WHERE id = NEW.entry_id) = 'posted'
+WHEN (SELECT status FROM journal_entries WHERE id = NEW.entry_id) IN ('active', 'superseded', 'voided')
 BEGIN
-    SELECT RAISE(ABORT, 'INV-IMMUTABLE: Cannot insert postings into an already posted journal_entry');
+    SELECT RAISE(ABORT, 'INV-IMMUTABLE: Cannot insert postings into an active or terminal journal_entry');
 END;
 
 CREATE TRIGGER trg_posting_immutable_update
 BEFORE UPDATE ON journal_postings
-WHEN (SELECT status FROM journal_entries WHERE id = OLD.entry_id) = 'posted'
+WHEN (SELECT status FROM journal_entries WHERE id = OLD.entry_id) IN ('active', 'superseded', 'voided')
 BEGIN
-    SELECT RAISE(ABORT, 'INV-IMMUTABLE: Cannot update postings of an already posted journal_entry');
+    SELECT RAISE(ABORT, 'INV-IMMUTABLE: Cannot update postings of an active or terminal journal_entry');
 END;
 
 CREATE TRIGGER trg_posting_immutable_delete
 BEFORE DELETE ON journal_postings
-WHEN (SELECT status FROM journal_entries WHERE id = OLD.entry_id) = 'posted'
+WHEN (SELECT status FROM journal_entries WHERE id = OLD.entry_id) IN ('active', 'superseded', 'voided')
 BEGIN
-    SELECT RAISE(ABORT, 'INV-IMMUTABLE: Cannot delete postings of an already posted journal_entry');
+    SELECT RAISE(ABORT, 'INV-IMMUTABLE: Cannot delete postings of an active or terminal journal_entry');
 END;
 
 -- Guard 3: Sealing a journal_entry to 'posted' enforces:
@@ -141,7 +141,7 @@ END;
 --   (b) SUM(debits) == SUM(credits) for EVERY (entity_id, currency) partition
 CREATE TRIGGER trg_journal_entry_seal_balance
 BEFORE UPDATE OF status ON journal_entries
-WHEN OLD.status = 'draft' AND NEW.status = 'posted'
+WHEN OLD.status = 'draft' AND NEW.status = 'active'
 BEGIN
     -- Must have at least 2 postings
     SELECT RAISE(ABORT, 'INV-001: Cannot post an empty journal_entry')
@@ -160,12 +160,26 @@ BEGIN
     );
 END;
 
--- Prevent un-posting or mutating a posted journal_entry
-CREATE TRIGGER trg_journal_entry_immutable
+-- Guard 4: Active journal entries can only transition to superseded or voided. Header fields cannot be altered.
+CREATE TRIGGER trg_journal_entry_lifecycle_active
 BEFORE UPDATE ON journal_entries
-WHEN OLD.status = 'posted'
+WHEN OLD.status = 'active'
 BEGIN
-    SELECT RAISE(ABORT, 'INV-IMMUTABLE: Posted journal_entries are immutable; post a reversal/replacement entry instead');
+    SELECT RAISE(ABORT, 'INV-IMMUTABLE: Active journal entries can only transition to superseded or voided')
+    WHERE NEW.status NOT IN ('superseded', 'voided');
+
+    SELECT RAISE(ABORT, 'INV-IMMUTABLE: Cannot mutate header fields of an active journal entry')
+    WHERE NEW.posting_date != OLD.posting_date
+       OR NEW.effective_date != OLD.effective_date
+       OR NEW.description != OLD.description;
+END;
+
+-- Guard 5: Terminal journal entries (superseded or voided) are permanently sealed
+CREATE TRIGGER trg_journal_entry_lifecycle_terminal
+BEFORE UPDATE ON journal_entries
+WHEN OLD.status IN ('superseded', 'voided')
+BEGIN
+    SELECT RAISE(ABORT, 'INV-IMMUTABLE: Superseded or voided journal entries are permanently sealed');
 END;
 
 -- -----------------------------------------------------------------------------
@@ -206,7 +220,7 @@ BEGIN
         FROM settlement_group_postings sgp
         JOIN journal_postings jp ON jp.id = sgp.posting_id
         JOIN journal_entries je ON je.id = jp.entry_id
-        WHERE sgp.group_id = NEW.id AND je.status != 'posted'
+        WHERE sgp.group_id = NEW.id AND je.status != 'active'
     );
 
     SELECT RAISE(ABORT, 'INV-008/INV-030: Non-zero clearing residual in settlement_group partition')
@@ -249,7 +263,7 @@ SELECT
     ), 0) AS normal_balance_minor
 FROM ledger_accounts la
 LEFT JOIN journal_postings jp ON jp.ledger_account_id = la.id
-LEFT JOIN journal_entries je ON je.id = jp.entry_id AND je.status = 'posted'
+LEFT JOIN journal_entries je ON je.id = jp.entry_id AND je.status = 'active'
 WHERE je.id IS NOT NULL OR jp.id IS NULL
 GROUP BY la.id, la.entity_id, la.name, la.currency, la.element, la.role;
 
@@ -279,3 +293,18 @@ SELECT
     ) AS equation_discrepancy_minor
 FROM v_account_balances
 GROUP BY entity_id, currency;
+
+
+-- -----------------------------------------------------------------------------
+-- 7. PERFORMANCE INDEXES (ACTIVE WORKFLOWS & AUDIT LINEAGE)
+-- -----------------------------------------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_journal_entries_active_date
+ON journal_entries(posting_date)
+WHERE status = 'active';
+
+CREATE INDEX IF NOT EXISTS idx_journal_entries_replaces
+ON journal_entries(replaces_entry_id)
+WHERE replaces_entry_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_postings_account_entry
+ON journal_postings(ledger_account_id, entry_id);

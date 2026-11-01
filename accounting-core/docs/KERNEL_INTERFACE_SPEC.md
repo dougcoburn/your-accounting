@@ -182,6 +182,21 @@ $$
 
 Errors or residuals in one settlement group cannot offset or cross-cancel errors in another.
 
+## 3.1 The Kernel Invariant Guarantee & Bugcheck Policy
+
+In Domain-Driven Design, **an aggregate never permits itself to enter an invalid state**.
+
+Therefore, the accounting equation is **not** something the application ring must verify. The kernel guarantees it unconditionally across every committed mutation:
+
+1. **Transactional Invariant Gate:** Every `post_entry` and `settle_group` call validates trial balance partitions in memory and inside SQLite triggers. If any partition fails to balance, the transaction aborts and rolls back to the prior valid state.
+2. **Read-Side Intent (`summarize_accounting_equation`):** The interface method `summarize_accounting_equation` does not exist to ask the caller to double-check the kernel; it exists to provide the UI or reporting ring with a clean, aggregated snapshot of `Assets`, `Liabilities`, `Contributed Equity`, and `Current/Retained Earnings`.
+3. **Fail-Fast Kernel Bugcheck:** If an internal state discrepancy ever arises, it represents a catastrophic kernel implementation defect, not a normal user validation error. In this event, the kernel halts the transaction and emits a **Kernel Bugcheck** containing:
+   * The last known valid equation state.
+   * The requested mutation that triggered the discrepancy.
+   * Full diagnostic partition deltas.
+
+---
+
 ## 4. Kernel vs. Application Ring Boundary Audit
 
 To prevent future architecture erosion, this table details what belongs in the **Kernel** versus what belongs in the **Application Ring**:
@@ -267,7 +282,7 @@ pub struct JournalEntryDraft {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EquationSnapshot {
+pub struct AccountingEquationSummary {
     pub entity_id: String,
     pub currency: String,
     pub trial_debits_minor: i64,
@@ -288,7 +303,7 @@ pub struct EquationSnapshot {
 // this trait without changing a single line of domain or recipe code.
 
 pub trait LedgerStore {
-    /// Registers a transparent or opaque accounting entity.
+    // --- Entity & Account Management ---
     fn register_entity(
         &mut self,
         entity_id: &str,
@@ -296,7 +311,6 @@ pub trait LedgerStore {
         visibility: EntityVisibility,
     ) -> Result<(), KernelError>;
 
-    /// Creates an engine-managed ledger account.
     fn create_ledger_account(
         &mut self,
         account_id: &str,
@@ -307,12 +321,28 @@ pub trait LedgerStore {
         role: AccountRole,
     ) -> Result<(), KernelError>;
 
-    /// Atomically validates and commits a balanced JournalEntryDraft to the immutable ledger.
-    /// Returns the committed entry ID.
+    fn get_account(&self, account_id: &str) -> Result<Option<LedgerAccount>, KernelError>;
+    fn list_accounts(&self, entity_id: &str) -> Result<Vec<LedgerAccount>, KernelError>;
+
+    // --- Journal Posting & Fixups ---
+    /// Atomically validates in-memory, posts, and seals a JournalEntryDraft.
+    /// If draft.replaces_entry_id is set, atomically transitions the target entry to `superseded`.
     fn post_entry(&mut self, draft: &JournalEntryDraft) -> Result<String, KernelError>;
 
-    /// Atomically links clearing postings and seals a settlement group, verifying that
-    /// the net residual of all clearing partitions in the group is exactly zero.
+    /// Reads a full journal entry aggregate back by ID.
+    fn get_entry(&self, entry_id: &str) -> Result<Option<CommittedJournalEntry>, KernelError>;
+
+    /// Lists active entries for an account with optional date range and pagination filters.
+    fn list_active_entries_for_account(
+        &self,
+        account_id: &str,
+        filter: &EntryFilter,
+    ) -> Result<Vec<CommittedJournalEntry>, KernelError>;
+
+    /// Retrieves the complete edit history / lineage for an entry (old mistakes + fixups in chronological order).
+    fn get_entry_lineage(&self, entry_id: &str) -> Result<Vec<CommittedJournalEntry>, KernelError>;
+
+    // --- Settlement & Clearing ---
     fn settle_group(
         &mut self,
         group_id: &str,
@@ -320,15 +350,14 @@ pub trait LedgerStore {
         posting_ids: &[&str],
     ) -> Result<(), KernelError>;
 
-    /// Retrieves the current normal balance of a ledger account.
+    // --- Balances & Mathematical Invariants ---
     fn get_account_balance(&self, account_id: &str) -> Result<i64, KernelError>;
 
-    /// Computes and verifies the Fundamental Accounting Equation for an entity and currency.
-    fn verify_accounting_equation(
+    fn summarize_accounting_equation(
         &self,
         entity_id: &str,
         currency: &str,
-    ) -> Result<EquationSnapshot, KernelError>;
+    ) -> Result<AccountingEquationSummary, KernelError>;
 }
 
 ```

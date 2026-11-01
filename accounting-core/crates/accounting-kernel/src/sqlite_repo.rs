@@ -4,8 +4,9 @@ use std::path::Path;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::domain::{
-    AccountElement, AccountRole, EntityVisibility, EquationSnapshot, JournalEntryDraft,
-    KernelError, LedgerStore,
+    AccountElement, AccountRole, CommittedJournalEntry, Currency, EntityVisibility,
+    EntryFilter, EntryStatus, AccountingEquationSummary, JournalEntryDraft, KernelError, LedgerAccount,
+    LedgerStore, Money, PostingPrimitive, PostingSide,
 };
 
 pub const KERNEL_SCHEMA_SQL: &str = include_str!("../../../schema/accounting-core-kernel-v1.sql");
@@ -15,14 +16,12 @@ pub struct SqliteLedgerAdapter {
 }
 
 impl SqliteLedgerAdapter {
-    /// Creates an in-memory SQLite adapter initialized with `accounting-core-kernel-v1.sql`.
     pub fn in_memory() -> Result<Self, KernelError> {
         let conn = Connection::open_in_memory()
             .map_err(|e| KernelError::Storage(e.to_string()))?;
         Self::from_connection(conn)
     }
 
-    /// Opens or creates a file-backed SQLite adapter initialized with `accounting-core-kernel-v1.sql`.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, KernelError> {
         let conn = Connection::open(path)
             .map_err(|e| KernelError::Storage(e.to_string()))?;
@@ -39,6 +38,48 @@ impl SqliteLedgerAdapter {
 
     pub fn raw_connection(&mut self) -> &mut Connection {
         &mut self.conn
+    }
+
+    fn fetch_postings_for_entry(&self, entry_id: &str) -> Result<Vec<PostingPrimitive>, KernelError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, ledger_account_id, entity_id, currency, side, amount_minor, memo
+                 FROM journal_postings
+                 WHERE entry_id = ?1
+                 ORDER BY rowid ASC",
+            )
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(params![entry_id], |row| {
+                let id: String = row.get(0)?;
+                let ledger_account_id: String = row.get(1)?;
+                let entity_id: String = row.get(2)?;
+                let currency_str: String = row.get(3)?;
+                let side_str: String = row.get(4)?;
+                let amount_minor: i64 = row.get(5)?;
+                let memo: String = row.get(6)?;
+                Ok((id, ledger_account_id, entity_id, currency_str, side_str, amount_minor, memo))
+            })
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
+
+        let mut postings = Vec::new();
+        for item in rows {
+            let (id, ledger_account_id, entity_id, curr, side_str, amount_minor, memo) =
+                item.map_err(|e| KernelError::Storage(e.to_string()))?;
+            let side = PostingSide::parse(&side_str)?;
+            let money = Money::new(amount_minor, &curr)?;
+            postings.push(PostingPrimitive {
+                id,
+                ledger_account_id,
+                entity_id,
+                money,
+                side,
+                memo,
+            });
+        }
+        Ok(postings)
     }
 }
 
@@ -85,6 +126,91 @@ impl LedgerStore for SqliteLedgerAdapter {
         Ok(())
     }
 
+    fn get_account(&self, account_id: &str) -> Result<Option<LedgerAccount>, KernelError> {
+        let res = self
+            .conn
+            .query_row(
+                "SELECT id, entity_id, name, currency, element, role, is_active
+                 FROM ledger_accounts
+                 WHERE id = ?1",
+                params![account_id],
+                |row| {
+                    let id: String = row.get(0)?;
+                    let entity_id: String = row.get(1)?;
+                    let name: String = row.get(2)?;
+                    let currency_str: String = row.get(3)?;
+                    let element_str: String = row.get(4)?;
+                    let role_str: String = row.get(5)?;
+                    let is_active_int: i32 = row.get(6)?;
+                    Ok((id, entity_id, name, currency_str, element_str, role_str, is_active_int == 1))
+                },
+            )
+            .optional()
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
+
+        match res {
+            Some((id, entity_id, name, curr_str, elem_str, role_str, is_active)) => {
+                let currency = Currency::parse(&curr_str)?;
+                let element = AccountElement::parse(&elem_str)?;
+                let role = AccountRole::parse(&role_str)?;
+                Ok(Some(LedgerAccount {
+                    id,
+                    entity_id,
+                    name,
+                    currency,
+                    element,
+                    role,
+                    is_active,
+                }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn list_accounts(&self, entity_id: &str) -> Result<Vec<LedgerAccount>, KernelError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, entity_id, name, currency, element, role, is_active
+                 FROM ledger_accounts
+                 WHERE entity_id = ?1
+                 ORDER BY element ASC, name ASC",
+            )
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(params![entity_id], |row| {
+                let id: String = row.get(0)?;
+                let ent_id: String = row.get(1)?;
+                let name: String = row.get(2)?;
+                let currency_str: String = row.get(3)?;
+                let element_str: String = row.get(4)?;
+                let role_str: String = row.get(5)?;
+                let is_active_int: i32 = row.get(6)?;
+                Ok((id, ent_id, name, currency_str, element_str, role_str, is_active_int == 1))
+            })
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
+
+        let mut accounts = Vec::new();
+        for item in rows {
+            let (id, ent_id, name, curr_str, elem_str, role_str, is_active) =
+                item.map_err(|e| KernelError::Storage(e.to_string()))?;
+            let currency = Currency::parse(&curr_str)?;
+            let element = AccountElement::parse(&elem_str)?;
+            let role = AccountRole::parse(&role_str)?;
+            accounts.push(LedgerAccount {
+                id,
+                entity_id: ent_id,
+                name,
+                currency,
+                element,
+                role,
+                is_active,
+            });
+        }
+        Ok(accounts)
+    }
+
     fn post_entry(&mut self, draft: &JournalEntryDraft) -> Result<String, KernelError> {
         draft.validate_trial_balance()?;
         let eff_date = draft
@@ -97,6 +223,38 @@ impl LedgerStore for SqliteLedgerAdapter {
             .transaction()
             .map_err(|e| KernelError::Storage(e.to_string()))?;
 
+        // If replacing an existing entry, supersede the old entry
+        if let Some(ref old_id) = draft.replaces_entry_id {
+            let old_status: Option<String> = tx
+                .query_row(
+                    "SELECT status FROM journal_entries WHERE id = ?1",
+                    params![old_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| KernelError::Storage(e.to_string()))?;
+
+            match old_status.as_deref() {
+                Some("active") => {
+                    tx.execute(
+                        "UPDATE journal_entries SET status = 'superseded' WHERE id = ?1",
+                        params![old_id],
+                    )
+                    .map_err(|e| KernelError::Storage(e.to_string()))?;
+                }
+                Some(other) => {
+                    return Err(KernelError::InvalidSupersedeTarget {
+                        entry_id: old_id.clone(),
+                        reason: format!("target entry has status '{other}', expected 'active'"),
+                    });
+                }
+                None => {
+                    return Err(KernelError::UnknownEntry(old_id.clone()));
+                }
+            }
+        }
+
+        // Insert new entry as 'draft'
         tx.execute(
             "INSERT INTO journal_entries
                 (id, posting_date, effective_date, description, status, replaces_entry_id)
@@ -130,9 +288,9 @@ impl LedgerStore for SqliteLedgerAdapter {
             .map_err(|e| KernelError::Storage(e.to_string()))?;
         }
 
-        // Sealing to 'posted' fires SQLite trigger `trg_journal_entry_seal_balance`
+        // Sealing to 'active' fires SQLite trigger `trg_journal_entry_seal_balance`
         tx.execute(
-            "UPDATE journal_entries SET status = 'posted' WHERE id = ?1",
+            "UPDATE journal_entries SET status = 'active' WHERE id = ?1",
             params![draft.id],
         )
         .map_err(|e| KernelError::Storage(e.to_string()))?;
@@ -141,6 +299,163 @@ impl LedgerStore for SqliteLedgerAdapter {
             .map_err(|e| KernelError::Storage(e.to_string()))?;
 
         Ok(draft.id.clone())
+    }
+
+    fn get_entry(&self, entry_id: &str) -> Result<Option<CommittedJournalEntry>, KernelError> {
+        let entry_meta = self
+            .conn
+            .query_row(
+                "SELECT id, posting_date, effective_date, description, status, replaces_entry_id, created_at
+                 FROM journal_entries
+                 WHERE id = ?1",
+                params![entry_id],
+                |row| {
+                    let id: String = row.get(0)?;
+                    let posting_date: String = row.get(1)?;
+                    let effective_date: String = row.get(2)?;
+                    let description: String = row.get(3)?;
+                    let status_str: String = row.get(4)?;
+                    let replaces_entry_id: Option<String> = row.get(5)?;
+                    let created_at: String = row.get(6)?;
+                    Ok((id, posting_date, effective_date, description, status_str, replaces_entry_id, created_at))
+                },
+            )
+            .optional()
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
+
+        match entry_meta {
+            Some((id, posting_date, effective_date, description, status_str, replaces_entry_id, created_at)) => {
+                let status = EntryStatus::parse(&status_str)?;
+                let postings = self.fetch_postings_for_entry(&id)?;
+                Ok(Some(CommittedJournalEntry {
+                    id,
+                    posting_date,
+                    effective_date,
+                    description,
+                    status,
+                    replaces_entry_id,
+                    created_at,
+                    postings,
+                }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn list_active_entries_for_account(
+        &self,
+        account_id: &str,
+        filter: &EntryFilter,
+    ) -> Result<Vec<CommittedJournalEntry>, KernelError> {
+        let mut query = String::from(
+            "SELECT DISTINCT je.id, je.posting_date, je.effective_date, je.description, je.status, je.replaces_entry_id, je.created_at
+             FROM journal_entries je
+             JOIN journal_postings jp ON jp.entry_id = je.id
+             WHERE jp.ledger_account_id = ?1 AND je.status = 'active'"
+        );
+
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(account_id.to_string())];
+
+        if let Some(ref start) = filter.start_date {
+            query.push_str(" AND je.posting_date >= ?");
+            params_vec.push(Box::new(start.clone()));
+        }
+
+        if let Some(ref end) = filter.end_date {
+            query.push_str(" AND je.posting_date <= ?");
+            params_vec.push(Box::new(end.clone()));
+        }
+
+        query.push_str(" ORDER BY je.posting_date ASC, je.created_at ASC");
+
+        if let Some(limit) = filter.limit {
+            query.push_str(&format!(" LIMIT {limit}"));
+            if let Some(offset) = filter.offset {
+                query.push_str(&format!(" OFFSET {offset}"));
+            }
+        }
+
+        let mut stmt = self
+            .conn
+            .prepare(&query)
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
+
+        let params_slice: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
+
+        let rows = stmt
+            .query_map(params_slice.as_slice(), |row| {
+                let id: String = row.get(0)?;
+                let posting_date: String = row.get(1)?;
+                let effective_date: String = row.get(2)?;
+                let description: String = row.get(3)?;
+                let status_str: String = row.get(4)?;
+                let replaces_entry_id: Option<String> = row.get(5)?;
+                let created_at: String = row.get(6)?;
+                Ok((id, posting_date, effective_date, description, status_str, replaces_entry_id, created_at))
+            })
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
+
+        let mut entries = Vec::new();
+        for item in rows {
+            let (id, posting_date, effective_date, description, status_str, replaces_entry_id, created_at) =
+                item.map_err(|e| KernelError::Storage(e.to_string()))?;
+            let status = EntryStatus::parse(&status_str)?;
+            let postings = self.fetch_postings_for_entry(&id)?;
+            entries.push(CommittedJournalEntry {
+                id,
+                posting_date,
+                effective_date,
+                description,
+                status,
+                replaces_entry_id,
+                created_at,
+                postings,
+            });
+        }
+        Ok(entries)
+    }
+
+    fn get_entry_lineage(&self, entry_id: &str) -> Result<Vec<CommittedJournalEntry>, KernelError> {
+        // Trace back to root ancestor
+        let mut root_id = entry_id.to_string();
+        loop {
+            let parent_id: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT replaces_entry_id FROM journal_entries WHERE id = ?1",
+                    params![root_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| KernelError::Storage(e.to_string()))?
+                .flatten();
+
+            match parent_id {
+                Some(p) => root_id = p,
+                None => break,
+            }
+        }
+
+        // Trace forward from root_id
+        let mut lineage = Vec::new();
+        let mut curr_id = Some(root_id);
+
+        while let Some(id) = curr_id {
+            if let Some(entry) = self.get_entry(&id)? {
+                lineage.push(entry);
+            }
+            curr_id = self
+                .conn
+                .query_row(
+                    "SELECT id FROM journal_entries WHERE replaces_entry_id = ?1",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| KernelError::Storage(e.to_string()))?;
+        }
+
+        Ok(lineage)
     }
 
     fn settle_group(
@@ -193,12 +508,12 @@ impl LedgerStore for SqliteLedgerAdapter {
         bal.ok_or_else(|| KernelError::UnknownLedgerAccount(account_id.to_string()))
     }
 
-    fn verify_accounting_equation(
+    fn summarize_accounting_equation(
         &self,
         entity_id: &str,
         currency: &str,
-    ) -> Result<EquationSnapshot, KernelError> {
-        let snap: Option<EquationSnapshot> = self
+    ) -> Result<AccountingEquationSummary, KernelError> {
+        let snap: Option<AccountingEquationSummary> = self
             .conn
             .query_row(
                 "SELECT
@@ -217,7 +532,7 @@ impl LedgerStore for SqliteLedgerAdapter {
                  WHERE entity_id = ?1 AND currency = ?2",
                 params![entity_id, currency],
                 |row| {
-                    Ok(EquationSnapshot {
+                    Ok(AccountingEquationSummary {
                         entity_id: row.get(0)?,
                         currency: row.get(1)?,
                         trial_debits_minor: row.get(2)?,

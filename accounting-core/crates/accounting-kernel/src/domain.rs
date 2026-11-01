@@ -1,7 +1,6 @@
 //! Pure Domain Value Objects, Aggregate Roots, and Port Traits for Double-Entry Bookkeeping.
 //!
-//! This module contains zero dependencies on database engines or SQL drivers.
-//! Storage is abstracted behind the `LedgerStore` trait.
+//! Contains zero storage dependencies. Persistence is completely abstracted behind `LedgerStore`.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -15,7 +14,7 @@ pub fn next_deterministic_id(prefix: &str) -> String {
 }
 
 // =============================================================================
-// DOMAIN ERRORS (NO INFRASTRUCTURE LEAKS)
+// DOMAIN ERRORS
 // =============================================================================
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,37 +27,26 @@ pub enum KernelError {
     MissingInterEntityAccounts { target_entity_id: String },
     UnknownLedgerAccount(String),
     UnknownEntityPartition { entity_id: String, currency: String },
-    EquationViolation(EquationSnapshot),
+    UnknownEntry(String),
+    InvalidSupersedeTarget { entry_id: String, reason: String },
+    EquationViolation(AccountingEquationSummary),
     Storage(String),
 }
 
 impl fmt::Display for KernelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidCurrency(c) => {
-                write!(f, "Currency must be a 3-letter uppercase ISO code, got {c:?}")
-            }
-            Self::NonPositiveAmount(a) => {
-                write!(f, "Posting Money magnitude must be > 0, got {a}")
-            }
+            Self::InvalidCurrency(c) => write!(f, "Currency must be a 3-letter uppercase ISO code, got {c:?}"),
+            Self::NonPositiveAmount(a) => write!(f, "Posting Money magnitude must be > 0, got {a}"),
             Self::ArithmeticOverflow => write!(f, "Checked integer arithmetic overflow"),
-            Self::InsufficientPostings(n) => {
-                write!(f, "INV-001: A JournalEntry must contain at least 2 postings (got {n})")
-            }
-            Self::UnbalancedPartitions(map) => {
-                write!(f, "INV-001: Unbalanced (entity, currency) partitions: {map:?}")
-            }
-            Self::MissingInterEntityAccounts { target_entity_id } => write!(
-                f,
-                "Cross-entity split for {target_entity_id} requires paired due_from and due_to accounts"
-            ),
+            Self::InsufficientPostings(n) => write!(f, "INV-001: A JournalEntry must contain at least 2 postings (got {n})"),
+            Self::UnbalancedPartitions(map) => write!(f, "INV-001: Unbalanced (entity, currency) partitions: {map:?}"),
+            Self::MissingInterEntityAccounts { target_entity_id } => write!(f, "Cross-entity split for {target_entity_id} requires paired due_from and due_to accounts"),
             Self::UnknownLedgerAccount(id) => write!(f, "Unknown ledger_account_id: {id}"),
-            Self::UnknownEntityPartition { entity_id, currency } => {
-                write!(f, "No ledger accounts found for ({entity_id}, {currency})")
-            }
-            Self::EquationViolation(snap) => {
-                write!(f, "Accounting equation violated: {snap:?}")
-            }
+            Self::UnknownEntityPartition { entity_id, currency } => write!(f, "No ledger accounts found for ({entity_id}, {currency})"),
+            Self::UnknownEntry(id) => write!(f, "Unknown journal_entry_id: {id}"),
+            Self::InvalidSupersedeTarget { entry_id, reason } => write!(f, "Cannot supersede entry {entry_id}: {reason}"),
+            Self::EquationViolation(snap) => write!(f, "Accounting equation violated: {snap:?}"),
             Self::Storage(msg) => write!(f, "Storage failure: {msg}"),
         }
     }
@@ -83,12 +71,16 @@ impl PostingSide {
             Self::Credit => "credit",
         }
     }
+
+    pub fn parse(s: &str) -> Result<Self, KernelError> {
+        match s {
+            "debit" => Ok(Self::Debit),
+            "credit" => Ok(Self::Credit),
+            _ => Err(KernelError::Storage(format!("invalid posting side: {s}"))),
+        }
+    }
 }
 
-/// The 5 fundamental elements of the expanded accounting equation:
-/// `Assets + Expenses == Liabilities + Equity + Revenue`
-/// Rearranged into normal balances:
-/// `Assets == Liabilities + Equity + (Revenue - Expenses)`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AccountElement {
     Asset,
@@ -106,6 +98,17 @@ impl AccountElement {
             Self::Equity => "equity",
             Self::Revenue => "revenue",
             Self::Expense => "expense",
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<Self, KernelError> {
+        match s {
+            "asset" => Ok(Self::Asset),
+            "liability" => Ok(Self::Liability),
+            "equity" => Ok(Self::Equity),
+            "revenue" => Ok(Self::Revenue),
+            "expense" => Ok(Self::Expense),
+            _ => Err(KernelError::Storage(format!("invalid account element: {s}"))),
         }
     }
 
@@ -140,6 +143,15 @@ impl AccountRole {
             Self::Contra => "contra",
         }
     }
+
+    pub fn parse(s: &str) -> Result<Self, KernelError> {
+        match s {
+            "standard" => Ok(Self::Standard),
+            "clearing" => Ok(Self::Clearing),
+            "contra" => Ok(Self::Contra),
+            _ => Err(KernelError::Storage(format!("invalid account role: {s}"))),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -153,6 +165,35 @@ impl EntityVisibility {
         match self {
             Self::Transparent => "transparent",
             Self::Opaque => "opaque",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum EntryStatus {
+    Draft,
+    Active,
+    Superseded,
+    Voided,
+}
+
+impl EntryStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::Active => "active",
+            Self::Superseded => "superseded",
+            Self::Voided => "voided",
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<Self, KernelError> {
+        match s {
+            "draft" => Ok(Self::Draft),
+            "active" => Ok(Self::Active),
+            "superseded" => Ok(Self::Superseded),
+            "voided" => Ok(Self::Voided),
+            _ => Err(KernelError::Storage(format!("invalid entry status: {s}"))),
         }
     }
 }
@@ -216,7 +257,21 @@ impl Money {
     }
 }
 
-/// Single immutable debit or credit line inside a `JournalEntryDraft` aggregate.
+// =============================================================================
+// 2. READ & WRITE AGGREGATES
+// =============================================================================
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LedgerAccount {
+    pub id: String,
+    pub entity_id: String,
+    pub name: String,
+    pub currency: Currency,
+    pub element: AccountElement,
+    pub role: AccountRole,
+    pub is_active: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PostingPrimitive {
     pub id: String,
@@ -246,10 +301,6 @@ impl PostingPrimitive {
     }
 }
 
-// =============================================================================
-// 2. CORE AGGREGATE ROOTS (PURE DOUBLE-ENTRY KERNEL)
-// =============================================================================
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JournalEntryDraft {
     pub id: String,
@@ -276,8 +327,22 @@ impl JournalEntryDraft {
         }
     }
 
-    /// Enforces INV-001: Every `(entity_id, currency)` partition must satisfy
-    /// `SUM(debits) == SUM(credits)`.
+    pub fn with_replacement(
+        posting_date: impl Into<String>,
+        description: impl Into<String>,
+        replaces_entry_id: impl Into<String>,
+        postings: Vec<PostingPrimitive>,
+    ) -> Self {
+        Self {
+            id: next_deterministic_id("je"),
+            posting_date: posting_date.into(),
+            effective_date: None,
+            description: description.into(),
+            replaces_entry_id: Some(replaces_entry_id.into()),
+            postings,
+        }
+    }
+
     pub fn validate_trial_balance(&self) -> Result<BTreeMap<(String, Currency), i64>, KernelError> {
         if self.postings.len() < 2 {
             return Err(KernelError::InsufficientPostings(self.postings.len()));
@@ -310,9 +375,52 @@ impl JournalEntryDraft {
     }
 }
 
+/// Symmetrical committed journal entry read back from storage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommittedJournalEntry {
+    pub id: String,
+    pub posting_date: String,
+    pub effective_date: String,
+    pub description: String,
+    pub status: EntryStatus,
+    pub replaces_entry_id: Option<String>,
+    pub created_at: String,
+    pub postings: Vec<PostingPrimitive>,
+}
+
+/// Query filter for searching entries for an account.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EntryFilter {
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+impl EntryFilter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn date_range(start_date: impl Into<String>, end_date: impl Into<String>) -> Self {
+        Self {
+            start_date: Some(start_date.into()),
+            end_date: Some(end_date.into()),
+            limit: None,
+            offset: None,
+        }
+    }
+
+    pub fn with_pagination(mut self, limit: usize, offset: usize) -> Self {
+        self.limit = Some(limit);
+        self.offset = Some(offset);
+        self
+    }
+}
+
 /// Read-model verification of `Assets == Liabilities + Equity + (Revenue - Expenses)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EquationSnapshot {
+pub struct AccountingEquationSummary {
     pub entity_id: String,
     pub currency: String,
     pub trial_debits_minor: i64,
@@ -326,7 +434,7 @@ pub struct EquationSnapshot {
     pub equation_discrepancy_minor: i64,
 }
 
-impl EquationSnapshot {
+impl AccountingEquationSummary {
     pub const fn is_balanced(&self) -> bool {
         self.trial_debits_minor == self.trial_credits_minor
             && self.assets_minor == (self.liabilities_minor + self.total_equity_minor)
@@ -335,13 +443,11 @@ impl EquationSnapshot {
 }
 
 // =============================================================================
-// 3. THE PRIMARY DOMAIN PORT (TRAIT LEDGERSTORE)
+// 3. THE COMPLETE PRIMARY DOMAIN PORT (TRAIT LEDGERSTORE)
 // =============================================================================
 
-/// Primary Port defining the abstract double-entry bookkeeping engine capabilities.
-/// Outer application rings (recipes, sub-ledgers, reports) communicate ONLY via this trait.
 pub trait LedgerStore {
-    /// Registers an accounting entity (transparent with full books, or opaque external party).
+    // --- Entity & Account Management ---
     fn register_entity(
         &mut self,
         entity_id: &str,
@@ -349,7 +455,6 @@ pub trait LedgerStore {
         visibility: EntityVisibility,
     ) -> Result<(), KernelError>;
 
-    /// Creates an engine-managed ledger account classified into one of the 5 elements.
     fn create_ledger_account(
         &mut self,
         account_id: &str,
@@ -360,12 +465,27 @@ pub trait LedgerStore {
         role: AccountRole,
     ) -> Result<(), KernelError>;
 
+    fn get_account(&self, account_id: &str) -> Result<Option<LedgerAccount>, KernelError>;
+    fn list_accounts(&self, entity_id: &str) -> Result<Vec<LedgerAccount>, KernelError>;
+
+    // --- Journal Posting & Fixups ---
     /// Atomically validates in-memory, posts, and seals a JournalEntryDraft.
-    /// Returns the assigned entry ID.
+    /// If draft.replaces_entry_id is set, atomically transitions the target entry to `superseded`.
     fn post_entry(&mut self, draft: &JournalEntryDraft) -> Result<String, KernelError>;
 
-    /// Atomically links clearing postings and seals a settlement group, verifying that
-    /// every linked clearing partition nets to exact zero.
+    fn get_entry(&self, entry_id: &str) -> Result<Option<CommittedJournalEntry>, KernelError>;
+
+    /// Lists active (non-superseded, non-voided) journal entries touching an account within an optional date range.
+    fn list_active_entries_for_account(
+        &self,
+        account_id: &str,
+        filter: &EntryFilter,
+    ) -> Result<Vec<CommittedJournalEntry>, KernelError>;
+
+    /// Retrieves the complete edit history / lineage for an entry (old mistakes + fixups in chronological order).
+    fn get_entry_lineage(&self, entry_id: &str) -> Result<Vec<CommittedJournalEntry>, KernelError>;
+
+    // --- Settlement & Clearing ---
     fn settle_group(
         &mut self,
         group_id: &str,
@@ -373,13 +493,12 @@ pub trait LedgerStore {
         posting_ids: &[&str],
     ) -> Result<(), KernelError>;
 
-    /// Reads the current signed normal balance for an account.
+    // --- Balances & Mathematical Invariants ---
     fn get_account_balance(&self, account_id: &str) -> Result<i64, KernelError>;
 
-    /// Computes and verifies the Fundamental Accounting Equation for (entity, currency).
-    fn verify_accounting_equation(
+    fn summarize_accounting_equation(
         &self,
         entity_id: &str,
         currency: &str,
-    ) -> Result<EquationSnapshot, KernelError>;
+    ) -> Result<AccountingEquationSummary, KernelError>;
 }

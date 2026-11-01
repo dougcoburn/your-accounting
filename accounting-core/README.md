@@ -2,24 +2,16 @@
 
 This Cargo workspace provides a clean, decoupled Domain-Driven Design (DDD) architecture based on the [Kernel Interface Specification](docs/KERNEL_INTERFACE_SPEC.md).
 
-## Architecture & Ports
+## Features
 
-1. **Pure Double-Entry Core Kernel (`crates/accounting-kernel`)**:
-   - Defines pure Value Objects, Aggregates, and the `pub trait LedgerStore` Port.
-   - Zero storage leaks: `KernelError` contains no database-specific types.
-   - Includes `SqliteLedgerAdapter` implementing `LedgerStore` backed by `schema/accounting-core-kernel-v1.sql`.
-
-2. **Application Recipes Ring (`crates/accounting-recipes`)**:
-   - Consumes the kernel strictly through `LedgerStore`.
-   - Records workflow execution provenance in `recipe_executions` (`crates/accounting-recipes/schema/accounting-recipes-v1.sql`).
-   - Contains integration acceptance tests (`tests/acceptance_suite.rs`).
-
-3. **CLI Runner (`crates/accounting-cli`)**:
-   - Milestone M0 CLI fixture runner demonstrating in-memory double-entry posting and balance proof reporting.
+- **Full Read Symmetry:** Query accounts, single entries, active entries by account with date filtering, and complete fixup lineages.
+- **Fail-Fast Invariant Bugcheck:** Invariants are machine-guaranteed on mutation. `summarize_accounting_equation` provides structured reporting.
+- **Painless Fixup Lineage:** Correct mistakes seamlessly via `replaces_entry_id`. Day-to-day balance queries see only the active reality, while forensic audits can inspect the complete edit trail.
+- **Zero Storage Leak:** Kernel domain types contain no SQL or SQLite dependencies.
 
 ## Documentation
 
-See [`docs/KERNEL_INTERFACE_SPEC.md`](docs/KERNEL_INTERFACE_SPEC.md) for full terminology definitions, mathematical invariant equations, and architectural boundary rules.
+See [`docs/KERNEL_INTERFACE_SPEC.md`](docs/KERNEL_INTERFACE_SPEC.md) for full terminology definitions and architectural rules.
 
 ## Quickstart
 

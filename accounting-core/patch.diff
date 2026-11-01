@@ -1,0 +1,9 @@
+diff --git a/crates/accounting-recipes/tests/acceptance_suite.rs b/crates/accounting-recipes/tests/acceptance_suite.rs
+--- a/crates/accounting-recipes/tests/acceptance_suite.rs
++++ b/crates/accounting-recipes/tests/acceptance_suite.rs
+@@ -313,3 +313,3 @@ fn test_read_symmetry_and_date_filtering() {
+ 
+-    let e3 = store
++    let _e3 = store
+         .post_entry(&JournalEntryDraft::new(
+
