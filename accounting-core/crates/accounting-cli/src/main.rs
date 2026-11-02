@@ -405,8 +405,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let revision = store.revision()?;
     let mut unit = store.begin_transaction(revision)?;
     let split_entry_id = RecipeCompiler::post_recipe(&mut unit, &split_recipe)?;
+    let execution_id = unit.next_deterministic_id("rx")?;
     unit.with_connection(|conn| {
-        RecipeCompiler::record_execution(conn, &split_recipe.execution, &split_entry_id)
+        RecipeCompiler::record_execution(
+            conn,
+            &execution_id,
+            &split_recipe.execution,
+            &split_entry_id,
+        )
     })?;
     unit.commit()?;
 

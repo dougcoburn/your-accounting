@@ -2,7 +2,7 @@
 
 use accounting_kernel::{
     AccountElement, JournalEntryDraft, KernelError, LedgerStore, Money, PostingPrimitive,
-    PostingSide, SqliteLedgerAdapter,
+    PostingSide,
 };
 use rusqlite::{params, Connection};
 
@@ -138,13 +138,13 @@ impl RecipeCompiler {
 
     pub fn record_execution(
         conn: &mut Connection,
+        execution_id: &str,
         execution: &RecipeExecution,
         committed_entry_id: &str,
-    ) -> Result<String, KernelError> {
+    ) -> Result<(), KernelError> {
         let tx = conn
             .savepoint()
             .map_err(|e| KernelError::Storage(e.to_string()))?;
-        let execution_id = SqliteLedgerAdapter::next_deterministic_id_on(&tx, "rx")?;
         tx.execute(
             "INSERT INTO recipe_executions
                 (id, recipe_name, recipe_version, journal_entry_id, parameters_json)
@@ -160,6 +160,6 @@ impl RecipeCompiler {
         .map_err(|e| KernelError::Storage(e.to_string()))?;
         tx.commit()
             .map_err(|e| KernelError::Storage(e.to_string()))?;
-        Ok(execution_id)
+        Ok(())
     }
 }

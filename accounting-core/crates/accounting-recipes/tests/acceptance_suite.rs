@@ -261,11 +261,11 @@ fn test_at001_split_purchase_across_entities_preserves_equation() {
     let revision = store.revision().unwrap();
     let mut unit = store.begin_transaction(revision).unwrap();
     let entry_id = RecipeCompiler::post_recipe(&mut unit, &output).unwrap();
-    let execution_id = unit
-        .with_connection(|conn| {
-            RecipeCompiler::record_execution(conn, &output.execution, &entry_id)
-        })
-        .unwrap();
+    let execution_id = unit.next_deterministic_id("rx").unwrap();
+    unit.with_connection(|conn| {
+        RecipeCompiler::record_execution(conn, &execution_id, &output.execution, &entry_id)
+    })
+    .unwrap();
     assert_eq!(execution_id, "rx_1");
     unit.commit().unwrap();
 

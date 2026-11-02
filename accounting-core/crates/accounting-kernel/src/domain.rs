@@ -14,7 +14,7 @@ static DRAFT_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// A local reference used only until storage assigns a permanent ID.
 fn next_draft_reference(prefix: &str) -> String {
     let number = DRAFT_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("draft_{prefix}_{number}")
+    format!("~draft_{prefix}_{number}")
 }
 
 // =============================================================================
@@ -446,6 +446,12 @@ pub struct PostingPrimitive {
 }
 
 impl PostingPrimitive {
+    /// Set an ID reserved by `LedgerStore::next_deterministic_id` before posting.
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = id.into();
+        self
+    }
+
     pub fn new(
         ledger_account_id: impl Into<String>,
         entity_id: impl Into<String>,
@@ -475,6 +481,12 @@ pub struct JournalEntryDraft {
 }
 
 impl JournalEntryDraft {
+    /// Set an ID reserved by `LedgerStore::next_deterministic_id` before posting.
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = id.into();
+        self
+    }
+
     pub fn new(
         posting_date: impl Into<String>,
         description: impl Into<String>,

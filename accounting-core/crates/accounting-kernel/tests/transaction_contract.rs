@@ -124,11 +124,11 @@ fn a_saved_database_reopens_without_recreating_tables() {
     ));
     let mut first = SqliteLedgerAdapter::open(&path).unwrap();
     assert_eq!(first.next_deterministic_id("je").unwrap(), "je_1");
-    assert_eq!(first.revision().unwrap(), 1);
+    assert_eq!(first.revision().unwrap(), 0);
     drop(first);
     let mut reopened = SqliteLedgerAdapter::open(&path).unwrap();
     assert_eq!(reopened.next_deterministic_id("je").unwrap(), "je_2");
-    assert_eq!(reopened.revision().unwrap(), 2);
+    assert_eq!(reopened.revision().unwrap(), 0);
     drop(reopened);
     std::fs::remove_file(path).unwrap();
 }
@@ -196,12 +196,71 @@ fn migration_continues_after_existing_numeric_ids() {
 fn posting_replaces_draft_references_with_storage_ids() {
     let mut store = store();
     let (draft, _) = entry("checking", "savings", 100);
-    assert!(draft.id.starts_with("draft_je_"));
-    assert!(draft.postings[0].id.starts_with("draft_pst_"));
+    assert!(draft.id.starts_with("~draft_je_"));
+    assert!(draft.postings[0].id.starts_with("~draft_pst_"));
     let posted = store.post_entry_with_ids(&draft).unwrap();
     assert_eq!(posted.id, "je_1");
     assert_eq!(posted.postings[0].id, "pst_1");
     assert_eq!(posted.postings[1].id, "pst_2");
+}
+
+#[test]
+fn application_reserves_ids_before_posting_and_keeps_them() {
+    let mut store = store();
+    let mut unit = store.begin_transaction(0).unwrap();
+    let entry_id = unit.next_deterministic_id("je").unwrap();
+    let debit_id = unit.next_deterministic_id("pst").unwrap();
+    let credit_id = unit.next_deterministic_id("pst").unwrap();
+    let application_id = unit.next_deterministic_id("purchase").unwrap();
+    let draft = JournalEntryDraft::new(
+        "2026-10-01",
+        "Purchase",
+        vec![
+            PostingPrimitive::new(
+                "checking",
+                "household",
+                Money::new(100, "USD").unwrap(),
+                PostingSide::Debit,
+                "",
+            )
+            .with_id(&debit_id),
+            PostingPrimitive::new(
+                "savings",
+                "household",
+                Money::new(100, "USD").unwrap(),
+                PostingSide::Credit,
+                "",
+            )
+            .with_id(&credit_id),
+        ],
+    )
+    .with_id(&entry_id);
+    unit.with_connection(|conn| {
+        conn.execute_batch("CREATE TABLE purchases (id TEXT PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES journal_entries(id))")
+            .map_err(|e| KernelError::Storage(e.to_string()))
+    }).unwrap();
+    assert_eq!(unit.post_entry(&draft).unwrap(), entry_id);
+    unit.with_connection(|conn| {
+        conn.execute(
+            "INSERT INTO purchases (id, entry_id) VALUES (?1, ?2)",
+            [&application_id, &entry_id],
+        )
+        .map_err(|e| KernelError::Storage(e.to_string()))?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(unit.commit().unwrap(), 1);
+    let posted = store.get_entry(&entry_id).unwrap().unwrap();
+    assert_eq!(posted.postings[0].id, debit_id);
+    assert_eq!(posted.postings[1].id, credit_id);
+    assert_eq!(application_id, "purchase_1");
+    assert!(matches!(
+        store.post_entry(&draft),
+        Err(KernelError::DuplicateId {
+            record_kind: "journal_entry",
+            ..
+        })
+    ));
 }
 
 #[test]

@@ -399,19 +399,11 @@ impl SqliteLedgerAdapter {
 
 impl LedgerStore for SqliteLedgerAdapter {
     fn next_deterministic_id(&mut self, prefix: &str) -> Result<String, KernelError> {
-        let standalone = self.conn.is_autocommit();
         let tx = self
             .conn
             .savepoint()
             .map_err(|e| KernelError::Storage(e.to_string()))?;
         let id = Self::next_deterministic_id_on(&tx, prefix)?;
-        if standalone {
-            tx.execute(
-                "UPDATE kernel_state SET revision = revision + 1 WHERE id = 1",
-                [],
-            )
-            .map_err(|e| KernelError::Storage(e.to_string()))?;
-        }
         tx.commit()
             .map_err(|e| KernelError::Storage(e.to_string()))?;
         Ok(id)
@@ -652,7 +644,26 @@ impl LedgerStore for SqliteLedgerAdapter {
             .conn
             .savepoint()
             .map_err(|e| KernelError::Storage(e.to_string()))?;
-        let entry_id = Self::next_deterministic_id_on(&tx, "je")?;
+        let entry_id = if draft.id.starts_with("~draft_je_") {
+            Self::next_deterministic_id_on(&tx, "je")?
+        } else {
+            draft.id.clone()
+        };
+        if tx
+            .query_row(
+                "SELECT 1 FROM journal_entries WHERE id = ?1",
+                params![entry_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|e| KernelError::Storage(e.to_string()))?
+            .is_some()
+        {
+            return Err(KernelError::DuplicateId {
+                record_kind: "journal_entry",
+                id: entry_id,
+            });
+        }
 
         // 4. If replacing an existing entry, verify it exists and is Active, then supersede it
         if let Some(ref old_id) = draft.replaces_entry_id {
@@ -718,7 +729,26 @@ impl LedgerStore for SqliteLedgerAdapter {
         .map_err(|e| KernelError::Storage(e.to_string()))?;
 
         for p in &draft.postings {
-            let posting_id = Self::next_deterministic_id_on(&tx, "pst")?;
+            let posting_id = if p.id.starts_with("~draft_pst_") {
+                Self::next_deterministic_id_on(&tx, "pst")?
+            } else {
+                p.id.clone()
+            };
+            if tx
+                .query_row(
+                    "SELECT 1 FROM journal_postings WHERE id = ?1",
+                    params![posting_id],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(|e| KernelError::Storage(e.to_string()))?
+                .is_some()
+            {
+                return Err(KernelError::DuplicateId {
+                    record_kind: "journal_posting",
+                    id: posting_id,
+                });
+            }
             tx.execute(
                 "INSERT INTO journal_postings
                     (id, entry_id, ledger_account_id, entity_id, currency, side, amount_minor, memo)

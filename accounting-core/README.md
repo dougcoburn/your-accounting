@@ -35,13 +35,14 @@ application must validate all required participants before committing a group.
 The current settlement primitive checks linked clearing postings; it does not
 itself know which observed movements a workflow requires.
 
-SQLite allocates short, per-prefix IDs (`je_1`, `pst_1`, `rx_1`) inside the
-transaction. Draft entry and posting IDs are temporary references and are not
-persisted. Use `post_entry_with_ids` to obtain the stored posting IDs before
-linking a settlement group. `next_deterministic_id(prefix)` reserves other
-application IDs in the same transaction; a rollback also rolls back that
-reservation. A standalone reservation commits immediately and advances the
-kernel revision.
+`next_deterministic_id(prefix)` reserves short, per-prefix IDs (`je_1`,
+`pst_1`, `rx_1`) from SQLite for kernel or application records. An application
+can reserve IDs before constructing a draft, set them with `with_id`, and use
+those same IDs in its domain records and settlement groups. Constructor-generated
+draft references are replaced on posting for older callers. Reservations made
+inside a transaction roll back with it; standalone reservations commit at once
+and may leave gaps if a later workflow fails. Reserving an ID alone does not
+advance the ledger revision.
 
 Entries linked to a settled group cannot currently be replaced in isolation.
 A coordinated correction operation for rebuilding group membership and audit
