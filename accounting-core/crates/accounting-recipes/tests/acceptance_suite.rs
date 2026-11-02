@@ -478,7 +478,7 @@ fn test_at003_and_at030_settlement_group_zero_residual_enforcement() {
     let err = store
         .settle_group("sg_incomplete", "Incomplete transfer", &[p_leg1_clear_id.as_str()])
         .unwrap_err();
-    assert!(matches!(err, KernelError::Storage(_)));
+    assert!(matches!(err, KernelError::NonZeroClearingResidual { .. }));
 
     let p_leg2_bank = PostingPrimitive::new("hh_savings", "ent_household", Money::new(500_00, "USD").unwrap(), PostingSide::Debit, "");
     let p_leg2_clear = PostingPrimitive::new("hh_transfer_clearing", "ent_household", Money::new(500_00, "USD").unwrap(), PostingSide::Credit, "");
@@ -576,7 +576,7 @@ fn test_at019_and_at020_payroll_gross_to_net_clearing() {
     let err = store
         .settle_group("sg_payroll_incomplete", "Missing HSA leg", &[p_stub_clear_id.as_str(), p_net_clear_id.as_str()])
         .unwrap_err();
-    assert!(matches!(err, KernelError::Storage(_)));
+    assert!(matches!(err, KernelError::NonZeroClearingResidual { .. }));
 
     let p_hsa_clear = PostingPrimitive::new("hh_payroll_clearing", "ent_household", Money::new(200_00, "USD").unwrap(), PostingSide::Credit, "");
     let p_hsa_clear_id = p_hsa_clear.id.clone();
@@ -603,4 +603,77 @@ fn test_at019_and_at020_payroll_gross_to_net_clearing() {
     assert_eq!(hh_eq.expenses_minor, 500_00);
     assert_eq!(hh_eq.total_equity_minor, 2700_00);
     assert!(hh_eq.is_balanced());
+}
+
+#[test]
+fn test_contract_error_variants_match_spec() {
+    let mut store = setup_seeded_store();
+
+    // 1. AccountOwnerNotTransparent when creating account on Opaque entity
+    let err = store
+        .create_ledger_account(
+            "child_acct",
+            "ent_child_opaque",
+            "Invalid Child Account",
+            "USD",
+            AccountElement::Asset,
+            AccountRole::Standard,
+        )
+        .unwrap_err();
+    assert_eq!(
+        err,
+        KernelError::AccountOwnerNotTransparent {
+            entity_id: "ent_child_opaque".to_string()
+        }
+    );
+
+    // 2. InvalidClearingElement when creating Clearing account on Expense
+    let err = store
+        .create_ledger_account(
+            "bad_clearing",
+            "ent_household",
+            "Invalid Expense Clearing",
+            "USD",
+            AccountElement::Expense,
+            AccountRole::Clearing,
+        )
+        .unwrap_err();
+    assert_eq!(
+        err,
+        KernelError::InvalidClearingElement {
+            account_id: "bad_clearing".to_string(),
+            element: AccountElement::Expense,
+        }
+    );
+
+    // 3. PostingAccountMismatch when posting entity/currency differs from LedgerAccount
+    let p1 = PostingPrimitive::new(
+        "hh_checking",
+        "ent_business", // wrong entity for hh_checking!
+        Money::new(100_00, "USD").unwrap(),
+        PostingSide::Debit,
+        "",
+    );
+    let p1_id = p1.id.clone();
+    let p2 = PostingPrimitive::new(
+        "biz_due_to_hh",
+        "ent_business",
+        Money::new(100_00, "USD").unwrap(),
+        PostingSide::Credit,
+        "",
+    );
+    let err = store
+        .post_entry(&JournalEntryDraft::new("2026-10-31", "Mismatch", vec![p1, p2]))
+        .unwrap_err();
+    assert_eq!(
+        err,
+        KernelError::PostingAccountMismatch {
+            posting_id: p1_id,
+            ledger_account_id: "hh_checking".to_string(),
+            expected_entity_id: "ent_household".to_string(),
+            actual_entity_id: "ent_business".to_string(),
+            expected_currency: "USD".to_string(),
+            actual_currency: "USD".to_string(),
+        }
+    );
 }

@@ -1,6 +1,9 @@
 //! Pure Domain Value Objects, Aggregate Roots, and Port Traits for Double-Entry Bookkeeping.
 //!
-//! Contains zero storage dependencies. Persistence is completely abstracted behind `LedgerStore`.
+//! Design-by-Contract (DbC) Guarantee:
+//! - Every domain precondition violation returns a specific, deterministic `KernelError` variant.
+//! - `KernelError::Storage` is reserved strictly for underlying I/O or driver faults.
+//! - `KernelError::KernelBugcheck` fires if an internal postcondition is ever violated.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -15,25 +18,102 @@ pub fn next_deterministic_id(prefix: &str) -> String {
 }
 
 // =============================================================================
-// DOMAIN ERRORS
+// EXHAUSTIVE DOMAIN CONTRACT ERRORS & KERNEL BUGCHECK
 // =============================================================================
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KernelError {
+    /// Currency code is not 3 uppercase ASCII letters (ISO-4217).
     InvalidCurrency(String),
+    /// Posting money amount_minor is <= 0.
     NonPositiveAmount(i64),
+    /// Checked integer addition/subtraction overflowed `i64`.
     ArithmeticOverflow,
-    InsufficientPostings(usize),
-    UnbalancedPartitions(BTreeMap<(String, Currency), i64>),
-    MissingInterEntityAccounts { target_entity_id: String },
+    /// Attempted to register an entity, account, entry, or settlement group with an ID that already exists.
+    DuplicateId {
+        record_kind: &'static str,
+        id: String,
+    },
+    /// Referenced `entity_id` does not exist.
+    UnknownEntity(String),
+    /// Referenced `ledger_account_id` does not exist.
     UnknownLedgerAccount(String),
-    UnknownEntityPartition { entity_id: String, currency: String },
+    /// Referenced `journal_entry_id` does not exist.
     UnknownEntry(String),
-    InvalidSupersedeTarget { entry_id: String, reason: String },
+    /// Referenced `posting_id` does not exist.
+    UnknownPosting(String),
+    /// No ledger accounts exist for the requested `(entity_id, currency)` partition.
+    UnknownEntityPartition {
+        entity_id: String,
+        currency: String,
+    },
+    /// Attempted to create a `LedgerAccount` owned by an `Opaque` entity (`INV-ENTITY`).
+    AccountOwnerNotTransparent {
+        entity_id: String,
+    },
+    /// Attempted to create a `Clearing` account with an element other than `Asset` or `Liability`.
+    InvalidClearingElement {
+        account_id: String,
+        element: AccountElement,
+    },
+    /// A `JournalEntryDraft` has fewer than 2 postings (`INV-001`).
+    InsufficientPostings(usize),
+    /// One or more `(entity_id, currency)` partitions in a `JournalEntryDraft` have `SUM(Dr) != SUM(Cr)` (`INV-001`).
+    UnbalancedPartitions(BTreeMap<(String, Currency), i64>),
+    /// A `PostingPrimitive`'s `entity_id` or `currency` does not match its target `LedgerAccount` (`INV-002`).
+    PostingAccountMismatch {
+        posting_id: String,
+        ledger_account_id: String,
+        expected_entity_id: String,
+        actual_entity_id: String,
+        expected_currency: String,
+        actual_currency: String,
+    },
+    /// Attempted to supersede an entry whose status is not `Active`.
+    InvalidSupersedeTarget {
+        entry_id: String,
+        reason: String,
+    },
+    /// Cross-entity recipe split is missing paired `due_from` or `due_to` account IDs.
+    MissingInterEntityAccounts {
+        target_entity_id: String,
+    },
+    /// Attempted to settle a `SettlementGroup` with zero postings (`INV-008`).
+    EmptySettlementGroup {
+        group_id: String,
+    },
+    /// Attempted to include a posting in a `SettlementGroup` when that posting's entry is not `Active`.
+    SettlementPostingNotActive {
+        group_id: String,
+        posting_id: String,
+        entry_status: EntryStatus,
+    },
+    /// Attempted to include a posting in a `SettlementGroup` when it is already settled in another group.
+    PostingAlreadySettled {
+        posting_id: String,
+    },
+    /// One or more `Clearing` accounts in a `SettlementGroup` have a non-zero net residual (`INV-008` / `INV-030`).
+    NonZeroClearingResidual {
+        group_id: String,
+        entity_id: String,
+        currency: String,
+        ledger_account_id: String,
+        residual_minor: i64,
+    },
+    /// A preview was built against an earlier ledger revision.
     RevisionConflict { expected: i64, actual: i64 },
+    /// A prior ledger or application write failed within this transaction.
     TransactionAborted,
-    EquationViolation(AccountingEquationSummary),
+    /// Underlying database driver or I/O failure (never used for domain precondition violations).
     Storage(String),
+    /// Catastrophic internal invariant failure. The kernel immediately rolls back
+    /// to the prior correct state and dumps the bugcheck diagnostic context.
+    KernelBugcheck {
+        entity_id: String,
+        currency: String,
+        discrepancy_minor: i64,
+        details: String,
+    },
 }
 
 impl fmt::Display for KernelError {
@@ -42,17 +122,80 @@ impl fmt::Display for KernelError {
             Self::InvalidCurrency(c) => write!(f, "Currency must be a 3-letter uppercase ISO code, got {c:?}"),
             Self::NonPositiveAmount(a) => write!(f, "Posting Money magnitude must be > 0, got {a}"),
             Self::ArithmeticOverflow => write!(f, "Checked integer arithmetic overflow"),
-            Self::InsufficientPostings(n) => write!(f, "INV-001: A JournalEntry must contain at least 2 postings (got {n})"),
-            Self::UnbalancedPartitions(map) => write!(f, "INV-001: Unbalanced (entity, currency) partitions: {map:?}"),
-            Self::MissingInterEntityAccounts { target_entity_id } => write!(f, "Cross-entity split for {target_entity_id} requires paired due_from and due_to accounts"),
+            Self::DuplicateId { record_kind, id } => write!(f, "Duplicate {record_kind} id: {id}"),
+            Self::UnknownEntity(id) => write!(f, "Unknown entity_id: {id}"),
             Self::UnknownLedgerAccount(id) => write!(f, "Unknown ledger_account_id: {id}"),
-            Self::UnknownEntityPartition { entity_id, currency } => write!(f, "No ledger accounts found for ({entity_id}, {currency})"),
             Self::UnknownEntry(id) => write!(f, "Unknown journal_entry_id: {id}"),
-            Self::InvalidSupersedeTarget { entry_id, reason } => write!(f, "Cannot supersede entry {entry_id}: {reason}"),
+            Self::UnknownPosting(id) => write!(f, "Unknown posting_id: {id}"),
+            Self::UnknownEntityPartition { entity_id, currency } => {
+                write!(f, "No ledger accounts found for ({entity_id}, {currency})")
+            }
+            Self::AccountOwnerNotTransparent { entity_id } => {
+                write!(f, "INV-ENTITY: Only transparent entities can own ledger accounts (got opaque entity {entity_id})")
+            }
+            Self::InvalidClearingElement { account_id, element } => {
+                write!(f, "Account {account_id} with role=Clearing must be Asset or Liability (got {element:?})")
+            }
+            Self::InsufficientPostings(n) => {
+                write!(f, "INV-001: A JournalEntry must contain at least 2 postings (got {n})")
+            }
+            Self::UnbalancedPartitions(map) => {
+                write!(f, "INV-001: Unbalanced (entity, currency) partitions: {map:?}")
+            }
+            Self::PostingAccountMismatch {
+                posting_id,
+                ledger_account_id,
+                expected_entity_id,
+                actual_entity_id,
+                expected_currency,
+                actual_currency,
+            } => write!(
+                f,
+                "INV-002: Posting {posting_id} on account {ledger_account_id} expected ({expected_entity_id}, {expected_currency}), got ({actual_entity_id}, {actual_currency})"
+            ),
+            Self::InvalidSupersedeTarget { entry_id, reason } => {
+                write!(f, "Cannot supersede entry {entry_id}: {reason}")
+            }
+            Self::MissingInterEntityAccounts { target_entity_id } => write!(
+                f,
+                "Cross-entity split for {target_entity_id} requires paired due_from and due_to accounts"
+            ),
+            Self::EmptySettlementGroup { group_id } => {
+                write!(f, "INV-008: SettlementGroup {group_id} must contain at least 1 clearing posting")
+            }
+            Self::SettlementPostingNotActive {
+                group_id,
+                posting_id,
+                entry_status,
+            } => write!(
+                f,
+                "INV-008: Posting {posting_id} in group {group_id} belongs to entry with status {entry_status:?} (must be Active)"
+            ),
+            Self::PostingAlreadySettled { posting_id } => {
+                write!(f, "INV-008: Posting {posting_id} already belongs to a settled group")
+            }
+            Self::NonZeroClearingResidual {
+                group_id,
+                entity_id,
+                currency,
+                ledger_account_id,
+                residual_minor,
+            } => write!(
+                f,
+                "INV-008/INV-030: SettlementGroup {group_id} has non-zero residual {residual_minor} on clearing account {ledger_account_id} ({entity_id}, {currency})"
+            ),
             Self::RevisionConflict { expected, actual } => write!(f, "Ledger revision conflict: expected {expected}, found {actual}"),
-            Self::TransactionAborted => write!(f, "Transaction cannot commit after a ledger mutation failed"),
-            Self::EquationViolation(snap) => write!(f, "Accounting equation violated: {snap:?}"),
+            Self::TransactionAborted => write!(f, "Transaction cannot commit after a mutation failed"),
             Self::Storage(msg) => write!(f, "Storage failure: {msg}"),
+            Self::KernelBugcheck {
+                entity_id,
+                currency,
+                discrepancy_minor,
+                details,
+            } => write!(
+                f,
+                "KERNEL BUGCHECK for ({entity_id}, {currency}): discrepancy={discrepancy_minor}. {details}"
+            ),
         }
     }
 }
@@ -172,6 +315,14 @@ impl EntityVisibility {
             Self::Opaque => "opaque",
         }
     }
+
+    pub fn parse(s: &str) -> Result<Self, KernelError> {
+        match s {
+            "transparent" => Ok(Self::Transparent),
+            "opaque" => Ok(Self::Opaque),
+            _ => Err(KernelError::Storage(format!("invalid entity visibility: {s}"))),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -203,7 +354,6 @@ impl EntryStatus {
     }
 }
 
-/// 3-letter uppercase ASCII ISO-4217 currency code.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Currency([u8; 3]);
 
@@ -234,7 +384,6 @@ impl fmt::Display for Currency {
     }
 }
 
-/// Exact integer minor-unit monetary value with ISO-4217 currency guard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Money {
     amount_minor: i64,
@@ -380,7 +529,6 @@ impl JournalEntryDraft {
     }
 }
 
-/// Symmetrical committed journal entry read back from storage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommittedJournalEntry {
     pub id: String,
@@ -393,7 +541,6 @@ pub struct CommittedJournalEntry {
     pub postings: Vec<PostingPrimitive>,
 }
 
-/// Query filter for searching entries for an account.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EntryFilter {
     pub start_date: Option<String>,
@@ -423,7 +570,6 @@ impl EntryFilter {
     }
 }
 
-/// Read-model verification of `Assets == Liabilities + Equity + (Revenue - Expenses)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountingEquationSummary {
     pub entity_id: String,
@@ -452,7 +598,6 @@ impl AccountingEquationSummary {
 // =============================================================================
 
 pub trait LedgerStore {
-    // --- Entity & Account Management ---
     fn register_entity(
         &mut self,
         entity_id: &str,
@@ -473,24 +618,18 @@ pub trait LedgerStore {
     fn get_account(&self, account_id: &str) -> Result<Option<LedgerAccount>, KernelError>;
     fn list_accounts(&self, entity_id: &str) -> Result<Vec<LedgerAccount>, KernelError>;
 
-    // --- Journal Posting & Fixups ---
-    /// Atomically validates in-memory, posts, and seals a JournalEntryDraft.
-    /// If draft.replaces_entry_id is set, atomically transitions the target entry to `superseded`.
     fn post_entry(&mut self, draft: &JournalEntryDraft) -> Result<String, KernelError>;
 
     fn get_entry(&self, entry_id: &str) -> Result<Option<CommittedJournalEntry>, KernelError>;
 
-    /// Lists active (non-superseded, non-voided) journal entries touching an account within an optional date range.
     fn list_active_entries_for_account(
         &self,
         account_id: &str,
         filter: &EntryFilter,
     ) -> Result<Vec<CommittedJournalEntry>, KernelError>;
 
-    /// Retrieves the complete edit history / lineage for an entry (old mistakes + fixups in chronological order).
     fn get_entry_lineage(&self, entry_id: &str) -> Result<Vec<CommittedJournalEntry>, KernelError>;
 
-    // --- Settlement & Clearing ---
     fn settle_group(
         &mut self,
         group_id: &str,
@@ -498,7 +637,6 @@ pub trait LedgerStore {
         posting_ids: &[&str],
     ) -> Result<(), KernelError>;
 
-    // --- Balances & Mathematical Invariants ---
     fn get_account_balance(&self, account_id: &str) -> Result<i64, KernelError>;
 
     fn summarize_accounting_equation(

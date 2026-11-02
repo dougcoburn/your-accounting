@@ -68,7 +68,7 @@ fn a_settled_entry_cannot_be_replaced_in_isolation() {
         out.id.clone(),
         replacement.postings,
     );
-    assert!(store.post_entry(&replacement).is_err());
+    assert!(matches!(store.post_entry(&replacement), Err(KernelError::InvalidSupersedeTarget { .. })));
     assert_eq!(store.get_account_balance("clearing").unwrap(), 0);
     assert_eq!(store.revision().unwrap(), 1);
 }
