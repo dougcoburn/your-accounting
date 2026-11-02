@@ -1,11 +1,17 @@
 //! SQLite Infrastructure Adapter implementing the `LedgerStore` Port.
+//!
+//! Enforces Design-by-Contract (DbC) preconditions before executing SQL so that
+//! callers always receive deterministic, typed `KernelError` variants rather than
+//! raw SQLite constraint strings, while keeping SQLite triggers active as
+//! defense-in-depth.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::domain::{
-    AccountElement, AccountRole, CommittedJournalEntry, Currency, EntityVisibility,
-    EntryFilter, EntryStatus, AccountingEquationSummary, JournalEntryDraft, KernelError, LedgerAccount,
+    AccountElement, AccountRole, AccountingEquationSummary, CommittedJournalEntry, Currency,
+    EntityVisibility, EntryFilter, EntryStatus, JournalEntryDraft, KernelError, LedgerAccount,
     LedgerStore, Money, PostingPrimitive, PostingSide,
 };
 
@@ -268,6 +274,23 @@ impl LedgerStore for SqliteLedgerAdapter {
         name: &str,
         visibility: EntityVisibility,
     ) -> Result<(), KernelError> {
+        let exists: Option<i32> = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM entities WHERE id = ?1",
+                params![entity_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
+
+        if exists.is_some() {
+            return Err(KernelError::DuplicateId {
+                record_kind: "entity",
+                id: entity_id.to_string(),
+            });
+        }
+
         self.conn
             .execute(
                 "INSERT INTO entities (id, name, visibility) VALUES (?1, ?2, ?3)",
@@ -286,6 +309,48 @@ impl LedgerStore for SqliteLedgerAdapter {
         element: AccountElement,
         role: AccountRole,
     ) -> Result<(), KernelError> {
+        // 1. Validate currency format
+        let _ = Currency::parse(currency)?;
+
+        // 2. Check duplicate account_id
+        if self.get_account(account_id)?.is_some() {
+            return Err(KernelError::DuplicateId {
+                record_kind: "ledger_account",
+                id: account_id.to_string(),
+            });
+        }
+
+        // 3. Check entity exists and is Transparent
+        let vis_str: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT visibility FROM entities WHERE id = ?1",
+                params![entity_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
+
+        match vis_str.as_deref() {
+            Some("transparent") => {}
+            Some(_) => {
+                return Err(KernelError::AccountOwnerNotTransparent {
+                    entity_id: entity_id.to_string(),
+                });
+            }
+            None => return Err(KernelError::UnknownEntity(entity_id.to_string())),
+        }
+
+        // 4. Clearing accounts must be Asset or Liability
+        if role == AccountRole::Clearing
+            && !matches!(element, AccountElement::Asset | AccountElement::Liability)
+        {
+            return Err(KernelError::InvalidClearingElement {
+                account_id: account_id.to_string(),
+                element,
+            });
+        }
+
         self.conn
             .execute(
                 "INSERT INTO ledger_accounts
@@ -390,8 +455,36 @@ impl LedgerStore for SqliteLedgerAdapter {
     }
 
     fn post_entry(&mut self, draft: &JournalEntryDraft) -> Result<String, KernelError> {
+        // 1. Validate trial balance partitions (INV-001)
         draft.validate_trial_balance()?;
         let standalone = self.conn.is_autocommit();
+
+        // 2. Check duplicate entry ID
+        if self.get_entry(&draft.id)?.is_some() {
+            return Err(KernelError::DuplicateId {
+                record_kind: "journal_entry",
+                id: draft.id.clone(),
+            });
+        }
+
+        // 3. Validate each posting against its target LedgerAccount (INV-002)
+        for p in &draft.postings {
+            let acct = self
+                .get_account(&p.ledger_account_id)?
+                .ok_or_else(|| KernelError::UnknownLedgerAccount(p.ledger_account_id.clone()))?;
+
+            if acct.entity_id != p.entity_id || acct.currency != p.money.currency() {
+                return Err(KernelError::PostingAccountMismatch {
+                    posting_id: p.id.clone(),
+                    ledger_account_id: p.ledger_account_id.clone(),
+                    expected_entity_id: acct.entity_id,
+                    actual_entity_id: p.entity_id.clone(),
+                    expected_currency: acct.currency.as_str().to_string(),
+                    actual_currency: p.money.currency().as_str().to_string(),
+                });
+            }
+        }
+
         let eff_date = draft
             .effective_date
             .as_deref()
@@ -402,7 +495,7 @@ impl LedgerStore for SqliteLedgerAdapter {
             .savepoint()
             .map_err(|e| KernelError::Storage(e.to_string()))?;
 
-        // If replacing an existing entry, supersede the old entry
+        // 4. If replacing an existing entry, verify it exists and is Active, then supersede it
         if let Some(ref old_id) = draft.replaces_entry_id {
             let old_status: Option<String> = tx
                 .query_row(
@@ -415,6 +508,23 @@ impl LedgerStore for SqliteLedgerAdapter {
 
             match old_status.as_deref() {
                 Some("active") => {
+                    let settled_group: Option<String> = tx
+                        .query_row(
+                            "SELECT sg.id FROM settlement_groups sg
+                             JOIN settlement_group_postings sgp ON sgp.group_id = sg.id
+                             JOIN journal_postings jp ON jp.id = sgp.posting_id
+                             WHERE jp.entry_id = ?1 AND sg.status = 'settled' LIMIT 1",
+                            params![old_id],
+                            |row| row.get(0),
+                        )
+                        .optional()
+                        .map_err(|e| KernelError::Storage(e.to_string()))?;
+                    if let Some(group_id) = settled_group {
+                        return Err(KernelError::InvalidSupersedeTarget {
+                            entry_id: old_id.clone(),
+                            reason: format!("entry participates in settled group {group_id}"),
+                        });
+                    }
                     tx.execute(
                         "UPDATE journal_entries SET status = 'superseded' WHERE id = ?1",
                         params![old_id],
@@ -433,7 +543,7 @@ impl LedgerStore for SqliteLedgerAdapter {
             }
         }
 
-        // Insert new entry as 'draft'
+        // 5. Insert new entry as 'draft', attach postings, and seal to 'active'
         tx.execute(
             "INSERT INTO journal_entries
                 (id, posting_date, effective_date, description, status, replaces_entry_id)
@@ -467,7 +577,6 @@ impl LedgerStore for SqliteLedgerAdapter {
             .map_err(|e| KernelError::Storage(e.to_string()))?;
         }
 
-        // Sealing to 'active' fires SQLite trigger `trg_journal_entry_seal_balance`
         tx.execute(
             "UPDATE journal_entries SET status = 'active' WHERE id = ?1",
             params![draft.id],
@@ -601,7 +710,6 @@ impl LedgerStore for SqliteLedgerAdapter {
     }
 
     fn get_entry_lineage(&self, entry_id: &str) -> Result<Vec<CommittedJournalEntry>, KernelError> {
-        // Trace back to root ancestor
         let mut root_id = entry_id.to_string();
         loop {
             let parent_id: Option<String> = self
@@ -621,7 +729,6 @@ impl LedgerStore for SqliteLedgerAdapter {
             }
         }
 
-        // Trace forward from root_id
         let mut lineage = Vec::new();
         let mut curr_id = Some(root_id);
 
@@ -650,6 +757,110 @@ impl LedgerStore for SqliteLedgerAdapter {
         posting_ids: &[&str],
     ) -> Result<(), KernelError> {
         let standalone = self.conn.is_autocommit();
+        if posting_ids.is_empty() {
+            return Err(KernelError::EmptySettlementGroup {
+                group_id: group_id.to_string(),
+            });
+        }
+
+        let group_exists: Option<i32> = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM settlement_groups WHERE id = ?1",
+                params![group_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
+
+        if group_exists.is_some() {
+            return Err(KernelError::DuplicateId {
+                record_kind: "settlement_group",
+                id: group_id.to_string(),
+            });
+        }
+
+        // Validate every posting exists, is not already settled, belongs to an Active entry,
+        // and compute clearing residuals per (entity_id, currency, ledger_account_id)
+        let mut clearing_residuals: BTreeMap<(String, String, String), i64> = BTreeMap::new();
+
+        for &pid in posting_ids {
+            let already_settled: Option<i32> = self
+                .conn
+                .query_row(
+                    "SELECT 1 FROM settlement_group_postings WHERE posting_id = ?1",
+                    params![pid],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| KernelError::Storage(e.to_string()))?;
+
+            if already_settled.is_some() {
+                return Err(KernelError::PostingAlreadySettled {
+                    posting_id: pid.to_string(),
+                });
+            }
+
+            let row_info = self
+                .conn
+                .query_row(
+                    "SELECT jp.entity_id, jp.currency, jp.ledger_account_id, jp.side, jp.amount_minor,
+                            la.role, je.status
+                     FROM journal_postings jp
+                     JOIN ledger_accounts la ON la.id = jp.ledger_account_id
+                     JOIN journal_entries je ON je.id = jp.entry_id
+                     WHERE jp.id = ?1",
+                    params![pid],
+                    |row| {
+                        let entity_id: String = row.get(0)?;
+                        let currency: String = row.get(1)?;
+                        let ledger_account_id: String = row.get(2)?;
+                        let side_str: String = row.get(3)?;
+                        let amount_minor: i64 = row.get(4)?;
+                        let role_str: String = row.get(5)?;
+                        let status_str: String = row.get(6)?;
+                        Ok((entity_id, currency, ledger_account_id, side_str, amount_minor, role_str, status_str))
+                    },
+                )
+                .optional()
+                .map_err(|e| KernelError::Storage(e.to_string()))?;
+
+            let (entity_id, currency, ledger_account_id, side_str, amount_minor, role_str, status_str) =
+                row_info.ok_or_else(|| KernelError::UnknownPosting(pid.to_string()))?;
+
+            let entry_status = EntryStatus::parse(&status_str)?;
+            if entry_status != EntryStatus::Active {
+                return Err(KernelError::SettlementPostingNotActive {
+                    group_id: group_id.to_string(),
+                    posting_id: pid.to_string(),
+                    entry_status,
+                });
+            }
+
+            if role_str == "clearing" {
+                let signed = if side_str == "debit" {
+                    amount_minor
+                } else {
+                    -amount_minor
+                };
+                let key = (entity_id, currency, ledger_account_id);
+                let cur = clearing_residuals.entry(key).or_insert(0);
+                *cur = cur.checked_add(signed).ok_or(KernelError::ArithmeticOverflow)?;
+            }
+        }
+
+        for ((entity_id, currency, ledger_account_id), residual_minor) in clearing_residuals {
+            if residual_minor != 0 {
+                return Err(KernelError::NonZeroClearingResidual {
+                    group_id: group_id.to_string(),
+                    entity_id,
+                    currency,
+                    ledger_account_id,
+                    residual_minor,
+                });
+            }
+        }
+
         let tx = self
             .conn
             .savepoint()
@@ -740,14 +951,22 @@ impl LedgerStore for SqliteLedgerAdapter {
             .optional()
             .map_err(|e| KernelError::Storage(e.to_string()))?;
 
-        let snap = snap.ok_or_else(|| KernelError::UnknownEntityPartition {
+        let summary = snap.ok_or_else(|| KernelError::UnknownEntityPartition {
             entity_id: entity_id.to_string(),
             currency: currency.to_string(),
         })?;
 
-        if !snap.is_balanced() {
-            return Err(KernelError::EquationViolation(snap));
+        if !summary.is_balanced() {
+            return Err(KernelError::KernelBugcheck {
+                entity_id: entity_id.to_string(),
+                currency: currency.to_string(),
+                discrepancy_minor: summary.equation_discrepancy_minor,
+                details: format!(
+                    "FATAL INVARIANT BREAK: Assets({}) != Liabilities({}) + Equity({}). Immediate rollback.",
+                    summary.assets_minor, summary.liabilities_minor, summary.total_equity_minor
+                ),
+            });
         }
-        Ok(snap)
+        Ok(summary)
     }
 }
