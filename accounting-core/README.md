@@ -35,6 +35,15 @@ application must validate all required participants before committing a group.
 The current settlement primitive checks linked clearing postings; it does not
 itself know which observed movements a workflow requires.
 
+`next_deterministic_id(prefix)` reserves short, per-prefix IDs (`je_1`,
+`pst_1`, `rx_1`) from SQLite for kernel or application records. An application
+can reserve IDs before constructing a draft, set them with `with_id`, and use
+those same IDs in its domain records and settlement groups. Constructor-generated
+draft references are replaced on posting for older callers. Reservations made
+inside a transaction roll back with it; standalone reservations commit at once
+and may leave gaps if a later workflow fails. Reserving an ID alone does not
+advance the ledger revision.
+
 Entries linked to a settled group cannot currently be replaced in isolation.
 A coordinated correction operation for rebuilding group membership and audit
 records remains to be added.

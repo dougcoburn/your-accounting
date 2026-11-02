@@ -329,9 +329,16 @@ pub trait LedgerStore {
     fn list_accounts(&self, entity_id: &str) -> Result<Vec<LedgerAccount>, KernelError>;
 
     // --- Journal Posting & Fixups ---
-    /// Atomically validates in-memory, posts, and seals a JournalEntryDraft.
+    /// Reserves a short ID in the current storage transaction.
+    fn next_deterministic_id(&mut self, prefix: &str) -> Result<String, KernelError>;
+
+    /// Atomically validates, posts, and seals a JournalEntryDraft.
     /// If draft.replaces_entry_id is set, atomically transitions the target entry to `superseded`.
+    /// Returns the stored entry ID; caller-reserved IDs are preserved.
     fn post_entry(&mut self, draft: &JournalEntryDraft) -> Result<String, KernelError>;
+
+    /// Returns the stored entry and posting IDs for settlement links.
+    fn post_entry_with_ids(&mut self, draft: &JournalEntryDraft) -> Result<CommittedJournalEntry, KernelError>;
 
     /// Reads a full journal entry aggregate back by ID.
     fn get_entry(&self, entry_id: &str) -> Result<Option<CommittedJournalEntry>, KernelError>;
@@ -483,7 +490,8 @@ let split_recipe = RecipeCompiler::split_purchase_across_entities(
 let revision = store.revision()?;
 let mut unit = store.begin_transaction(revision)?;
 let split_entry_id = RecipeCompiler::post_recipe(&mut unit, &split_recipe)?;
-unit.with_connection(|conn| RecipeCompiler::record_execution(conn, &split_recipe.execution, &split_entry_id))?;
+let execution_id = unit.next_deterministic_id("rx")?;
+unit.with_connection(|conn| RecipeCompiler::record_execution(conn, &execution_id, &split_recipe.execution, &split_entry_id))?;
 unit.commit()?;
 ```
 
@@ -493,10 +501,9 @@ When legs of a transfer or payroll deposit settle on different dates, stage all 
 ```rust
 // Leg 1 (Oct 10): Withdrawal from Checking into Transfer Clearing
 let xfer_out_clear = PostingPrimitive::new("hh_xfer_clearing", "ent_household", Money::new(1000_00, "USD")?, PostingSide::Debit, "ACH transfer initiated");
-let xfer_out_clear_id = xfer_out_clear.id.clone();
 let revision = store.revision()?;
 let mut unit = store.begin_transaction(revision)?;
-unit.post_entry(&JournalEntryDraft::new(
+let xfer_out_entry = unit.post_entry_with_ids(&JournalEntryDraft::new(
     "2026-10-10",
     "ACH Transfer Out of Checking",
     vec![
@@ -504,11 +511,11 @@ unit.post_entry(&JournalEntryDraft::new(
         PostingPrimitive::new("hh_checking", "ent_household", Money::new(1000_00, "USD")?, PostingSide::Credit, "Checking withdrawal"),
     ],
 ))?;
+let xfer_out_clear_id = xfer_out_entry.postings[0].id.clone();
 
 // Leg 2 (Oct 12): Deposit into Savings from Transfer Clearing
 let xfer_in_clear = PostingPrimitive::new("hh_xfer_clearing", "ent_household", Money::new(1000_00, "USD")?, PostingSide::Credit, "ACH transfer settled");
-let xfer_in_clear_id = xfer_in_clear.id.clone();
-unit.post_entry(&JournalEntryDraft::new(
+let xfer_in_entry = unit.post_entry_with_ids(&JournalEntryDraft::new(
     "2026-10-12",
     "ACH Transfer Deposit into Savings",
     vec![
@@ -516,6 +523,7 @@ unit.post_entry(&JournalEntryDraft::new(
         xfer_in_clear,
     ],
 ))?;
+let xfer_in_clear_id = xfer_in_entry.postings[1].id.clone();
 
 // Seal group (enforces net 0 clearing residual for this specific group)
 unit.settle_group("sg_ach_oct", "Oct 10-12 ACH Transfer ($1,000)", &[&xfer_out_clear_id, &xfer_in_clear_id])?;
@@ -689,7 +697,7 @@ An agent or developer using `LedgerStore` never needs to read the adapter implem
 | **`create_ledger_account`**`(account_id, entity_id, name, currency, element, role)` | • `currency` is 3 uppercase ASCII letters.<br>• `account_id` is unique.<br>• `entity_id` exists and has `visibility == Transparent`.<br>• If `role == Clearing`, `element` is `Asset` or `Liability`. | • Account is created with `is_active = true` and `normal_balance = 0`. | • `InvalidCurrency(String)`<br>• `DuplicateId { record_kind: "ledger_account", id }`<br>• `UnknownEntity(String)`<br>• `AccountOwnerNotTransparent { entity_id }`<br>• `InvalidClearingElement { account_id, element }` |
 | **`get_account`**`(account_id)` | • None. | • Returns `Ok(Some(LedgerAccount))` if found, or `Ok(None)` if not found. | • *(Only `Storage` on I/O failure)* |
 | **`list_accounts`**`(entity_id)` | • None. | • Returns all accounts for `entity_id` ordered deterministically by `(element ASC, name ASC)`. Empty `Vec` if none exist. | • *(Only `Storage` on I/O failure)* |
-| **`post_entry`**`(draft)` | • `draft.postings.len() >= 2`.<br>• Every `(entity_id, currency)` partition nets to `0` (`SUM(Dr) == SUM(Cr)`).<br>• `draft.id` is unique.<br>• Every posting's `ledger_account_id` exists and matches the account's `entity_id` and `currency`.<br>• If `draft.replaces_entry_id` is `Some(old_id)`, `old_id` exists, has `status == Active`, and is not in a settled group. | • If `replaces_entry_id` is set, `old_id` transitions atomically to `Superseded`.<br>• `draft` becomes `Active`; when called through a transaction handle it is durable only after `commit()`.<br>• Postings preserve their exact slice order. | • `InsufficientPostings(usize)`<br>• `UnbalancedPartitions(BTreeMap)`<br>• `ArithmeticOverflow`<br>• `DuplicateId { record_kind: "journal_entry", id }`<br>• `UnknownLedgerAccount(String)`<br>• `PostingAccountMismatch { .. }`<br>• `UnknownEntry(String)`<br>• `InvalidSupersedeTarget { entry_id, reason }` |
+| **`post_entry`**`(draft)` | • `draft.postings.len() >= 2`.<br>• Every `(entity_id, currency)` partition nets to `0` (`SUM(Dr) == SUM(Cr)`).<br>• Every posting's `ledger_account_id` exists and matches the account's `entity_id` and `currency`.<br>• If `draft.replaces_entry_id` is `Some(old_id)`, `old_id` exists, has `status == Active`, and is not in a settled group. | • Caller-reserved entry and posting IDs are preserved; constructor-generated draft references are replaced with short SQLite IDs.<br>• If `replaces_entry_id` is set, `old_id` transitions atomically to `Superseded`.<br>• The entry becomes `Active`; when called through a transaction handle it is durable only after `commit()`.<br>• Postings preserve their exact slice order. | • `InsufficientPostings(usize)`<br>• `UnbalancedPartitions(BTreeMap)`<br>• `ArithmeticOverflow`<br>• `DuplicateId { .. }`<br>• `UnknownLedgerAccount(String)`<br>• `PostingAccountMismatch { .. }`<br>• `UnknownEntry(String)`<br>• `InvalidSupersedeTarget { entry_id, reason }` |
 | **`get_entry`**`(entry_id)` | • None. | • Returns `Ok(Some(CommittedJournalEntry))` (regardless of `Active`, `Superseded`, or `Voided` status) with postings in insertion order, or `Ok(None)`. | • *(Only `Storage` on I/O failure)* |
 | **`list_active_entries_for_account`**`(account_id, filter)` | • `filter.start_date` and `end_date` (if set) are ISO `YYYY-MM-DD` strings. | • Returns **only `EntryStatus::Active`** entries touching `account_id` within `[start_date, end_date]`, ordered by `(posting_date ASC, created_at ASC)`, sliced by `limit`/`offset`.<br>• Each returned entry includes **all** of its postings (not just the leg touching `account_id`). | • *(Only `Storage` on I/O failure)* |
 | **`get_entry_lineage`**`(entry_id)` | • None. | • Walks backward via `replaces_entry_id` to the original root entry and forward to the latest replacement, returning the full chain `[Root(Superseded), ..., Latest(Active)]` in chronological revision order. Empty `Vec` if `entry_id` does not exist. | • *(Only `Storage` on I/O failure)* |

@@ -1,10 +1,10 @@
 //! Executable Acceptance Test Suite (AT-001..030 + Read Symmetry, Date Filters, and Fixup Lineage)
 
+use accounting_kernel::SqliteLedgerAdapter;
 use accounting_kernel::{
     AccountElement, AccountRole, EntityVisibility, EntryFilter, EntryStatus, JournalEntryDraft,
     KernelError, LedgerStore, Money, PostingPrimitive, PostingSide,
 };
-use accounting_kernel::SqliteLedgerAdapter;
 use accounting_recipes::{RecipeCompiler, SplitAllocation, RECIPES_SCHEMA_SQL};
 
 fn setup_seeded_store() -> SqliteLedgerAdapter {
@@ -25,7 +25,11 @@ fn setup_seeded_store() -> SqliteLedgerAdapter {
         .register_entity("ent_personal", "Personal", EntityVisibility::Transparent)
         .unwrap();
     adapter
-        .register_entity("ent_child_opaque", "Child (Opaque)", EntityVisibility::Opaque)
+        .register_entity(
+            "ent_child_opaque",
+            "Child (Opaque)",
+            EntityVisibility::Opaque,
+        )
         .unwrap();
 
     adapter
@@ -254,8 +258,16 @@ fn test_at001_split_purchase_across_entities_preserves_equation() {
     )
     .unwrap();
 
-    let entry_id = RecipeCompiler::post_recipe(&mut store, &output).unwrap();
-    RecipeCompiler::record_execution(store.raw_connection(), &output.execution, &entry_id).unwrap();
+    let revision = store.revision().unwrap();
+    let mut unit = store.begin_transaction(revision).unwrap();
+    let entry_id = RecipeCompiler::post_recipe(&mut unit, &output).unwrap();
+    let execution_id = unit.next_deterministic_id("rx").unwrap();
+    unit.with_connection(|conn| {
+        RecipeCompiler::record_execution(conn, &execution_id, &output.execution, &entry_id)
+    })
+    .unwrap();
+    assert_eq!(execution_id, "rx_1");
+    unit.commit().unwrap();
 
     let hh_eq = store
         .summarize_accounting_equation("ent_household", "USD")
@@ -282,7 +294,10 @@ fn test_read_symmetry_and_date_filtering() {
     let mut store = setup_seeded_store();
 
     // 1. Verify get_account and list_accounts symmetry
-    let acct = store.get_account("hh_checking").unwrap().expect("account exists");
+    let acct = store
+        .get_account("hh_checking")
+        .unwrap()
+        .expect("account exists");
     assert_eq!(acct.name, "Household Checking");
     assert_eq!(acct.element, AccountElement::Asset);
     assert_eq!(acct.currency.as_str(), "USD");
@@ -296,8 +311,20 @@ fn test_read_symmetry_and_date_filtering() {
             "2026-10-01",
             "Oct 1 Opening",
             vec![
-                PostingPrimitive::new("hh_checking", "ent_household", Money::new(1000_00, "USD").unwrap(), PostingSide::Debit, ""),
-                PostingPrimitive::new("hh_opening_eq", "ent_household", Money::new(1000_00, "USD").unwrap(), PostingSide::Credit, ""),
+                PostingPrimitive::new(
+                    "hh_checking",
+                    "ent_household",
+                    Money::new(1000_00, "USD").unwrap(),
+                    PostingSide::Debit,
+                    "",
+                ),
+                PostingPrimitive::new(
+                    "hh_opening_eq",
+                    "ent_household",
+                    Money::new(1000_00, "USD").unwrap(),
+                    PostingSide::Credit,
+                    "",
+                ),
             ],
         ))
         .unwrap();
@@ -307,8 +334,20 @@ fn test_read_symmetry_and_date_filtering() {
             "2026-10-15",
             "Oct 15 Grocery Run",
             vec![
-                PostingPrimitive::new("hh_groceries", "ent_household", Money::new(150_00, "USD").unwrap(), PostingSide::Debit, ""),
-                PostingPrimitive::new("hh_checking", "ent_household", Money::new(150_00, "USD").unwrap(), PostingSide::Credit, ""),
+                PostingPrimitive::new(
+                    "hh_groceries",
+                    "ent_household",
+                    Money::new(150_00, "USD").unwrap(),
+                    PostingSide::Debit,
+                    "",
+                ),
+                PostingPrimitive::new(
+                    "hh_checking",
+                    "ent_household",
+                    Money::new(150_00, "USD").unwrap(),
+                    PostingSide::Credit,
+                    "",
+                ),
             ],
         ))
         .unwrap();
@@ -318,8 +357,20 @@ fn test_read_symmetry_and_date_filtering() {
             "2026-10-25",
             "Oct 25 Grocery Run 2",
             vec![
-                PostingPrimitive::new("hh_groceries", "ent_household", Money::new(80_00, "USD").unwrap(), PostingSide::Debit, ""),
-                PostingPrimitive::new("hh_checking", "ent_household", Money::new(80_00, "USD").unwrap(), PostingSide::Credit, ""),
+                PostingPrimitive::new(
+                    "hh_groceries",
+                    "ent_household",
+                    Money::new(80_00, "USD").unwrap(),
+                    PostingSide::Debit,
+                    "",
+                ),
+                PostingPrimitive::new(
+                    "hh_checking",
+                    "ent_household",
+                    Money::new(80_00, "USD").unwrap(),
+                    PostingSide::Credit,
+                    "",
+                ),
             ],
         ))
         .unwrap();
@@ -332,13 +383,17 @@ fn test_read_symmetry_and_date_filtering() {
 
     // Filter by date range: Oct 10 to Oct 20 should ONLY return e2!
     let filter_mid = EntryFilter::date_range("2026-10-10", "2026-10-20");
-    let mid_entries = store.list_active_entries_for_account("hh_checking", &filter_mid).unwrap();
+    let mid_entries = store
+        .list_active_entries_for_account("hh_checking", &filter_mid)
+        .unwrap();
     assert_eq!(mid_entries.len(), 1);
     assert_eq!(mid_entries[0].id, e2);
 
     // Filter all with limit 2
     let filter_limit = EntryFilter::new().with_pagination(2, 0);
-    let limited = store.list_active_entries_for_account("hh_checking", &filter_limit).unwrap();
+    let limited = store
+        .list_active_entries_for_account("hh_checking", &filter_limit)
+        .unwrap();
     assert_eq!(limited.len(), 2);
     assert_eq!(limited[0].id, e1);
     assert_eq!(limited[1].id, e2);
@@ -354,8 +409,20 @@ fn test_immutable_fixup_lineage_and_transparent_active_view() {
             "2026-10-12",
             "Original mistaken purchase",
             vec![
-                PostingPrimitive::new("hh_groceries", "ent_household", Money::new(1500_00, "USD").unwrap(), PostingSide::Debit, ""),
-                PostingPrimitive::new("hh_visa", "ent_household", Money::new(1500_00, "USD").unwrap(), PostingSide::Credit, ""),
+                PostingPrimitive::new(
+                    "hh_groceries",
+                    "ent_household",
+                    Money::new(1500_00, "USD").unwrap(),
+                    PostingSide::Debit,
+                    "",
+                ),
+                PostingPrimitive::new(
+                    "hh_visa",
+                    "ent_household",
+                    Money::new(1500_00, "USD").unwrap(),
+                    PostingSide::Credit,
+                    "",
+                ),
             ],
         ))
         .unwrap();
@@ -369,8 +436,20 @@ fn test_immutable_fixup_lineage_and_transparent_active_view() {
             "Corrected purchase ($150)",
             &original_id,
             vec![
-                PostingPrimitive::new("hh_groceries", "ent_household", Money::new(150_00, "USD").unwrap(), PostingSide::Debit, ""),
-                PostingPrimitive::new("hh_visa", "ent_household", Money::new(150_00, "USD").unwrap(), PostingSide::Credit, ""),
+                PostingPrimitive::new(
+                    "hh_groceries",
+                    "ent_household",
+                    Money::new(150_00, "USD").unwrap(),
+                    PostingSide::Debit,
+                    "",
+                ),
+                PostingPrimitive::new(
+                    "hh_visa",
+                    "ent_household",
+                    Money::new(150_00, "USD").unwrap(),
+                    PostingSide::Credit,
+                    "",
+                ),
             ],
         ))
         .unwrap();
@@ -411,8 +490,20 @@ fn test_at005_006_007_opaque_receivable_reimbursement_and_forgiveness() {
             "2026-10-01",
             "Initial checking balance",
             vec![
-                PostingPrimitive::new("hh_checking", "ent_household", Money::new(5000_00, "USD").unwrap(), PostingSide::Debit, ""),
-                PostingPrimitive::new("hh_opening_eq", "ent_household", Money::new(5000_00, "USD").unwrap(), PostingSide::Credit, ""),
+                PostingPrimitive::new(
+                    "hh_checking",
+                    "ent_household",
+                    Money::new(5000_00, "USD").unwrap(),
+                    PostingSide::Debit,
+                    "",
+                ),
+                PostingPrimitive::new(
+                    "hh_opening_eq",
+                    "ent_household",
+                    Money::new(5000_00, "USD").unwrap(),
+                    PostingSide::Credit,
+                    "",
+                ),
             ],
         ))
         .unwrap();
@@ -422,38 +513,82 @@ fn test_at005_006_007_opaque_receivable_reimbursement_and_forgiveness() {
             "2026-10-05",
             "Advance for child school trip",
             vec![
-                PostingPrimitive::new("hh_due_from_child", "ent_household", Money::new(100_00, "USD").unwrap(), PostingSide::Debit, ""),
-                PostingPrimitive::new("hh_checking", "ent_household", Money::new(100_00, "USD").unwrap(), PostingSide::Credit, ""),
+                PostingPrimitive::new(
+                    "hh_due_from_child",
+                    "ent_household",
+                    Money::new(100_00, "USD").unwrap(),
+                    PostingSide::Debit,
+                    "",
+                ),
+                PostingPrimitive::new(
+                    "hh_checking",
+                    "ent_household",
+                    Money::new(100_00, "USD").unwrap(),
+                    PostingSide::Credit,
+                    "",
+                ),
             ],
         ))
         .unwrap();
-    assert_eq!(store.get_account_balance("hh_due_from_child").unwrap(), 100_00);
+    assert_eq!(
+        store.get_account_balance("hh_due_from_child").unwrap(),
+        100_00
+    );
 
     store
         .post_entry(&JournalEntryDraft::new(
             "2026-10-12",
             "Partial repayment from child",
             vec![
-                PostingPrimitive::new("hh_checking", "ent_household", Money::new(40_00, "USD").unwrap(), PostingSide::Debit, ""),
-                PostingPrimitive::new("hh_due_from_child", "ent_household", Money::new(40_00, "USD").unwrap(), PostingSide::Credit, ""),
+                PostingPrimitive::new(
+                    "hh_checking",
+                    "ent_household",
+                    Money::new(40_00, "USD").unwrap(),
+                    PostingSide::Debit,
+                    "",
+                ),
+                PostingPrimitive::new(
+                    "hh_due_from_child",
+                    "ent_household",
+                    Money::new(40_00, "USD").unwrap(),
+                    PostingSide::Credit,
+                    "",
+                ),
             ],
         ))
         .unwrap();
-    assert_eq!(store.get_account_balance("hh_due_from_child").unwrap(), 60_00);
+    assert_eq!(
+        store.get_account_balance("hh_due_from_child").unwrap(),
+        60_00
+    );
 
     store
         .post_entry(&JournalEntryDraft::new(
             "2026-10-20",
             "Forgive remaining $60 as gift",
             vec![
-                PostingPrimitive::new("hh_gifts_exp", "ent_household", Money::new(60_00, "USD").unwrap(), PostingSide::Debit, ""),
-                PostingPrimitive::new("hh_due_from_child", "ent_household", Money::new(60_00, "USD").unwrap(), PostingSide::Credit, ""),
+                PostingPrimitive::new(
+                    "hh_gifts_exp",
+                    "ent_household",
+                    Money::new(60_00, "USD").unwrap(),
+                    PostingSide::Debit,
+                    "",
+                ),
+                PostingPrimitive::new(
+                    "hh_due_from_child",
+                    "ent_household",
+                    Money::new(60_00, "USD").unwrap(),
+                    PostingSide::Credit,
+                    "",
+                ),
             ],
         ))
         .unwrap();
 
     assert_eq!(store.get_account_balance("hh_due_from_child").unwrap(), 0);
-    let hh_eq = store.summarize_accounting_equation("ent_household", "USD").unwrap();
+    let hh_eq = store
+        .summarize_accounting_equation("ent_household", "USD")
+        .unwrap();
     assert_eq!(hh_eq.assets_minor, 4940_00);
     assert_eq!(hh_eq.total_equity_minor, 4940_00);
     assert!(hh_eq.is_balanced());
@@ -463,40 +598,77 @@ fn test_at005_006_007_opaque_receivable_reimbursement_and_forgiveness() {
 fn test_at003_and_at030_settlement_group_zero_residual_enforcement() {
     let mut store = setup_seeded_store();
 
-    let p_leg1_clear = PostingPrimitive::new("hh_transfer_clearing", "ent_household", Money::new(500_00, "USD").unwrap(), PostingSide::Debit, "");
-    let p_leg1_clear_id = p_leg1_clear.id.clone();
-    let p_leg1_bank = PostingPrimitive::new("hh_checking", "ent_household", Money::new(500_00, "USD").unwrap(), PostingSide::Credit, "");
+    let p_leg1_clear = PostingPrimitive::new(
+        "hh_transfer_clearing",
+        "ent_household",
+        Money::new(500_00, "USD").unwrap(),
+        PostingSide::Debit,
+        "",
+    );
+    let p_leg1_bank = PostingPrimitive::new(
+        "hh_checking",
+        "ent_household",
+        Money::new(500_00, "USD").unwrap(),
+        PostingSide::Credit,
+        "",
+    );
 
-    store
-        .post_entry(&JournalEntryDraft::new(
+    let posted_leg1 = store
+        .post_entry_with_ids(&JournalEntryDraft::new(
             "2026-10-10",
             "Checking withdrawal to savings",
             vec![p_leg1_clear, p_leg1_bank],
         ))
         .unwrap();
+    let p_leg1_clear_id = posted_leg1.postings[0].id.clone();
 
     let err = store
-        .settle_group("sg_incomplete", "Incomplete transfer", &[p_leg1_clear_id.as_str()])
+        .settle_group(
+            "sg_incomplete",
+            "Incomplete transfer",
+            &[p_leg1_clear_id.as_str()],
+        )
         .unwrap_err();
     assert!(matches!(err, KernelError::NonZeroClearingResidual { .. }));
 
-    let p_leg2_bank = PostingPrimitive::new("hh_savings", "ent_household", Money::new(500_00, "USD").unwrap(), PostingSide::Debit, "");
-    let p_leg2_clear = PostingPrimitive::new("hh_transfer_clearing", "ent_household", Money::new(500_00, "USD").unwrap(), PostingSide::Credit, "");
-    let p_leg2_clear_id = p_leg2_clear.id.clone();
+    let p_leg2_bank = PostingPrimitive::new(
+        "hh_savings",
+        "ent_household",
+        Money::new(500_00, "USD").unwrap(),
+        PostingSide::Debit,
+        "",
+    );
+    let p_leg2_clear = PostingPrimitive::new(
+        "hh_transfer_clearing",
+        "ent_household",
+        Money::new(500_00, "USD").unwrap(),
+        PostingSide::Credit,
+        "",
+    );
 
-    store
-        .post_entry(&JournalEntryDraft::new(
+    let posted_leg2 = store
+        .post_entry_with_ids(&JournalEntryDraft::new(
             "2026-10-12",
             "Savings deposit from checking",
             vec![p_leg2_bank, p_leg2_clear],
         ))
         .unwrap();
+    let p_leg2_clear_id = posted_leg2.postings[1].id.clone();
 
     store
-        .settle_group("sg_complete", "Matched $500 transfer", &[p_leg1_clear_id.as_str(), p_leg2_clear_id.as_str()])
+        .settle_group(
+            "sg_complete",
+            "Matched $500 transfer",
+            &[p_leg1_clear_id.as_str(), p_leg2_clear_id.as_str()],
+        )
         .unwrap();
-    assert_eq!(store.get_account_balance("hh_transfer_clearing").unwrap(), 0);
-    store.summarize_accounting_equation("ent_household", "USD").unwrap();
+    assert_eq!(
+        store.get_account_balance("hh_transfer_clearing").unwrap(),
+        0
+    );
+    store
+        .summarize_accounting_equation("ent_household", "USD")
+        .unwrap();
 }
 
 #[test]
@@ -508,8 +680,20 @@ fn test_at016_cross_entity_refund_to_different_entity_account() {
             "2026-09-15",
             "Original Household purchase",
             vec![
-                PostingPrimitive::new("hh_groceries", "ent_household", Money::new(100_00, "USD").unwrap(), PostingSide::Debit, ""),
-                PostingPrimitive::new("hh_visa", "ent_household", Money::new(100_00, "USD").unwrap(), PostingSide::Credit, ""),
+                PostingPrimitive::new(
+                    "hh_groceries",
+                    "ent_household",
+                    Money::new(100_00, "USD").unwrap(),
+                    PostingSide::Debit,
+                    "",
+                ),
+                PostingPrimitive::new(
+                    "hh_visa",
+                    "ent_household",
+                    Money::new(100_00, "USD").unwrap(),
+                    PostingSide::Credit,
+                    "",
+                ),
             ],
         ))
         .unwrap();
@@ -519,16 +703,44 @@ fn test_at016_cross_entity_refund_to_different_entity_account() {
             "2026-10-02",
             "Refund to Personal Gift Card",
             vec![
-                PostingPrimitive::new("hh_due_from_personal", "ent_household", Money::new(100_00, "USD").unwrap(), PostingSide::Debit, ""),
-                PostingPrimitive::new("hh_groceries", "ent_household", Money::new(100_00, "USD").unwrap(), PostingSide::Credit, ""),
-                PostingPrimitive::new("per_gift_card", "ent_personal", Money::new(100_00, "USD").unwrap(), PostingSide::Debit, ""),
-                PostingPrimitive::new("per_due_to_hh", "ent_personal", Money::new(100_00, "USD").unwrap(), PostingSide::Credit, ""),
+                PostingPrimitive::new(
+                    "hh_due_from_personal",
+                    "ent_household",
+                    Money::new(100_00, "USD").unwrap(),
+                    PostingSide::Debit,
+                    "",
+                ),
+                PostingPrimitive::new(
+                    "hh_groceries",
+                    "ent_household",
+                    Money::new(100_00, "USD").unwrap(),
+                    PostingSide::Credit,
+                    "",
+                ),
+                PostingPrimitive::new(
+                    "per_gift_card",
+                    "ent_personal",
+                    Money::new(100_00, "USD").unwrap(),
+                    PostingSide::Debit,
+                    "",
+                ),
+                PostingPrimitive::new(
+                    "per_due_to_hh",
+                    "ent_personal",
+                    Money::new(100_00, "USD").unwrap(),
+                    PostingSide::Credit,
+                    "",
+                ),
             ],
         ))
         .unwrap();
 
-    let hh_eq = store.summarize_accounting_equation("ent_household", "USD").unwrap();
-    let per_eq = store.summarize_accounting_equation("ent_personal", "USD").unwrap();
+    let hh_eq = store
+        .summarize_accounting_equation("ent_household", "USD")
+        .unwrap();
+    let per_eq = store
+        .summarize_accounting_equation("ent_personal", "USD")
+        .unwrap();
 
     assert_eq!(hh_eq.expenses_minor, 0);
     assert_eq!(hh_eq.assets_minor, 100_00);
@@ -543,61 +755,123 @@ fn test_at016_cross_entity_refund_to_different_entity_account() {
 fn test_at019_and_at020_payroll_gross_to_net_clearing() {
     let mut store = setup_seeded_store();
 
-    let p_stub_clear = PostingPrimitive::new("hh_payroll_clearing", "ent_household", Money::new(2700_00, "USD").unwrap(), PostingSide::Debit, "");
-    let p_stub_clear_id = p_stub_clear.id.clone();
+    let p_stub_clear = PostingPrimitive::new(
+        "hh_payroll_clearing",
+        "ent_household",
+        Money::new(2700_00, "USD").unwrap(),
+        PostingSide::Debit,
+        "",
+    );
 
-    store
-        .post_entry(&JournalEntryDraft::new(
+    let posted_stub = store
+        .post_entry_with_ids(&JournalEntryDraft::new(
             "2026-10-15",
             "Oct 15 Paystub",
             vec![
                 p_stub_clear,
-                PostingPrimitive::new("hh_tax_exp", "ent_household", Money::new(500_00, "USD").unwrap(), PostingSide::Debit, ""),
-                PostingPrimitive::new("hh_salary_rev", "ent_household", Money::new(3000_00, "USD").unwrap(), PostingSide::Credit, ""),
-                PostingPrimitive::new("hh_employer_match_rev", "ent_household", Money::new(200_00, "USD").unwrap(), PostingSide::Credit, ""),
+                PostingPrimitive::new(
+                    "hh_tax_exp",
+                    "ent_household",
+                    Money::new(500_00, "USD").unwrap(),
+                    PostingSide::Debit,
+                    "",
+                ),
+                PostingPrimitive::new(
+                    "hh_salary_rev",
+                    "ent_household",
+                    Money::new(3000_00, "USD").unwrap(),
+                    PostingSide::Credit,
+                    "",
+                ),
+                PostingPrimitive::new(
+                    "hh_employer_match_rev",
+                    "ent_household",
+                    Money::new(200_00, "USD").unwrap(),
+                    PostingSide::Credit,
+                    "",
+                ),
             ],
         ))
         .unwrap();
+    let p_stub_clear_id = posted_stub.postings[0].id.clone();
 
-    let p_net_clear = PostingPrimitive::new("hh_payroll_clearing", "ent_household", Money::new(2500_00, "USD").unwrap(), PostingSide::Credit, "");
-    let p_net_clear_id = p_net_clear.id.clone();
+    let p_net_clear = PostingPrimitive::new(
+        "hh_payroll_clearing",
+        "ent_household",
+        Money::new(2500_00, "USD").unwrap(),
+        PostingSide::Credit,
+        "",
+    );
 
-    store
-        .post_entry(&JournalEntryDraft::new(
+    let posted_net = store
+        .post_entry_with_ids(&JournalEntryDraft::new(
             "2026-10-15",
             "Net pay direct deposit",
             vec![
-                PostingPrimitive::new("hh_checking", "ent_household", Money::new(2500_00, "USD").unwrap(), PostingSide::Debit, ""),
+                PostingPrimitive::new(
+                    "hh_checking",
+                    "ent_household",
+                    Money::new(2500_00, "USD").unwrap(),
+                    PostingSide::Debit,
+                    "",
+                ),
                 p_net_clear,
             ],
         ))
         .unwrap();
+    let p_net_clear_id = posted_net.postings[1].id.clone();
 
     let err = store
-        .settle_group("sg_payroll_incomplete", "Missing HSA leg", &[p_stub_clear_id.as_str(), p_net_clear_id.as_str()])
+        .settle_group(
+            "sg_payroll_incomplete",
+            "Missing HSA leg",
+            &[p_stub_clear_id.as_str(), p_net_clear_id.as_str()],
+        )
         .unwrap_err();
     assert!(matches!(err, KernelError::NonZeroClearingResidual { .. }));
 
-    let p_hsa_clear = PostingPrimitive::new("hh_payroll_clearing", "ent_household", Money::new(200_00, "USD").unwrap(), PostingSide::Credit, "");
-    let p_hsa_clear_id = p_hsa_clear.id.clone();
+    let p_hsa_clear = PostingPrimitive::new(
+        "hh_payroll_clearing",
+        "ent_household",
+        Money::new(200_00, "USD").unwrap(),
+        PostingSide::Credit,
+        "",
+    );
 
-    store
-        .post_entry(&JournalEntryDraft::new(
+    let posted_hsa = store
+        .post_entry_with_ids(&JournalEntryDraft::new(
             "2026-10-17",
             "HSA employer contribution deposit",
             vec![
-                PostingPrimitive::new("hh_hsa", "ent_household", Money::new(200_00, "USD").unwrap(), PostingSide::Debit, ""),
+                PostingPrimitive::new(
+                    "hh_hsa",
+                    "ent_household",
+                    Money::new(200_00, "USD").unwrap(),
+                    PostingSide::Debit,
+                    "",
+                ),
                 p_hsa_clear,
             ],
         ))
         .unwrap();
+    let p_hsa_clear_id = posted_hsa.postings[1].id.clone();
 
     store
-        .settle_group("sg_payroll_complete", "Oct 15 Payroll Settlement", &[p_stub_clear_id.as_str(), p_net_clear_id.as_str(), p_hsa_clear_id.as_str()])
+        .settle_group(
+            "sg_payroll_complete",
+            "Oct 15 Payroll Settlement",
+            &[
+                p_stub_clear_id.as_str(),
+                p_net_clear_id.as_str(),
+                p_hsa_clear_id.as_str(),
+            ],
+        )
         .unwrap();
 
     assert_eq!(store.get_account_balance("hh_payroll_clearing").unwrap(), 0);
-    let hh_eq = store.summarize_accounting_equation("ent_household", "USD").unwrap();
+    let hh_eq = store
+        .summarize_accounting_equation("ent_household", "USD")
+        .unwrap();
     assert_eq!(hh_eq.assets_minor, 2700_00);
     assert_eq!(hh_eq.revenue_minor, 3200_00);
     assert_eq!(hh_eq.expenses_minor, 500_00);
@@ -663,7 +937,11 @@ fn test_contract_error_variants_match_spec() {
         "",
     );
     let err = store
-        .post_entry(&JournalEntryDraft::new("2026-10-31", "Mismatch", vec![p1, p2]))
+        .post_entry(&JournalEntryDraft::new(
+            "2026-10-31",
+            "Mismatch",
+            vec![p1, p2],
+        ))
         .unwrap_err();
     assert_eq!(
         err,

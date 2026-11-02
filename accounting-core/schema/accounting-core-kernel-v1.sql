@@ -19,6 +19,12 @@
 
 PRAGMA foreign_keys = ON;
 
+-- Persistent, transactional counters for short external record IDs.
+CREATE TABLE id_sequences (
+    prefix TEXT PRIMARY KEY,
+    last_value INTEGER NOT NULL CHECK (typeof(last_value) = 'integer' AND last_value >= 0)
+);
+
 -- -----------------------------------------------------------------------------
 -- 1. ENTITIES (Books of Account vs. External Opaque Counterparties)
 -- -----------------------------------------------------------------------------
