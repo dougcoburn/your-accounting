@@ -4,9 +4,9 @@ pub mod domain;
 pub mod sqlite_repo;
 
 pub use domain::{
-    next_deterministic_id, AccountElement, AccountRole, AccountingEquationSummary,
+    new_unique_id, next_deterministic_id, AccountElement, AccountRole, AccountingEquationSummary,
     CommittedJournalEntry, Currency, EntityVisibility, EntryFilter, EntryStatus,
     JournalEntryDraft, KernelError, LedgerAccount, LedgerStore, Money, PostingPrimitive,
     PostingSide,
 };
-pub use sqlite_repo::{SqliteLedgerAdapter, KERNEL_SCHEMA_SQL};
+pub use sqlite_repo::{SqliteLedgerAdapter, SqliteLedgerTransaction, KERNEL_SCHEMA_SQL};

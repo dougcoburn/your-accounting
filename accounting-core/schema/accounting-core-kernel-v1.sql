@@ -174,6 +174,20 @@ BEGIN
        OR NEW.description != OLD.description;
 END;
 
+-- A correction must first rebuild the affected settlement group in one reviewed operation.
+CREATE TRIGGER trg_settled_group_prevents_supersede
+BEFORE UPDATE OF status ON journal_entries
+WHEN OLD.status = 'active' AND NEW.status IN ('superseded', 'voided')
+  AND EXISTS (
+    SELECT 1 FROM journal_postings jp
+    JOIN settlement_group_postings sgp ON sgp.posting_id = jp.id
+    JOIN settlement_groups sg ON sg.id = sgp.group_id
+    WHERE jp.entry_id = OLD.id AND sg.status = 'settled'
+  )
+BEGIN
+    SELECT RAISE(ABORT, 'INV-013: settled group must be corrected atomically with its entry');
+END;
+
 -- Guard 5: Terminal journal entries (superseded or voided) are permanently sealed
 CREATE TRIGGER trg_journal_entry_lifecycle_terminal
 BEFORE UPDATE ON journal_entries
@@ -263,8 +277,7 @@ SELECT
     ), 0) AS normal_balance_minor
 FROM ledger_accounts la
 LEFT JOIN journal_postings jp ON jp.ledger_account_id = la.id
-LEFT JOIN journal_entries je ON je.id = jp.entry_id AND je.status = 'active'
-WHERE je.id IS NOT NULL OR jp.id IS NULL
+    AND EXISTS (SELECT 1 FROM journal_entries je WHERE je.id = jp.entry_id AND je.status = 'active')
 GROUP BY la.id, la.entity_id, la.name, la.currency, la.element, la.role;
 
 -- Live verification of the Fundamental Accounting Equation per (entity_id, currency):

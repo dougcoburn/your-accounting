@@ -7,3 +7,4 @@ description = "Pure DDD Core Kernel & Port Traits for Double-Entry Accounting"
 
 [dependencies]
 rusqlite = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
