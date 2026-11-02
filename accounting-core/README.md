@@ -29,6 +29,11 @@ records through `with_connection`. `commit()` makes them durable and advances th
 revision; dropping the handle rolls everything back. A failed ledger mutation
 prevents that handle from committing.
 
+Application-owned schemas may also be created through `with_connection` inside
+the same transaction. The extension integration test covers recipe provenance,
+categories, and tags linked to a kernel entry. A failed application write
+prevents the entire unit of work, including schema creation, from committing.
+
 An entry posted inside the handle is `active` for validation within that
 transaction but is invisible to other database connections until commit. The
 application must validate all required participants before committing a group.
