@@ -7,14 +7,14 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-/// Stable, process-independent identifier for persisted records.
-pub fn new_unique_id(prefix: &str) -> String {
-    format!("{prefix}_{}", uuid::Uuid::new_v4().simple())
-}
+use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Compatibility alias; IDs are now random rather than process-local counters.
-pub fn next_deterministic_id(prefix: &str) -> String {
-    new_unique_id(prefix)
+static DRAFT_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// A local reference used only until storage assigns a permanent ID.
+fn next_draft_reference(prefix: &str) -> String {
+    let number = DRAFT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("draft_{prefix}_{number}")
 }
 
 // =============================================================================
@@ -25,6 +25,7 @@ pub fn next_deterministic_id(prefix: &str) -> String {
 pub enum KernelError {
     /// Currency code is not 3 uppercase ASCII letters (ISO-4217).
     InvalidCurrency(String),
+    InvalidIdPrefix(String),
     /// Posting money amount_minor is <= 0.
     NonPositiveAmount(i64),
     /// Checked integer addition/subtraction overflowed `i64`.
@@ -101,7 +102,10 @@ pub enum KernelError {
         residual_minor: i64,
     },
     /// A preview was built against an earlier ledger revision.
-    RevisionConflict { expected: i64, actual: i64 },
+    RevisionConflict {
+        expected: i64,
+        actual: i64,
+    },
     /// A prior ledger or application write failed within this transaction.
     TransactionAborted,
     /// Underlying database driver or I/O failure (never used for domain precondition violations).
@@ -120,6 +124,7 @@ impl fmt::Display for KernelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidCurrency(c) => write!(f, "Currency must be a 3-letter uppercase ISO code, got {c:?}"),
+            Self::InvalidIdPrefix(prefix) => write!(f, "ID prefix must be 1-16 lowercase ASCII letters, digits, or underscores, got {prefix:?}"),
             Self::NonPositiveAmount(a) => write!(f, "Posting Money magnitude must be > 0, got {a}"),
             Self::ArithmeticOverflow => write!(f, "Checked integer arithmetic overflow"),
             Self::DuplicateId { record_kind, id } => write!(f, "Duplicate {record_kind} id: {id}"),
@@ -256,7 +261,9 @@ impl AccountElement {
             "equity" => Ok(Self::Equity),
             "revenue" => Ok(Self::Revenue),
             "expense" => Ok(Self::Expense),
-            _ => Err(KernelError::Storage(format!("invalid account element: {s}"))),
+            _ => Err(KernelError::Storage(format!(
+                "invalid account element: {s}"
+            ))),
         }
     }
 
@@ -320,7 +327,9 @@ impl EntityVisibility {
         match s {
             "transparent" => Ok(Self::Transparent),
             "opaque" => Ok(Self::Opaque),
-            _ => Err(KernelError::Storage(format!("invalid entity visibility: {s}"))),
+            _ => Err(KernelError::Storage(format!(
+                "invalid entity visibility: {s}"
+            ))),
         }
     }
 }
@@ -445,7 +454,7 @@ impl PostingPrimitive {
         memo: impl Into<String>,
     ) -> Self {
         Self {
-            id: new_unique_id("pst"),
+            id: next_draft_reference("pst"),
             ledger_account_id: ledger_account_id.into(),
             entity_id: entity_id.into(),
             money,
@@ -472,7 +481,7 @@ impl JournalEntryDraft {
         postings: Vec<PostingPrimitive>,
     ) -> Self {
         Self {
-            id: new_unique_id("je"),
+            id: next_draft_reference("je"),
             posting_date: posting_date.into(),
             effective_date: None,
             description: description.into(),
@@ -488,7 +497,7 @@ impl JournalEntryDraft {
         postings: Vec<PostingPrimitive>,
     ) -> Self {
         Self {
-            id: new_unique_id("je"),
+            id: next_draft_reference("je"),
             posting_date: posting_date.into(),
             effective_date: None,
             description: description.into(),
@@ -598,6 +607,9 @@ impl AccountingEquationSummary {
 // =============================================================================
 
 pub trait LedgerStore {
+    /// Reserve a short, persistent ID in the current SQLite transaction.
+    fn next_deterministic_id(&mut self, prefix: &str) -> Result<String, KernelError>;
+
     fn register_entity(
         &mut self,
         entity_id: &str,
@@ -619,6 +631,15 @@ pub trait LedgerStore {
     fn list_accounts(&self, entity_id: &str) -> Result<Vec<LedgerAccount>, KernelError>;
 
     fn post_entry(&mut self, draft: &JournalEntryDraft) -> Result<String, KernelError>;
+
+    /// Post and read back the assigned entry and posting IDs for settlement links.
+    fn post_entry_with_ids(
+        &mut self,
+        draft: &JournalEntryDraft,
+    ) -> Result<CommittedJournalEntry, KernelError> {
+        let id = self.post_entry(draft)?;
+        self.get_entry(&id)?.ok_or(KernelError::UnknownEntry(id))
+    }
 
     fn get_entry(&self, entry_id: &str) -> Result<Option<CommittedJournalEntry>, KernelError>;
 

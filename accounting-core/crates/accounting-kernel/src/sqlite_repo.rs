@@ -5,9 +5,9 @@
 //! raw SQLite constraint strings, while keeping SQLite triggers active as
 //! defense-in-depth.
 
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::BTreeMap;
 use std::path::Path;
-use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::domain::{
     AccountElement, AccountRole, AccountingEquationSummary, CommittedJournalEntry, Currency,
@@ -46,17 +46,23 @@ impl SqliteLedgerTransaction<'_> {
             return Err(KernelError::TransactionAborted);
         }
         SqliteLedgerAdapter::validate_aggregate_bounds(&self.store.conn)?;
-        let changed = self.store.conn.execute(
-            "UPDATE kernel_state SET revision = revision + 1 WHERE id = 1 AND revision = ?1",
-            params![self.expected_revision],
-        ).map_err(|e| KernelError::Storage(e.to_string()))?;
+        let changed = self
+            .store
+            .conn
+            .execute(
+                "UPDATE kernel_state SET revision = revision + 1 WHERE id = 1 AND revision = ?1",
+                params![self.expected_revision],
+            )
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
         if changed != 1 {
             return Err(KernelError::RevisionConflict {
                 expected: self.expected_revision,
                 actual: self.store.revision()?,
             });
         }
-        self.store.conn.execute_batch("COMMIT")
+        self.store
+            .conn
+            .execute_batch("COMMIT")
             .map_err(|e| KernelError::Storage(e.to_string()))?;
         self.finished = true;
         Ok(self.expected_revision + 1)
@@ -72,13 +78,33 @@ impl Drop for SqliteLedgerTransaction<'_> {
 }
 
 impl LedgerStore for SqliteLedgerTransaction<'_> {
-    fn register_entity(&mut self, id: &str, name: &str, visibility: EntityVisibility) -> Result<(), KernelError> {
+    fn next_deterministic_id(&mut self, prefix: &str) -> Result<String, KernelError> {
+        let result = self.store.next_deterministic_id(prefix);
+        self.failed |= result.is_err();
+        result
+    }
+    fn register_entity(
+        &mut self,
+        id: &str,
+        name: &str,
+        visibility: EntityVisibility,
+    ) -> Result<(), KernelError> {
         let result = self.store.register_entity(id, name, visibility);
         self.failed |= result.is_err();
         result
     }
-    fn create_ledger_account(&mut self, id: &str, entity: &str, name: &str, currency: &str, element: AccountElement, role: AccountRole) -> Result<(), KernelError> {
-        let result = self.store.create_ledger_account(id, entity, name, currency, element, role);
+    fn create_ledger_account(
+        &mut self,
+        id: &str,
+        entity: &str,
+        name: &str,
+        currency: &str,
+        element: AccountElement,
+        role: AccountRole,
+    ) -> Result<(), KernelError> {
+        let result = self
+            .store
+            .create_ledger_account(id, entity, name, currency, element, role);
         self.failed |= result.is_err();
         result
     }
@@ -96,13 +122,22 @@ impl LedgerStore for SqliteLedgerTransaction<'_> {
     fn get_entry(&self, id: &str) -> Result<Option<CommittedJournalEntry>, KernelError> {
         self.store.get_entry(id)
     }
-    fn list_active_entries_for_account(&self, id: &str, filter: &EntryFilter) -> Result<Vec<CommittedJournalEntry>, KernelError> {
+    fn list_active_entries_for_account(
+        &self,
+        id: &str,
+        filter: &EntryFilter,
+    ) -> Result<Vec<CommittedJournalEntry>, KernelError> {
         self.store.list_active_entries_for_account(id, filter)
     }
     fn get_entry_lineage(&self, id: &str) -> Result<Vec<CommittedJournalEntry>, KernelError> {
         self.store.get_entry_lineage(id)
     }
-    fn settle_group(&mut self, id: &str, name: &str, posting_ids: &[&str]) -> Result<(), KernelError> {
+    fn settle_group(
+        &mut self,
+        id: &str,
+        name: &str,
+        posting_ids: &[&str],
+    ) -> Result<(), KernelError> {
         let result = self.store.settle_group(id, name, posting_ids);
         self.failed |= result.is_err();
         result
@@ -110,53 +145,96 @@ impl LedgerStore for SqliteLedgerTransaction<'_> {
     fn get_account_balance(&self, id: &str) -> Result<i64, KernelError> {
         self.store.get_account_balance(id)
     }
-    fn summarize_accounting_equation(&self, entity: &str, currency: &str) -> Result<AccountingEquationSummary, KernelError> {
+    fn summarize_accounting_equation(
+        &self,
+        entity: &str,
+        currency: &str,
+    ) -> Result<AccountingEquationSummary, KernelError> {
         self.store.summarize_accounting_equation(entity, currency)
     }
 }
 
 impl SqliteLedgerAdapter {
+    /// Allocates an ID using the caller's SQLite transaction or savepoint.
+    pub fn next_deterministic_id_on(
+        conn: &Connection,
+        prefix: &str,
+    ) -> Result<String, KernelError> {
+        let valid = !prefix.is_empty()
+            && prefix.len() <= 16
+            && prefix
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_');
+        if !valid {
+            return Err(KernelError::InvalidIdPrefix(prefix.to_string()));
+        }
+        conn.execute(
+            "INSERT INTO id_sequences (prefix, last_value) VALUES (?1, 0) ON CONFLICT(prefix) DO NOTHING",
+            params![prefix],
+        ).map_err(|e| KernelError::Storage(e.to_string()))?;
+        let next: Option<i64> = conn
+            .query_row(
+                "UPDATE id_sequences SET last_value = last_value + 1
+             WHERE prefix = ?1 AND last_value < ?2 RETURNING last_value",
+                params![prefix, i64::MAX],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
+        let next = next.ok_or(KernelError::ArithmeticOverflow)?;
+        Ok(format!("{prefix}_{next}"))
+    }
+
     fn validate_aggregate_bounds(conn: &Connection) -> Result<(), KernelError> {
-        let mut stmt = conn.prepare(
-            "SELECT trial_debits_minor, trial_credits_minor, assets_minor,
+        let mut stmt = conn
+            .prepare(
+                "SELECT trial_debits_minor, trial_credits_minor, assets_minor,
                     liabilities_minor, total_equity_minor, equation_discrepancy_minor
              FROM v_accounting_equation_check",
-        ).map_err(|e| KernelError::Storage(e.to_string()))?;
-        let mut rows = stmt.query([]).map_err(|e| KernelError::Storage(e.to_string()))?;
+            )
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
         while let Some(row) = rows.next().map_err(|_| KernelError::ArithmeticOverflow)? {
             for index in 0..6 {
-                let _: i64 = row.get(index).map_err(|_| KernelError::ArithmeticOverflow)?;
+                let _: i64 = row
+                    .get(index)
+                    .map_err(|_| KernelError::ArithmeticOverflow)?;
             }
         }
         Ok(())
     }
 
     pub fn in_memory() -> Result<Self, KernelError> {
-        let conn = Connection::open_in_memory()
-            .map_err(|e| KernelError::Storage(e.to_string()))?;
+        let conn = Connection::open_in_memory().map_err(|e| KernelError::Storage(e.to_string()))?;
         Self::from_connection(conn)
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self, KernelError> {
-        let conn = Connection::open(path)
-            .map_err(|e| KernelError::Storage(e.to_string()))?;
+        let conn = Connection::open(path).map_err(|e| KernelError::Storage(e.to_string()))?;
         Self::from_connection(conn)
     }
 
     pub fn from_connection(mut conn: Connection) -> Result<Self, KernelError> {
         conn.execute_batch("PRAGMA foreign_keys = ON;")
             .map_err(|e| KernelError::Storage(e.to_string()))?;
-        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(|e| KernelError::Storage(e.to_string()))?;
-        if version > 3 {
-            return Err(KernelError::Storage(format!("unsupported kernel schema version {version}")));
+        if version > 4 {
+            return Err(KernelError::Storage(format!(
+                "unsupported kernel schema version {version}"
+            )));
         }
         if version < 3 {
             let has_schema: i64 = conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entities')",
                 [], |row| row.get(0),
             ).map_err(|e| KernelError::Storage(e.to_string()))?;
-            let tx = conn.transaction().map_err(|e| KernelError::Storage(e.to_string()))?;
+            let tx = conn
+                .transaction()
+                .map_err(|e| KernelError::Storage(e.to_string()))?;
             if version == 0 && has_schema == 0 {
                 tx.execute_batch(KERNEL_SCHEMA_SQL)
                     .map_err(|e| KernelError::Storage(e.to_string()))?;
@@ -192,19 +270,52 @@ impl SqliteLedgerAdapter {
                 GROUP BY la.id, la.entity_id, la.name, la.currency, la.element, la.role;
                 PRAGMA user_version = 3;")
                 .map_err(|e| KernelError::Storage(e.to_string()))?;
-            tx.commit().map_err(|e| KernelError::Storage(e.to_string()))?;
+            tx.commit()
+                .map_err(|e| KernelError::Storage(e.to_string()))?;
+        }
+        if version < 4 {
+            let tx = conn
+                .transaction()
+                .map_err(|e| KernelError::Storage(e.to_string()))?;
+            tx.execute_batch("CREATE TABLE IF NOT EXISTS id_sequences (
+                prefix TEXT PRIMARY KEY,
+                last_value INTEGER NOT NULL CHECK(typeof(last_value) = 'integer' AND last_value >= 0)
+            );
+            INSERT INTO id_sequences (prefix, last_value)
+            SELECT 'je', COALESCE(MAX(CAST(SUBSTR(id, 4) AS INTEGER)), 0)
+            FROM journal_entries
+            WHERE id GLOB 'je_[0-9]*' AND SUBSTR(id, 4) NOT GLOB '*[^0-9]*'
+            ON CONFLICT(prefix) DO NOTHING;
+            INSERT INTO id_sequences (prefix, last_value)
+            SELECT 'pst', COALESCE(MAX(CAST(SUBSTR(id, 5) AS INTEGER)), 0)
+            FROM journal_postings
+            WHERE id GLOB 'pst_[0-9]*' AND SUBSTR(id, 5) NOT GLOB '*[^0-9]*'
+            ON CONFLICT(prefix) DO NOTHING;
+            PRAGMA user_version = 4;")
+                .map_err(|e| KernelError::Storage(e.to_string()))?;
+            tx.commit()
+                .map_err(|e| KernelError::Storage(e.to_string()))?;
         }
         Ok(Self { conn })
     }
 
     pub fn revision(&self) -> Result<i64, KernelError> {
-        self.conn.query_row("SELECT revision FROM kernel_state WHERE id = 1", [], |row| row.get(0))
+        self.conn
+            .query_row(
+                "SELECT revision FROM kernel_state WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
             .map_err(|e| KernelError::Storage(e.to_string()))
     }
 
     /// Begin a shared SQLite transaction after checking the revision shown in a preview.
-    pub fn begin_transaction(&mut self, expected_revision: i64) -> Result<SqliteLedgerTransaction<'_>, KernelError> {
-        self.conn.execute_batch("BEGIN IMMEDIATE")
+    pub fn begin_transaction(
+        &mut self,
+        expected_revision: i64,
+    ) -> Result<SqliteLedgerTransaction<'_>, KernelError> {
+        self.conn
+            .execute_batch("BEGIN IMMEDIATE")
             .map_err(|e| KernelError::Storage(e.to_string()))?;
         let actual = match self.revision() {
             Ok(actual) => actual,
@@ -215,16 +326,27 @@ impl SqliteLedgerAdapter {
         };
         if actual != expected_revision {
             let _ = self.conn.execute_batch("ROLLBACK");
-            return Err(KernelError::RevisionConflict { expected: expected_revision, actual });
+            return Err(KernelError::RevisionConflict {
+                expected: expected_revision,
+                actual,
+            });
         }
-        Ok(SqliteLedgerTransaction { store: self, expected_revision, finished: false, failed: false })
+        Ok(SqliteLedgerTransaction {
+            store: self,
+            expected_revision,
+            finished: false,
+            failed: false,
+        })
     }
 
     pub fn raw_connection(&mut self) -> &mut Connection {
         &mut self.conn
     }
 
-    fn fetch_postings_for_entry(&self, entry_id: &str) -> Result<Vec<PostingPrimitive>, KernelError> {
+    fn fetch_postings_for_entry(
+        &self,
+        entry_id: &str,
+    ) -> Result<Vec<PostingPrimitive>, KernelError> {
         let mut stmt = self
             .conn
             .prepare(
@@ -244,7 +366,15 @@ impl SqliteLedgerAdapter {
                 let side_str: String = row.get(4)?;
                 let amount_minor: i64 = row.get(5)?;
                 let memo: String = row.get(6)?;
-                Ok((id, ledger_account_id, entity_id, currency_str, side_str, amount_minor, memo))
+                Ok((
+                    id,
+                    ledger_account_id,
+                    entity_id,
+                    currency_str,
+                    side_str,
+                    amount_minor,
+                    memo,
+                ))
             })
             .map_err(|e| KernelError::Storage(e.to_string()))?;
 
@@ -268,6 +398,25 @@ impl SqliteLedgerAdapter {
 }
 
 impl LedgerStore for SqliteLedgerAdapter {
+    fn next_deterministic_id(&mut self, prefix: &str) -> Result<String, KernelError> {
+        let standalone = self.conn.is_autocommit();
+        let tx = self
+            .conn
+            .savepoint()
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
+        let id = Self::next_deterministic_id_on(&tx, prefix)?;
+        if standalone {
+            tx.execute(
+                "UPDATE kernel_state SET revision = revision + 1 WHERE id = 1",
+                [],
+            )
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
+        }
+        tx.commit()
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
+        Ok(id)
+    }
+
     fn register_entity(
         &mut self,
         entity_id: &str,
@@ -385,7 +534,15 @@ impl LedgerStore for SqliteLedgerAdapter {
                     let element_str: String = row.get(4)?;
                     let role_str: String = row.get(5)?;
                     let is_active_int: i32 = row.get(6)?;
-                    Ok((id, entity_id, name, currency_str, element_str, role_str, is_active_int == 1))
+                    Ok((
+                        id,
+                        entity_id,
+                        name,
+                        currency_str,
+                        element_str,
+                        role_str,
+                        is_active_int == 1,
+                    ))
                 },
             )
             .optional()
@@ -430,7 +587,15 @@ impl LedgerStore for SqliteLedgerAdapter {
                 let element_str: String = row.get(4)?;
                 let role_str: String = row.get(5)?;
                 let is_active_int: i32 = row.get(6)?;
-                Ok((id, ent_id, name, currency_str, element_str, role_str, is_active_int == 1))
+                Ok((
+                    id,
+                    ent_id,
+                    name,
+                    currency_str,
+                    element_str,
+                    role_str,
+                    is_active_int == 1,
+                ))
             })
             .map_err(|e| KernelError::Storage(e.to_string()))?;
 
@@ -459,15 +624,8 @@ impl LedgerStore for SqliteLedgerAdapter {
         draft.validate_trial_balance()?;
         let standalone = self.conn.is_autocommit();
 
-        // 2. Check duplicate entry ID
-        if self.get_entry(&draft.id)?.is_some() {
-            return Err(KernelError::DuplicateId {
-                record_kind: "journal_entry",
-                id: draft.id.clone(),
-            });
-        }
-
-        // 3. Validate each posting against its target LedgerAccount (INV-002)
+        // 2. Validate each posting against its target LedgerAccount (INV-002).
+        // Draft IDs are local references; storage assigns persistent IDs below.
         for p in &draft.postings {
             let acct = self
                 .get_account(&p.ledger_account_id)?
@@ -494,6 +652,7 @@ impl LedgerStore for SqliteLedgerAdapter {
             .conn
             .savepoint()
             .map_err(|e| KernelError::Storage(e.to_string()))?;
+        let entry_id = Self::next_deterministic_id_on(&tx, "je")?;
 
         // 4. If replacing an existing entry, verify it exists and is Active, then supersede it
         if let Some(ref old_id) = draft.replaces_entry_id {
@@ -549,7 +708,7 @@ impl LedgerStore for SqliteLedgerAdapter {
                 (id, posting_date, effective_date, description, status, replaces_entry_id)
              VALUES (?1, ?2, ?3, ?4, 'draft', ?5)",
             params![
-                draft.id,
+                entry_id,
                 draft.posting_date,
                 eff_date,
                 draft.description,
@@ -559,13 +718,14 @@ impl LedgerStore for SqliteLedgerAdapter {
         .map_err(|e| KernelError::Storage(e.to_string()))?;
 
         for p in &draft.postings {
+            let posting_id = Self::next_deterministic_id_on(&tx, "pst")?;
             tx.execute(
                 "INSERT INTO journal_postings
                     (id, entry_id, ledger_account_id, entity_id, currency, side, amount_minor, memo)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
-                    p.id,
-                    draft.id,
+                    posting_id,
+                    entry_id,
                     p.ledger_account_id,
                     p.entity_id,
                     p.money.currency().as_str(),
@@ -579,20 +739,23 @@ impl LedgerStore for SqliteLedgerAdapter {
 
         tx.execute(
             "UPDATE journal_entries SET status = 'active' WHERE id = ?1",
-            params![draft.id],
+            params![entry_id],
         )
         .map_err(|e| KernelError::Storage(e.to_string()))?;
 
         if standalone {
             // Reject a mathematically balanced entry if it overflows an existing total.
             Self::validate_aggregate_bounds(&tx)?;
-            tx.execute("UPDATE kernel_state SET revision = revision + 1 WHERE id = 1", [])
-                .map_err(|e| KernelError::Storage(e.to_string()))?;
+            tx.execute(
+                "UPDATE kernel_state SET revision = revision + 1 WHERE id = 1",
+                [],
+            )
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
         }
         tx.commit()
             .map_err(|e| KernelError::Storage(e.to_string()))?;
 
-        Ok(draft.id.clone())
+        Ok(entry_id)
     }
 
     fn get_entry(&self, entry_id: &str) -> Result<Option<CommittedJournalEntry>, KernelError> {
@@ -618,7 +781,15 @@ impl LedgerStore for SqliteLedgerAdapter {
             .map_err(|e| KernelError::Storage(e.to_string()))?;
 
         match entry_meta {
-            Some((id, posting_date, effective_date, description, status_str, replaces_entry_id, created_at)) => {
+            Some((
+                id,
+                posting_date,
+                effective_date,
+                description,
+                status_str,
+                replaces_entry_id,
+                created_at,
+            )) => {
                 let status = EntryStatus::parse(&status_str)?;
                 let postings = self.fetch_postings_for_entry(&id)?;
                 Ok(Some(CommittedJournalEntry {
@@ -674,7 +845,8 @@ impl LedgerStore for SqliteLedgerAdapter {
             .prepare(&query)
             .map_err(|e| KernelError::Storage(e.to_string()))?;
 
-        let params_slice: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
+        let params_slice: Vec<&dyn rusqlite::ToSql> =
+            params_vec.iter().map(|b| b.as_ref()).collect();
 
         let rows = stmt
             .query_map(params_slice.as_slice(), |row| {
@@ -685,14 +857,29 @@ impl LedgerStore for SqliteLedgerAdapter {
                 let status_str: String = row.get(4)?;
                 let replaces_entry_id: Option<String> = row.get(5)?;
                 let created_at: String = row.get(6)?;
-                Ok((id, posting_date, effective_date, description, status_str, replaces_entry_id, created_at))
+                Ok((
+                    id,
+                    posting_date,
+                    effective_date,
+                    description,
+                    status_str,
+                    replaces_entry_id,
+                    created_at,
+                ))
             })
             .map_err(|e| KernelError::Storage(e.to_string()))?;
 
         let mut entries = Vec::new();
         for item in rows {
-            let (id, posting_date, effective_date, description, status_str, replaces_entry_id, created_at) =
-                item.map_err(|e| KernelError::Storage(e.to_string()))?;
+            let (
+                id,
+                posting_date,
+                effective_date,
+                description,
+                status_str,
+                replaces_entry_id,
+                created_at,
+            ) = item.map_err(|e| KernelError::Storage(e.to_string()))?;
             let status = EntryStatus::parse(&status_str)?;
             let postings = self.fetch_postings_for_entry(&id)?;
             entries.push(CommittedJournalEntry {
@@ -825,8 +1012,15 @@ impl LedgerStore for SqliteLedgerAdapter {
                 .optional()
                 .map_err(|e| KernelError::Storage(e.to_string()))?;
 
-            let (entity_id, currency, ledger_account_id, side_str, amount_minor, role_str, status_str) =
-                row_info.ok_or_else(|| KernelError::UnknownPosting(pid.to_string()))?;
+            let (
+                entity_id,
+                currency,
+                ledger_account_id,
+                side_str,
+                amount_minor,
+                role_str,
+                status_str,
+            ) = row_info.ok_or_else(|| KernelError::UnknownPosting(pid.to_string()))?;
 
             let entry_status = EntryStatus::parse(&status_str)?;
             if entry_status != EntryStatus::Active {
@@ -845,7 +1039,9 @@ impl LedgerStore for SqliteLedgerAdapter {
                 };
                 let key = (entity_id, currency, ledger_account_id);
                 let cur = clearing_residuals.entry(key).or_insert(0);
-                *cur = cur.checked_add(signed).ok_or(KernelError::ArithmeticOverflow)?;
+                *cur = cur
+                    .checked_add(signed)
+                    .ok_or(KernelError::ArithmeticOverflow)?;
             }
         }
 
@@ -887,8 +1083,11 @@ impl LedgerStore for SqliteLedgerAdapter {
         .map_err(|e| KernelError::Storage(e.to_string()))?;
 
         if standalone {
-            tx.execute("UPDATE kernel_state SET revision = revision + 1 WHERE id = 1", [])
-                .map_err(|e| KernelError::Storage(e.to_string()))?;
+            tx.execute(
+                "UPDATE kernel_state SET revision = revision + 1 WHERE id = 1",
+                [],
+            )
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
         }
         tx.commit()
             .map_err(|e| KernelError::Storage(e.to_string()))?;

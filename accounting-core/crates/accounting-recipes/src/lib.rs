@@ -1,8 +1,8 @@
 //! Application Ring: Recipe Compilers & Execution Provenance (`accounting-recipes`)
 
 use accounting_kernel::{
-    new_unique_id, AccountElement, JournalEntryDraft, KernelError, LedgerStore, Money,
-    PostingPrimitive, PostingSide,
+    AccountElement, JournalEntryDraft, KernelError, LedgerStore, Money, PostingPrimitive,
+    PostingSide, SqliteLedgerAdapter,
 };
 use rusqlite::{params, Connection};
 
@@ -10,7 +10,6 @@ pub const RECIPES_SCHEMA_SQL: &str = include_str!("../schema/accounting-recipes-
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecipeExecution {
-    pub id: String,
     pub recipe_name: String,
     pub recipe_version: String,
     pub journal_entry_id: Option<String>,
@@ -112,14 +111,17 @@ impl RecipeCompiler {
 
         let params_json = format!(
             r#"{{"funding_entity":"{}","funding_account":"{}","currency":"{}","total_minor":{},"allocation_count":{}}}"#,
-            funding_entity_id, funding_account_id, currency, total_minor, allocations.len()
+            funding_entity_id,
+            funding_account_id,
+            currency,
+            total_minor,
+            allocations.len()
         );
 
         let execution = RecipeExecution {
-            id: new_unique_id("rx"),
             recipe_name: "split_purchase".to_string(),
             recipe_version: "1.0.0".to_string(),
-            journal_entry_id: Some(draft.id.clone()),
+            journal_entry_id: None,
             parameters_json: params_json,
             executed_at: None,
         };
@@ -135,16 +137,20 @@ impl RecipeCompiler {
     }
 
     pub fn record_execution(
-        conn: &Connection,
+        conn: &mut Connection,
         execution: &RecipeExecution,
         committed_entry_id: &str,
-    ) -> Result<(), KernelError> {
-        conn.execute(
+    ) -> Result<String, KernelError> {
+        let tx = conn
+            .savepoint()
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
+        let execution_id = SqliteLedgerAdapter::next_deterministic_id_on(&tx, "rx")?;
+        tx.execute(
             "INSERT INTO recipe_executions
                 (id, recipe_name, recipe_version, journal_entry_id, parameters_json)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
-                execution.id,
+                execution_id,
                 execution.recipe_name,
                 execution.recipe_version,
                 committed_entry_id,
@@ -152,6 +158,8 @@ impl RecipeCompiler {
             ],
         )
         .map_err(|e| KernelError::Storage(e.to_string()))?;
-        Ok(())
+        tx.commit()
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
+        Ok(execution_id)
     }
 }
