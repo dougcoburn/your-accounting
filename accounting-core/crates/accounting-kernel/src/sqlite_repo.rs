@@ -15,7 +15,116 @@ pub struct SqliteLedgerAdapter {
     conn: Connection,
 }
 
+/// An application-owned commit boundary. Dropping it rolls back all staged writes.
+pub struct SqliteLedgerTransaction<'a> {
+    store: &'a mut SqliteLedgerAdapter,
+    expected_revision: i64,
+    finished: bool,
+    failed: bool,
+}
+
+impl SqliteLedgerTransaction<'_> {
+    /// Temporary bridge for application repositories until they have storage ports.
+    /// A failed operation poisons the transaction and prevents a partial commit.
+    pub fn with_connection<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Connection) -> Result<T, KernelError>,
+    ) -> Result<T, KernelError> {
+        let result = operation(&mut self.store.conn);
+        self.failed |= result.is_err();
+        result
+    }
+
+    pub fn commit(mut self) -> Result<i64, KernelError> {
+        if self.failed {
+            return Err(KernelError::TransactionAborted);
+        }
+        SqliteLedgerAdapter::validate_aggregate_bounds(&self.store.conn)?;
+        let changed = self.store.conn.execute(
+            "UPDATE kernel_state SET revision = revision + 1 WHERE id = 1 AND revision = ?1",
+            params![self.expected_revision],
+        ).map_err(|e| KernelError::Storage(e.to_string()))?;
+        if changed != 1 {
+            return Err(KernelError::RevisionConflict {
+                expected: self.expected_revision,
+                actual: self.store.revision()?,
+            });
+        }
+        self.store.conn.execute_batch("COMMIT")
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
+        self.finished = true;
+        Ok(self.expected_revision + 1)
+    }
+}
+
+impl Drop for SqliteLedgerTransaction<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = self.store.conn.execute_batch("ROLLBACK");
+        }
+    }
+}
+
+impl LedgerStore for SqliteLedgerTransaction<'_> {
+    fn register_entity(&mut self, id: &str, name: &str, visibility: EntityVisibility) -> Result<(), KernelError> {
+        let result = self.store.register_entity(id, name, visibility);
+        self.failed |= result.is_err();
+        result
+    }
+    fn create_ledger_account(&mut self, id: &str, entity: &str, name: &str, currency: &str, element: AccountElement, role: AccountRole) -> Result<(), KernelError> {
+        let result = self.store.create_ledger_account(id, entity, name, currency, element, role);
+        self.failed |= result.is_err();
+        result
+    }
+    fn get_account(&self, id: &str) -> Result<Option<LedgerAccount>, KernelError> {
+        self.store.get_account(id)
+    }
+    fn list_accounts(&self, entity: &str) -> Result<Vec<LedgerAccount>, KernelError> {
+        self.store.list_accounts(entity)
+    }
+    fn post_entry(&mut self, draft: &JournalEntryDraft) -> Result<String, KernelError> {
+        let result = self.store.post_entry(draft);
+        self.failed |= result.is_err();
+        result
+    }
+    fn get_entry(&self, id: &str) -> Result<Option<CommittedJournalEntry>, KernelError> {
+        self.store.get_entry(id)
+    }
+    fn list_active_entries_for_account(&self, id: &str, filter: &EntryFilter) -> Result<Vec<CommittedJournalEntry>, KernelError> {
+        self.store.list_active_entries_for_account(id, filter)
+    }
+    fn get_entry_lineage(&self, id: &str) -> Result<Vec<CommittedJournalEntry>, KernelError> {
+        self.store.get_entry_lineage(id)
+    }
+    fn settle_group(&mut self, id: &str, name: &str, posting_ids: &[&str]) -> Result<(), KernelError> {
+        let result = self.store.settle_group(id, name, posting_ids);
+        self.failed |= result.is_err();
+        result
+    }
+    fn get_account_balance(&self, id: &str) -> Result<i64, KernelError> {
+        self.store.get_account_balance(id)
+    }
+    fn summarize_accounting_equation(&self, entity: &str, currency: &str) -> Result<AccountingEquationSummary, KernelError> {
+        self.store.summarize_accounting_equation(entity, currency)
+    }
+}
+
 impl SqliteLedgerAdapter {
+    fn validate_aggregate_bounds(conn: &Connection) -> Result<(), KernelError> {
+        let mut stmt = conn.prepare(
+            "SELECT trial_debits_minor, trial_credits_minor, assets_minor,
+                    liabilities_minor, total_equity_minor, equation_discrepancy_minor
+             FROM v_accounting_equation_check",
+        ).map_err(|e| KernelError::Storage(e.to_string()))?;
+        let mut rows = stmt.query([]).map_err(|e| KernelError::Storage(e.to_string()))?;
+        while let Some(row) = rows.next().map_err(|_| KernelError::ArithmeticOverflow)? {
+            for index in 0..6 {
+                let _: i64 = row.get(index).map_err(|_| KernelError::ArithmeticOverflow)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn in_memory() -> Result<Self, KernelError> {
         let conn = Connection::open_in_memory()
             .map_err(|e| KernelError::Storage(e.to_string()))?;
@@ -28,12 +137,81 @@ impl SqliteLedgerAdapter {
         Self::from_connection(conn)
     }
 
-    pub fn from_connection(conn: Connection) -> Result<Self, KernelError> {
+    pub fn from_connection(mut conn: Connection) -> Result<Self, KernelError> {
         conn.execute_batch("PRAGMA foreign_keys = ON;")
             .map_err(|e| KernelError::Storage(e.to_string()))?;
-        conn.execute_batch(KERNEL_SCHEMA_SQL)
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(|e| KernelError::Storage(e.to_string()))?;
+        if version > 3 {
+            return Err(KernelError::Storage(format!("unsupported kernel schema version {version}")));
+        }
+        if version < 3 {
+            let has_schema: i64 = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entities')",
+                [], |row| row.get(0),
+            ).map_err(|e| KernelError::Storage(e.to_string()))?;
+            let tx = conn.transaction().map_err(|e| KernelError::Storage(e.to_string()))?;
+            if version == 0 && has_schema == 0 {
+                tx.execute_batch(KERNEL_SCHEMA_SQL)
+                    .map_err(|e| KernelError::Storage(e.to_string()))?;
+            }
+            tx.execute_batch("CREATE TABLE IF NOT EXISTS kernel_state (id INTEGER PRIMARY KEY CHECK(id = 1), revision INTEGER NOT NULL CHECK(revision >= 0));
+                INSERT OR IGNORE INTO kernel_state (id, revision) VALUES (1, 0);
+                CREATE TRIGGER IF NOT EXISTS trg_settled_group_prevents_supersede
+                BEFORE UPDATE OF status ON journal_entries
+                WHEN OLD.status = 'active' AND NEW.status IN ('superseded', 'voided')
+                  AND EXISTS (
+                    SELECT 1 FROM journal_postings jp
+                    JOIN settlement_group_postings sgp ON sgp.posting_id = jp.id
+                    JOIN settlement_groups sg ON sg.id = sgp.group_id
+                    WHERE jp.entry_id = OLD.id AND sg.status = 'settled'
+                  )
+                BEGIN
+                    SELECT RAISE(ABORT, 'INV-013: settled group must be corrected atomically with its entry');
+                END;
+                DROP VIEW IF EXISTS v_account_balances;
+                CREATE VIEW v_account_balances AS
+                SELECT la.id AS ledger_account_id, la.entity_id, la.name AS account_name,
+                       la.currency, la.element, la.role,
+                       COALESCE(SUM(CASE WHEN jp.side = 'debit' THEN jp.amount_minor ELSE 0 END), 0) AS total_debits_minor,
+                       COALESCE(SUM(CASE WHEN jp.side = 'credit' THEN jp.amount_minor ELSE 0 END), 0) AS total_credits_minor,
+                       COALESCE(SUM(CASE
+                           WHEN la.element IN ('asset', 'expense') THEN
+                               CASE WHEN jp.side = 'debit' THEN jp.amount_minor ELSE -jp.amount_minor END
+                           ELSE CASE WHEN jp.side = 'credit' THEN jp.amount_minor ELSE -jp.amount_minor END
+                       END), 0) AS normal_balance_minor
+                FROM ledger_accounts la
+                LEFT JOIN journal_postings jp ON jp.ledger_account_id = la.id
+                    AND EXISTS (SELECT 1 FROM journal_entries je WHERE je.id = jp.entry_id AND je.status = 'active')
+                GROUP BY la.id, la.entity_id, la.name, la.currency, la.element, la.role;
+                PRAGMA user_version = 3;")
+                .map_err(|e| KernelError::Storage(e.to_string()))?;
+            tx.commit().map_err(|e| KernelError::Storage(e.to_string()))?;
+        }
         Ok(Self { conn })
+    }
+
+    pub fn revision(&self) -> Result<i64, KernelError> {
+        self.conn.query_row("SELECT revision FROM kernel_state WHERE id = 1", [], |row| row.get(0))
+            .map_err(|e| KernelError::Storage(e.to_string()))
+    }
+
+    /// Begin a shared SQLite transaction after checking the revision shown in a preview.
+    pub fn begin_transaction(&mut self, expected_revision: i64) -> Result<SqliteLedgerTransaction<'_>, KernelError> {
+        self.conn.execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| KernelError::Storage(e.to_string()))?;
+        let actual = match self.revision() {
+            Ok(actual) => actual,
+            Err(error) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        };
+        if actual != expected_revision {
+            let _ = self.conn.execute_batch("ROLLBACK");
+            return Err(KernelError::RevisionConflict { expected: expected_revision, actual });
+        }
+        Ok(SqliteLedgerTransaction { store: self, expected_revision, finished: false, failed: false })
     }
 
     pub fn raw_connection(&mut self) -> &mut Connection {
@@ -213,6 +391,7 @@ impl LedgerStore for SqliteLedgerAdapter {
 
     fn post_entry(&mut self, draft: &JournalEntryDraft) -> Result<String, KernelError> {
         draft.validate_trial_balance()?;
+        let standalone = self.conn.is_autocommit();
         let eff_date = draft
             .effective_date
             .as_deref()
@@ -220,7 +399,7 @@ impl LedgerStore for SqliteLedgerAdapter {
 
         let tx = self
             .conn
-            .transaction()
+            .savepoint()
             .map_err(|e| KernelError::Storage(e.to_string()))?;
 
         // If replacing an existing entry, supersede the old entry
@@ -295,6 +474,12 @@ impl LedgerStore for SqliteLedgerAdapter {
         )
         .map_err(|e| KernelError::Storage(e.to_string()))?;
 
+        if standalone {
+            // Reject a mathematically balanced entry if it overflows an existing total.
+            Self::validate_aggregate_bounds(&tx)?;
+            tx.execute("UPDATE kernel_state SET revision = revision + 1 WHERE id = 1", [])
+                .map_err(|e| KernelError::Storage(e.to_string()))?;
+        }
         tx.commit()
             .map_err(|e| KernelError::Storage(e.to_string()))?;
 
@@ -464,9 +649,10 @@ impl LedgerStore for SqliteLedgerAdapter {
         name: &str,
         posting_ids: &[&str],
     ) -> Result<(), KernelError> {
+        let standalone = self.conn.is_autocommit();
         let tx = self
             .conn
-            .transaction()
+            .savepoint()
             .map_err(|e| KernelError::Storage(e.to_string()))?;
 
         tx.execute(
@@ -489,6 +675,10 @@ impl LedgerStore for SqliteLedgerAdapter {
         )
         .map_err(|e| KernelError::Storage(e.to_string()))?;
 
+        if standalone {
+            tx.execute("UPDATE kernel_state SET revision = revision + 1 WHERE id = 1", [])
+                .map_err(|e| KernelError::Storage(e.to_string()))?;
+        }
         tx.commit()
             .map_err(|e| KernelError::Storage(e.to_string()))?;
         Ok(())

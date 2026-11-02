@@ -1,7 +1,7 @@
 //! Application Ring: Recipe Compilers & Execution Provenance (`accounting-recipes`)
 
 use accounting_kernel::{
-    next_deterministic_id, AccountElement, JournalEntryDraft, KernelError, LedgerStore, Money,
+    new_unique_id, AccountElement, JournalEntryDraft, KernelError, LedgerStore, Money,
     PostingPrimitive, PostingSide,
 };
 use rusqlite::{params, Connection};
@@ -116,7 +116,7 @@ impl RecipeCompiler {
         );
 
         let execution = RecipeExecution {
-            id: next_deterministic_id("rx"),
+            id: new_unique_id("rx"),
             recipe_name: "split_purchase".to_string(),
             recipe_version: "1.0.0".to_string(),
             journal_entry_id: Some(draft.id.clone()),

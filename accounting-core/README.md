@@ -19,3 +19,22 @@ See [`docs/KERNEL_INTERFACE_SPEC.md`](docs/KERNEL_INTERFACE_SPEC.md) for full te
 cargo test --workspace
 cargo run -p accounting-cli
 ```
+
+## Application transaction boundary
+
+Application services can read `store.revision()`, prepare a preview, then call
+`store.begin_transaction(expected_revision)`. The returned handle implements
+`LedgerStore`, so entries and clearing groups can be staged alongside application
+records through `with_connection`. `commit()` makes them durable and advances the
+revision; dropping the handle rolls everything back. A failed ledger mutation
+prevents that handle from committing.
+
+An entry posted inside the handle is `active` for validation within that
+transaction but is invisible to other database connections until commit. The
+application must validate all required participants before committing a group.
+The current settlement primitive checks linked clearing postings; it does not
+itself know which observed movements a workflow requires.
+
+Entries linked to a settled group cannot currently be replaced in isolation.
+A coordinated correction operation for rebuilding group membership and audit
+records remains to be added.

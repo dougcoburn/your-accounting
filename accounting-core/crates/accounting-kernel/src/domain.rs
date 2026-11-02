@@ -4,13 +4,14 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
+/// Stable, process-independent identifier for persisted records.
+pub fn new_unique_id(prefix: &str) -> String {
+    format!("{prefix}_{}", uuid::Uuid::new_v4().simple())
+}
 
-static ID_COUNTER: AtomicU64 = AtomicU64::new(1);
-
+/// Compatibility alias; IDs are now random rather than process-local counters.
 pub fn next_deterministic_id(prefix: &str) -> String {
-    let seq = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{prefix}_{seq:08x}")
+    new_unique_id(prefix)
 }
 
 // =============================================================================
@@ -29,6 +30,8 @@ pub enum KernelError {
     UnknownEntityPartition { entity_id: String, currency: String },
     UnknownEntry(String),
     InvalidSupersedeTarget { entry_id: String, reason: String },
+    RevisionConflict { expected: i64, actual: i64 },
+    TransactionAborted,
     EquationViolation(AccountingEquationSummary),
     Storage(String),
 }
@@ -46,6 +49,8 @@ impl fmt::Display for KernelError {
             Self::UnknownEntityPartition { entity_id, currency } => write!(f, "No ledger accounts found for ({entity_id}, {currency})"),
             Self::UnknownEntry(id) => write!(f, "Unknown journal_entry_id: {id}"),
             Self::InvalidSupersedeTarget { entry_id, reason } => write!(f, "Cannot supersede entry {entry_id}: {reason}"),
+            Self::RevisionConflict { expected, actual } => write!(f, "Ledger revision conflict: expected {expected}, found {actual}"),
+            Self::TransactionAborted => write!(f, "Transaction cannot commit after a ledger mutation failed"),
             Self::EquationViolation(snap) => write!(f, "Accounting equation violated: {snap:?}"),
             Self::Storage(msg) => write!(f, "Storage failure: {msg}"),
         }
@@ -291,7 +296,7 @@ impl PostingPrimitive {
         memo: impl Into<String>,
     ) -> Self {
         Self {
-            id: next_deterministic_id("pst"),
+            id: new_unique_id("pst"),
             ledger_account_id: ledger_account_id.into(),
             entity_id: entity_id.into(),
             money,
@@ -318,7 +323,7 @@ impl JournalEntryDraft {
         postings: Vec<PostingPrimitive>,
     ) -> Self {
         Self {
-            id: next_deterministic_id("je"),
+            id: new_unique_id("je"),
             posting_date: posting_date.into(),
             effective_date: None,
             description: description.into(),
@@ -334,7 +339,7 @@ impl JournalEntryDraft {
         postings: Vec<PostingPrimitive>,
     ) -> Self {
         Self {
-            id: next_deterministic_id("je"),
+            id: new_unique_id("je"),
             posting_date: posting_date.into(),
             effective_date: None,
             description: description.into(),
