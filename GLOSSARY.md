@@ -66,8 +66,17 @@ Money stored as an integer count of the currency's smallest unit (cents for USD)
 **Non-taxable fringe benefit** (compensation category):
 Employer-paid value received but excluded from taxable wages (e.g. employer health premiums, IRC §106; employer HSA contributions, §223/W-2 box 12 W). Grossed up as compensation plus an equal expense or transfer. _Avoid_: plain "income" (implies taxable).
 
-**Investment gain/loss** (valuation adjustment):
-The monthly entry that brings an investment account's book balance to its statement balance. Neither income nor expense; covers market moves, dividends and fees inside the account.
+**Investment income** (dividends, interest, distributions):
+A real event inside an investment account, journaled as a transaction with its own `recorded_at`. Part of book basis. _Avoid_: lumping it into gain/loss.
+
+**Book basis** (investment account):
+The account's balance from the journal alone: contributions + investment income - withdrawals (matches ADR 0005).
+
+**Valuation snapshot**:
+A point-in-time estimate of an investment account's market value, recorded outside the journal (never a posting). Allowed only on `investment` accounts.
+
+**Unrealized gain/loss** (market move):
+Valuation snapshot minus book basis. Derived for display only, never journaled. Only a realized event (e.g. a sale) becomes a transaction. _Avoid_: "valuation adjustment" or a plug entry.
 
 **Transaction date vs. posting date**:
 Transaction date is when the purchase happened (preferred effective date). Posting date is when the institution posted it (used to reconcile to statements and the fallback effective date).
