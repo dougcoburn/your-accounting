@@ -75,6 +75,9 @@ The account's balance from the journal alone. Investments: contributions + inves
 **Valuation snapshot**:
 A point-in-time estimate of a non-cash asset account's market value (a brokerage statement, an appraisal or home-value estimate), recorded outside the journal (never a posting). Allowed on non-cash asset accounts such as investments, real estate and vehicles; never on cash, card or liability accounts.
 
+**FX translation** (deferred):
+Restating a foreign-currency account's exact balance in the reporting currency at an exchange rate on a date. Exchange rates are stored per currency pair per date; the translated value and any translation gain/loss are display-only, never journaled. Not a valuation snapshot: the account's balance check stays in its own currency.
+
 **Unrealized gain/loss** (market move):
 Valuation snapshot minus book basis. Derived for display only, never journaled. Only a realized event (e.g. a sale) becomes a transaction. _Avoid_: "valuation adjustment" or a plug entry.
 
