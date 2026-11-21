@@ -73,6 +73,7 @@ ADRs: docs/adr/0001-0007 (drafted 2026-11-19, revised after Eng Leads review 202
 - Architect review answers (2026-11-20):
   - No committed clearing for expected movements (v0.2 INV-006/008/009 stand; no amending ADR). Splits of one observation (e.g. paystub) need not commit together; each group that commits must be complete under its recipe and kernel rules. An unmatched split like the HSA either (a) is booked as an expense (black-box 'investment contribution') and commits with the paystub group, or (b) is moved out of the paystub group into its own group that stays uncommitted/draft (visible as unreviewed) until its counterpart exists.
   - Investment valuation: no gain/loss posting. Market value is recorded as point-in-time valuation snapshots (when available) and compared against the account's book basis (contributions + dividends - withdrawals). Unrealized gain/loss is computed for display, never journaled; only realized events are transactions. Replaces the plug in ADR 0005.
+  - Valuation snapshots widened (2026-11-21): allowed on any non-cash asset account (investments, real estate like the house and rental, vehicles); never on cash, card, or liability accounts. A house is a fixed asset at cost basis (purchase + improvements); the mortgage is a separate liability. Depreciation for the rental is deferred.
   - Monarch CSV date semantics (posting vs purchase): unknown; irrelevant for month 1. Treat as the effective date.
   - Evidence store is per entity database, not shared (avoids cross-entity ACLs/authorization).
 

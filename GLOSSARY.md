@@ -69,11 +69,11 @@ Employer-paid value received but excluded from taxable wages (e.g. employer heal
 **Investment income** (dividends, interest, distributions):
 A real event inside an investment account, journaled as a transaction with its own `recorded_at`. Part of book basis. _Avoid_: lumping it into gain/loss.
 
-**Book basis** (investment account):
-The account's balance from the journal alone: contributions + investment income - withdrawals (matches ADR 0005).
+**Book basis** (non-cash asset account):
+The account's balance from the journal alone. Investments: contributions + investment income - withdrawals. Real estate and other fixed assets: purchase cost + improvements (ADR 0005).
 
 **Valuation snapshot**:
-A point-in-time estimate of an investment account's market value, recorded outside the journal (never a posting). Allowed only on `investment` accounts.
+A point-in-time estimate of a non-cash asset account's market value (a brokerage statement, an appraisal or home-value estimate), recorded outside the journal (never a posting). Allowed on non-cash asset accounts such as investments, real estate and vehicles; never on cash, card or liability accounts.
 
 **Unrealized gain/loss** (market move):
 Valuation snapshot minus book basis. Derived for display only, never journaled. Only a realized event (e.g. a sale) becomes a transaction. _Avoid_: "valuation adjustment" or a plug entry.
