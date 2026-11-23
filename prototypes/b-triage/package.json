@@ -1,0 +1,20 @@
+{
+  "name": "ya-prototype-b-triage",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Throwaway Prototype B: inbox triage for your-accounting (month 1).",
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "esbuild": "^0.25.12",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

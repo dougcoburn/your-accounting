@@ -1,0 +1,39 @@
+# synthetic
+Date,Merchant,Category,Account,Original Statement,Notes,Amount,Tags,Owner,Reviewed,Reviewed At,Reviewed By,Pending,Id
+2025-10-01,Bluebird Coffee,Restaurants,Vista Card *8841,BLUEBIRD COFFEE PORTLAND,,-6.45,e-household,Alex,true,2025-10-02 08:00:00,Alex,false,syn-001
+2025-10-01,City Transit,Transit,Vista Card *8841,CITY TRANSIT TAP,,-2.50,e-household,Alex,true,2025-10-02 08:00:00,Alex,false,syn-002
+2025-10-02,Northwind Market,Groceries,Vista Card *8841,NORTHWIND MARKET #12,,-84.17,e-household,Alex,true,2025-10-02 18:30:00,Alex,false,syn-003
+2025-10-03,Riverton Energy,Utilities,Vista Checking *2219,RIVERTON ENERGY ACH,,-92.00,e-household,Alex,true,2025-10-03 12:00:00,Alex,false,syn-004
+2025-10-04,Interest,Interest,Harbor Savings *3304,MONTHLY INTEREST,,1.12,e-household,Alex,true,2025-10-04 00:00:00,Alex,false,syn-005
+2025-10-02,Harbor Savings,Transfer,Vista Checking *2219,HARBOR SAVINGS TRANSFER,,-100.00,e-household,Alex,true,2025-10-02 12:00:00,Alex,false,syn-034
+2025-10-02,Vista Checking,Transfer,Harbor Savings *3304,VISTA CHECKING TRANSFER,,100.00,e-household,Alex,true,2025-10-02 12:00:00,Alex,false,syn-035
+2025-10-05,Oak & Iron Hardware,Home Improvement,Vista Card *8841,OAK AND IRON HARDWARE,,-47.63,e-household,Alex,false,,,false,syn-006
+2025-10-06,Pinecone Books,Entertainment,Vista Card *8841,PINECONE BOOKS,,-22.00,e-household,Alex,false,,,false,syn-007
+2025-10-07,Meadow Pharmacy,Medical,Vista Card *8841,MEADOW PHARMACY,,-18.49,e-household,Alex,false,,,false,syn-008
+2025-10-08,Harvest Co-op,Groceries,Vista Checking *2219,HARVEST COOP POS,,-63.20,e-household,Alex,false,,,false,syn-009
+2025-10-09,Comet Fuel,Gas,Vista Card *8841,COMET FUEL 441,,-41.88,e-household,Alex,false,,,false,syn-010
+2025-10-10,Nimbus Cloud,Software,Dragonfly Checking *1190,NIMBUS CLOUD INC,,-29.00,e-dragonfly,Alex,false,,,false,syn-011
+2025-10-11,Silverline Fiber,Utilities,Vista Checking *2219,SILVERLINE FIBER,,-79.99,e-household,Alex,false,,,false,syn-012
+2025-10-12,Greenfield Vet,Medical,Vista Card *8841,GREENFIELD VET CLINIC,annual exam,-156.00,e-household,Alex,false,,,false,syn-028
+2025-10-13,Metro Parking,Parking,Vista Card *8841,METRO PARKING,,-8.00,e-household,Alex,false,,,false,syn-029
+2025-10-14,Vista Card,Credit Card Payment,Vista Checking *2219,VISTA CARD AUTOPAY,,-1200.00,e-household,Alex,false,,,false,syn-013
+2025-10-15,Payment - Thank You,Credit Card Payment,Vista Card *8841,PAYMENT THANK YOU,,1200.00,e-household,Alex,false,,,false,syn-014
+2025-10-14,Vista Card,Credit Card Payment,Harbor Savings *3304,VISTA CARD FROM SAVINGS,,-200.00,e-household,Alex,false,,,false,syn-017
+2025-10-15,Payment - Thank You,Credit Card Payment,Vista Card *8841,PAYMENT THANK YOU,,200.00,e-household,Alex,false,,,false,syn-018
+2025-10-16,Vista Card,Credit Card Payment,Vista Checking *2219,VISTA CARD EXTRA,,-75.00,e-household,Alex,false,,,false,syn-019
+2025-10-03,Northwind Staffing,Paychecks,Vista Checking *2219,NORTHWIND STAFFING PAYROLL,,4100.00,e-household,Alex,false,,,false,syn-020
+2025-10-17,Northwind Staffing,Paychecks,Vista Checking *2219,NORTHWIND STAFFING PAYROLL,,4100.00,e-household,Alex,false,,,false,syn-021
+2025-10-18,Northwind Staffing,Transfer,Summit HSA *7720,NORTHWIND STAFFING HSA,,150.00,e-household,Alex,false,,,false,syn-022
+2025-10-19,Cedar Street Cafe,Restaurants,Vista Card *8841,CEDAR ST CAFE,,-14.75,e-household,Alex,false,,,false,syn-030
+2025-10-20,Harbor Savings,Transfer,Vista Checking *2219,HARBOR SAVINGS TRANSFER,,-500.00,e-household,Alex,false,,,false,syn-023
+2025-10-20,Vista Checking,Transfer,Harbor Savings *3304,VISTA CHECKING TRANSFER,,500.00,e-household,Alex,false,,,false,syn-024
+2025-10-21,Pinecone Books,Entertainment,Vista Card *8841,PINECONE BOOKS REFUND,,22.00,e-household,Alex,false,,,false,syn-025
+2025-10-22,Vista Card Rewards,Credit Card Rewards,Vista Card *8841,STATEMENT CREDIT,,15.00,e-household,Alex,false,,,false,syn-026
+2025-10-23,Lumen Mobile,Phone,Vista Checking *2219,LUMEN MOBILE ACH,,-55.00,e-household,Alex,false,,,false,syn-031
+2025-10-24,Paper Kite Studio,Office Supplies,Dragonfly Checking *1190,PAPER KITE STUDIO,,-64.12,e-dragonfly,Alex,false,,,false,syn-032
+2025-10-25,Rainier Insurance,Insurance,Vista Checking *2219,RAINIER INS ACH,,-118.40,e-household,Alex,false,,,false,syn-033
+2025-10-26,Watershed Gym,Fitness,Vista Card *8841,WATERSHED GYM,,-45.00,e-household,Alex,false,,,false,syn-036
+2025-10-27,Maple Library,,Vista Checking *2219,MAPLE LIBRARY FINES,,-1.25,e-household,Alex,false,,,false,syn-037
+2025-10-28,Vista Card,Credit Card Payment,Vista Checking *2219,VISTA CARD PAYMENT,,-350.00,e-household,Alex,false,,,false,syn-015
+2025-10-28,Payment - Thank You,Credit Card Payment,Vista Card *8841,PAYMENT THANK YOU,,350.00,e-household,Alex,false,,,false,syn-016
+2025-10-30,Night Owl Diner,Restaurants,Vista Card *8841,NIGHT OWL DINER,,-33.40,e-household,Alex,false,,,true,syn-027
