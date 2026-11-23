@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Prototype A · Spreadsheet register</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#grid">Skip to register</a>
+    <header class="top">
+      <div class="top-title">
+        <h1>Spreadsheet register</h1>
+        <p class="tagline">Prototype A · throwaway toy ledger · October worklist</p>
+      </div>
+      <div class="top-meta" id="source-meta"></div>
+    </header>
+
+    <section class="toolbar" aria-label="Filters">
+      <label class="search">
+        <span class="search-kicker">/</span>
+        <input
+          id="filter-input"
+          type="search"
+          placeholder="Filter merchant, account, category, notes"
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </label>
+      <fieldset class="chips" id="origin-filters">
+        <legend>Origin</legend>
+      </fieldset>
+      <fieldset class="chips" id="state-filters">
+        <legend>Review state</legend>
+      </fieldset>
+      <p class="counts" id="counts" aria-live="polite"></p>
+    </section>
+
+    <div class="workspace">
+      <div class="grid-wrap">
+        <table id="grid" class="register" role="grid" aria-label="Register lines" aria-rowcount="0">
+          <thead>
+            <tr role="row">
+              <th role="columnheader" scope="col">Occurred</th>
+              <th role="columnheader" scope="col">Origin</th>
+              <th role="columnheader" scope="col">Acct</th>
+              <th role="columnheader" scope="col">Merchant</th>
+              <th role="columnheader" scope="col" class="num">Amount</th>
+              <th role="columnheader" scope="col">Monarch hint</th>
+              <th role="columnheader" scope="col">Recipe</th>
+              <th role="columnheader" scope="col">Category</th>
+              <th role="columnheader" scope="col">State</th>
+            </tr>
+          </thead>
+          <tbody id="grid-body"></tbody>
+        </table>
+      </div>
+
+      <aside class="panel" id="preview-panel" aria-label="Debit and credit preview">
+        <h2>Debit / credit preview</h2>
+        <div id="preview-body">
+          <p class="muted">Select a row to preview postings for its recipe.</p>
+        </div>
+      </aside>
+    </div>
+
+    <div id="combo-root"></div>
+
+    <p class="status" id="status" role="status" aria-live="polite"></p>
+    <p class="hint-bar">
+      Keyboard-first · <kbd>j</kbd><kbd>k</kbd> move · <kbd>Enter</kbd> edit · <kbd>a</kbd> accept/post ·
+      <kbd>/</kbd> filter · <kbd>?</kbd> keys
+    </p>
+
+    <div id="help" class="help" hidden role="dialog" aria-modal="true" aria-labelledby="help-title">
+      <div class="help-card">
+        <h2 id="help-title">Keyboard</h2>
+        <dl class="keys">
+          <div><dt><kbd>j</kbd> / <kbd>↓</kbd></dt><dd>Next row</dd></div>
+          <div><dt><kbd>k</kbd> / <kbd>↑</kbd></dt><dd>Previous row</dd></div>
+          <div><dt><kbd>Shift</kbd>+arrows</dt><dd>Extend selection</dd></div>
+          <div><dt><kbd>Space</kbd></dt><dd>Toggle row in selection</dd></div>
+          <div><dt><kbd>Home</kbd> / <kbd>End</kbd></dt><dd>First / last visible row</dd></div>
+          <div><dt><kbd>h</kbd> <kbd>l</kbd> / <kbd>←</kbd> <kbd>→</kbd></dt><dd>Move between cells</dd></div>
+          <div><dt><kbd>Enter</kbd> or <kbd>e</kbd></dt><dd>Edit recipe, category, or counter-account</dd></div>
+          <div><dt><kbd>Esc</kbd></dt><dd>Cancel edit, close help, or blur filter</dd></div>
+          <div><dt><kbd>/</kbd></dt><dd>Focus the filter box</dd></div>
+          <div><dt><kbd>a</kbd></dt><dd>Accept / post selected lines if the preview balances</dd></div>
+          <div><dt><kbd>x</kbd></dt><dd>Void selected lines</dd></div>
+          <div><dt><kbd>u</kbd></dt><dd>Reopen a reconciled or voided line (toy; not append-only)</dd></div>
+          <div><dt><kbd>?</kbd></dt><dd>Toggle this help</dd></div>
+        </dl>
+        <p class="muted">Visible focus stays on the grid. Everything works without a mouse.</p>
+        <button type="button" id="help-close">Close</button>
+      </div>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

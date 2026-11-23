@@ -1,0 +1,53 @@
+# synthetic
+Date,Merchant,Category,Account,Original Statement,Notes,Amount,Tags,Owner,Reviewed,Reviewed At,Reviewed By,Pending,Id
+2026-10-01,Northwind Market,Groceries,Household Checking ••••4321,NORTHWIND MARKET #104,Weekly groceries,-128.47,e-household,Doug,Yes,2026-10-02T14:11:00Z,Doug,false,syn-oct26-001
+2026-10-01,Contoso Cafe,Restaurants,Household Visa ••••5678,CONTOSO CAFE #0012,,-14.80,e-household,Doug,Yes,2026-10-02T14:11:00Z,Doug,false,syn-oct26-002
+2026-10-02,Litware Transit,Transportation,Doug Visa ••••7777,LITWARE TRANSIT OR-214,,-3.50,e-doug,Doug,Yes,2026-10-03T09:00:00Z,Doug,false,syn-oct26-003
+2026-10-02,Proseware SaaS,Software,Doug Checking ••••1234,PROSEWARE MONTHLY,Writing tools subscription,-12.00,e-doug,Doug,Yes,2026-10-03T09:00:00Z,Doug,false,syn-oct26-004
+2026-10-03,Adventure Works Hardware,Household supplies,Household Visa ••••5678,ADVENTURE WORKS HDWR,Furnace filter and batteries,-41.19,e-household,Doug,Yes,2026-10-04T16:22:00Z,Doug,false,syn-oct26-005
+2026-10-03,Fourth Coffee,Restaurants,Doug Visa ••••7777,FOURTH COFFEE DOWNTOWN,,-6.25,e-doug,Doug,Yes,2026-10-04T16:22:00Z,Doug,false,syn-oct26-006
+2026-10-04,Fabrikam Electric,Utilities,Household Checking ••••4321,FABRIKAM ELECTRIC,October electric,-97.33,e-household,Doug,Yes,2026-10-05T11:40:00Z,Doug,false,syn-oct26-007
+2026-10-04,Wide World Importers,Household supplies,Household Visa ••••5678,WWIDE IMPORTERS,"Paper towels, soap, and sponges",-38.02,e-household,Doug,Yes,2026-10-05T11:40:00Z,Doug,false,syn-oct26-008
+2026-10-05,Wingtip Medical,Medical,Doug Checking ••••1234,WINGTIP MEDICAL CLINIC,Office copay,-40.00,e-doug,Doug,Yes,2026-10-06T08:15:00Z,Doug,false,syn-oct26-009
+2026-10-05,Alpine Ski House,Entertainment,Household Visa ••••5678,ALPINE SKI HOUSE TIX,,-64.00,e-household,Doug,Yes,2026-10-06T08:15:00Z,Doug,false,syn-oct26-010
+2026-10-06,Northwind Market,Groceries,Household Checking ••••4321,NORTHWIND MARKET #104,"Milk, eggs, apples",-54.11,e-household,Doug,Yes,2026-10-07T19:03:00Z,Doug,false,syn-oct26-011
+2026-10-06,Relecloud Cloud,Software,Dragonfly Checking ••••2468,RELECLOUD CLOUD *HOSTING,Staging host,-29.00,e-dragonfly,Doug,Yes,2026-10-07T19:03:00Z,Doug,false,syn-oct26-012
+2026-10-07,Lucerne Publishing,Entertainment,Doug Visa ••••7777,LUCERNE PUBLISHING,Used technical paperback,-18.64,e-doug,Doug,Yes,2026-10-08T12:00:00Z,Doug,false,syn-oct26-013
+2026-10-07,Contoso Cafe,Restaurants,Household Visa ••••5678,CONTOSO CAFE #0012,,-9.15,e-household,Doug,No,,,true,syn-oct26-014
+2026-10-08,Margie's Travel,Transportation,Doug Visa ••••7777,MARGIES TRAVEL PARKING,Airport lot,-18.00,e-doug,Doug,Yes,2026-10-09T10:44:00Z,Doug,false,syn-oct26-015
+2026-10-08,Woodgrove Bank,Interest income,Savings ••••8888,WOODGROVE BANK INTEREST,Monthly savings interest,2.17,e-doug,Doug,Yes,2026-10-09T10:44:00Z,Doug,false,syn-oct26-016
+2026-10-09,Tailspin Payroll,Wages,Doug Checking ••••1234,TAILSPIN PAYROLL,Semi-monthly; employee HSA $200.00,3142.56,e-doug,Doug,Yes,2026-10-09T18:02:00Z,Doug,false,syn-oct26-017
+2026-10-09,Northwind Market,Groceries,Household Visa ••••5678,NORTHWIND MARKET #104,,-22.80,e-household,Doug,Yes,2026-10-10T13:21:00Z,Doug,false,syn-oct26-018
+2026-10-10,Graphic Design Institute,Client revenue,Dragonfly Checking ••••2468,GRAPHIC DESIGN INST.,"Invoice 1042, website refresh",1800.00,e-dragonfly,Doug,Yes,2026-10-10T15:00:00Z,Doug,false,syn-oct26-019
+2026-10-10,Proseware SaaS,Software,Dragonfly Checking ••••2468,PROSEWARE TEAM PLAN,Shared design tools,-48.00,e-dragonfly,Doug,Yes,2026-10-11T09:30:00Z,Doug,false,syn-oct26-020
+2026-10-11,Fourth Coffee,Restaurants,Doug Visa ••••7777,FOURTH COFFEE DOWNTOWN,"Lunch with a client, reimbursable",-18.42,e-doug,Doug,Yes,2026-10-12T11:11:00Z,Doug,false,syn-oct26-021
+2026-10-11,Adventure Works Hardware,Household supplies,Household Checking ••••4321,ADVENTURE WORKS HDWR,,-15.63,e-household,Doug,Yes,2026-10-12T11:11:00Z,Doug,false,syn-oct26-022
+2026-10-12,Litware Transit,Transportation,Household Visa ••••5678,LITWARE TRANSIT OR-214,,-3.50,e-household,Doug,Yes,2026-10-13T08:40:00Z,Doug,false,syn-oct26-023
+2026-10-13,Northwind Market,Groceries,Household Checking ••••4321,NORTHWIND MARKET #104,"Refund for bruised fruit, receipt 8891",32.10,e-household,Doug,Yes,2026-10-14T17:05:00Z,Doug,false,syn-oct26-024
+2026-10-13,Household Visa Payment,Transfer,Household Checking ••••4321,VISA PAYMENT THANK YOU,Card payment from checking,-450.00,e-household,Doug,Yes,2026-10-14T17:05:00Z,Doug,false,syn-oct26-025
+2026-10-13,Household Visa Payment,Transfer,Household Visa ••••5678,ONLINE PAYMENT - THANK YOU,Card payment received,450.00,e-household,Doug,Yes,2026-10-14T17:05:00Z,Doug,false,syn-oct26-026
+2026-10-14,Contoso Cafe,Restaurants,Doug Visa ••••7777,CONTOSO CAFE #0008,,-5.75,e-doug,Doug,No,,,true,syn-oct26-027
+2026-10-14,Wide World Importers,Household supplies,Household Visa ••••5678,WWIDE IMPORTERS,,-11.99,e-household,Doug,Yes,2026-10-15T12:18:00Z,Doug,false,syn-oct26-028
+2026-10-15,Fabrikam Fiber,Utilities,Household Checking ••••4321,FABRIKAM FIBER,"Internet, billed to Household",-79.99,e-household,Doug,Yes,2026-10-16T09:09:00Z,Doug,false,syn-oct26-029
+2026-10-15,Wingtip Medical,Medical,Doug Visa ••••7777,WINGTIP PHARMACY,Prescription refill,-12.34,e-doug,Doug,Yes,2026-10-16T09:09:00Z,Doug,false,syn-oct26-030
+2026-10-16,Relecloud Cloud,Hosting,Dragonfly Checking ••••2468,RELECLOUD CLOUD *HOSTING,"Called support.
+Ticket 4421, follow up next week.",-29.00,e-dragonfly,Doug,Yes,2026-10-17T14:55:00Z,Doug,false,syn-oct26-031
+2026-10-16,Household Visa Perk,Financial,Household Visa ••••5678,VISA REWARD CREDIT,"Statement credit, not income",5.00,e-household,Doug,Yes,2026-10-17T14:55:00Z,Doug,false,syn-oct26-032
+2026-10-17,Northwind Market,Groceries,Household Checking ••••4321,NORTHWIND MARKET #104,,-87.22,e-household,Doug,Yes,2026-10-18T16:01:00Z,Doug,false,syn-oct26-033
+2026-10-18,Alpine Ski House,Entertainment,Household Visa ••••5678,ALPINE SKI HOUSE CAFE,,-27.40,e-household,Doug,Yes,2026-10-19T10:10:00Z,Doug,false,syn-oct26-034
+2026-10-18,Northwind Studio,Transfer,Doug Checking ••••1234,NORTHWIND STUDIO REIMB,Partial reimbursement of conference fees,150.00,e-doug,Doug,Yes,2026-10-19T10:10:00Z,Doug,false,syn-oct26-035
+2026-10-19,Lucerne Publishing,Supplies,Dragonfly Checking ••••2468,LUCERNE PUBLISHING,Reference print for a client mock,-24.50,e-dragonfly,Doug,Yes,2026-10-20T13:33:00Z,Doug,false,syn-oct26-036
+2026-10-20,Contoso Cafe,Restaurants,Household Visa ••••5678,CONTOSO CAFE #0012,,-8.40,e-household,Doug,Yes,2026-10-21T08:08:00Z,Doug,false,syn-oct26-037
+2026-10-21,Litware Transit,Transportation,Doug Visa ••••7777,LITWARE TRANSIT OR-214,,-3.50,e-doug,Doug,Yes,2026-10-22T18:40:00Z,Doug,false,syn-oct26-038
+2026-10-22,Adventure Works Hardware,Household supplies,Household Visa ••••5678,ADVENTURE WORKS HDWR,Return of unused paint sample,19.87,e-household,Doug,Yes,2026-10-23T11:27:00Z,Doug,false,syn-oct26-039
+2026-10-23,Tailspin Payroll,Wages,Doug Checking ••••1234,TAILSPIN PAYROLL,Semi-monthly; employee HSA $200.00,3142.56,e-doug,Doug,Yes,2026-10-23T17:44:00Z,Doug,false,syn-oct26-040
+2026-10-24,Northwind Market,Groceries,Household Checking ••••4321,NORTHWIND MARKET #104,,-61.08,e-household,Doug,Yes,2026-10-25T15:15:00Z,Doug,false,syn-oct26-041
+2026-10-24,Fourth Coffee,Restaurants,Doug Visa ••••7777,FOURTH COFFEE DOWNTOWN,,-7.10,e-doug,Doug,No,,,true,syn-oct26-042
+2026-10-25,Doug Visa Payment,Transfer,Doug Checking ••••1234,VISA PAYMENT THANK YOU,Card payment from checking,-220.00,e-doug,Doug,Yes,2026-10-26T09:50:00Z,Doug,false,syn-oct26-043
+2026-10-25,Doug Visa Payment,Transfer,Doug Visa ••••7777,ONLINE PAYMENT - THANK YOU,Card payment received,220.00,e-doug,Doug,Yes,2026-10-26T09:50:00Z,Doug,false,syn-oct26-044
+2026-10-26,Graphic Design Institute,Client revenue,Dragonfly Checking ••••2468,GRAPHIC DESIGN INST.,"Invoice 1048, retainers",950.00,e-dragonfly,Doug,Yes,2026-10-27T12:12:00Z,Doug,false,syn-oct26-045
+2026-10-27,Proseware SaaS,Software,Doug Checking ••••1234,PROSEWARE MONTHLY,,-12.00,e-doug,Doug,Yes,2026-10-28T14:00:00Z,Doug,false,syn-oct26-046
+2026-10-28,Wide World Importers,Household supplies,Household Visa ••••5678,WWIDE IMPORTERS,,-16.44,e-household,Doug,No,,,true,syn-oct26-047
+2026-10-29,Northwind Market,Groceries,Household Checking ••••4321,NORTHWIND MARKET #104,Halloween candy and soup,-73.55,e-household,Doug,Yes,2026-10-30T16:16:00Z,Doug,false,syn-oct26-048
+2026-10-30,Contoso Cafe,Restaurants,Household Visa ••••5678,CONTOSO CAFE #0012,,-11.20,e-household,Doug,Yes,2026-10-31T09:09:00Z,Doug,false,syn-oct26-049
+2026-10-31,Woodgrove Bank,Interest income,Doug Checking ••••1234,WOODGROVE BANK INTEREST,Checking interest,0.86,e-doug,Doug,Yes,2026-11-01T08:00:00Z,Doug,false,syn-oct26-050
