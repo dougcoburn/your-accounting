@@ -21,14 +21,26 @@ function expectedKey(seq: number): string {
   return `exp:${seq}`;
 }
 
-export function booksFromObservations(observations: Observation[]): Books {
-  const lines: Line[] = observations.map((obs) => ({
-    key: observedKey(obs.id),
-    origin: "observed" as const,
-    state: obs.reviewed ? "reconciled" : "unreviewed",
-    observation: obs,
-    appliedRecipe: obs.reviewed ? "imported-reviewed" : undefined,
-  }));
+export type BooksOptions = {
+  /** When true, Monarch Reviewed=true starts reconciled. Default is to ignore it. */
+  honorMonarchReviewed?: boolean;
+};
+
+export function booksFromObservations(
+  observations: Observation[],
+  options: BooksOptions = {},
+): Books {
+  const honor = options.honorMonarchReviewed === true;
+  const lines: Line[] = observations.map((obs) => {
+    const startReconciled = honor && obs.reviewed;
+    return {
+      key: observedKey(obs.id),
+      origin: "observed" as const,
+      state: startReconciled ? "reconciled" : "unreviewed",
+      observation: obs,
+      appliedRecipe: startReconciled ? "imported-reviewed" : undefined,
+    };
+  });
   const entries: JournalEntry[] = [];
   let entrySeq = 1;
   let groupSeq = 1;

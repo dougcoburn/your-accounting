@@ -139,13 +139,41 @@ describe("transfer matching", () => {
   });
 });
 
+describe("Monarch Reviewed default and honor toggle", () => {
+  it("ignores Monarch Reviewed by default so every row starts unreviewed", () => {
+    const all = loadFixture();
+    assert.ok(all.some((o) => o.reviewed), "fixture should include reviewed rows");
+    const books0 = booksFromObservations(all);
+    const start = progress(books0);
+    assert.equal(start.unreviewed, all.length);
+    assert.equal(start.unreviewed, start.total);
+    assert.equal(start.reconciled, 0);
+    assert.equal(inboxLines(books0).length, all.length);
+    const reviewed = books0.lines.find((l) => l.observation?.id === "syn-001");
+    assert.equal(reviewed?.observation?.reviewed, true);
+    assert.equal(reviewed?.state, "unreviewed");
+  });
+
+  it("honors Monarch Reviewed when the option is on", () => {
+    const all = loadFixture();
+    const honored = booksFromObservations(all, { honorMonarchReviewed: true });
+    const p = progress(honored);
+    assert.equal(p.reconciled, 7);
+    assert.equal(p.unreviewed, 30);
+    assert.equal(p.total, all.length);
+    assert.equal(honored.lines.find((l) => l.observation?.id === "syn-001")?.state, "reconciled");
+    assert.equal(honored.lines.find((l) => l.observation?.id === "syn-006")?.state, "unreviewed");
+    assert.equal(inboxLines(honored).length, 30);
+  });
+});
+
 describe("toy ledger apply", () => {
   it("applies a card payment in one click and posts a balanced entry for both legs", () => {
     const all = loadFixture();
     const books0 = booksFromObservations(all);
     const start = progress(books0);
-    assert.equal(start.reconciled, 7);
-    assert.equal(start.unreviewed, 30);
+    assert.equal(start.reconciled, 0);
+    assert.equal(start.unreviewed, all.length);
     const treatment = suggestAll(all).get("syn-013")!;
     const result = applyTreatment(books0, "syn-013", treatment);
     assert.equal(result.ok, true);

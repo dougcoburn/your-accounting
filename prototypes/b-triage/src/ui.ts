@@ -16,9 +16,13 @@ type Bootstrap = {
   source: "synthetic" | "env";
   count: number;
   issueCount: number;
+  honorMonarchReviewed?: boolean;
+  unreviewedCount?: number;
   observations: Observation[];
 };
 
+let loadedObservations: Observation[] = [];
+let honorMonarchReviewed = false;
 let initialBooks: Books;
 let books: Books;
 let treatments: Map<string, Treatment>;
@@ -92,17 +96,37 @@ function voidSelected(): void {
   go(result.books, "Voided. The observation is tombstoned in this toy ledger.");
 }
 
-function reset(): void {
-  books = {
-    lines: initialBooks.lines.map((l) => ({ ...l })),
-    entries: initialBooks.entries.map((e) => ({ ...e, postings: e.postings.map((p) => ({ ...p })) })),
-    entrySeq: initialBooks.entrySeq,
-    expectedSeq: initialBooks.expectedSeq,
-    groupSeq: initialBooks.groupSeq,
+function cloneBooks(source: Books): Books {
+  return {
+    lines: source.lines.map((l) => ({ ...l })),
+    entries: source.entries.map((e) => ({ ...e, postings: e.postings.map((p) => ({ ...p })) })),
+    entrySeq: source.entrySeq,
+    expectedSeq: source.expectedSeq,
+    groupSeq: source.groupSeq,
   };
+}
+
+function loadBooks(): void {
+  initialBooks = booksFromObservations(loadedObservations, { honorMonarchReviewed });
+  books = cloneBooks(initialBooks);
   view = "inbox";
   selectedKey = inboxLines(books)[0]?.key ?? "";
+}
+
+function reset(): void {
+  loadBooks();
   setFlash("In-memory state reset. Nothing was stored in the browser.");
+  render();
+}
+
+function setHonorMonarchReviewed(next: boolean): void {
+  honorMonarchReviewed = next;
+  loadBooks();
+  setFlash(
+    next
+      ? "Honoring Monarch Reviewed. Those rows start reconciled. This setting stays in memory only."
+      : "Ignoring Monarch Reviewed. Every row starts unreviewed. This setting stays in memory only.",
+  );
   render();
 }
 
@@ -117,6 +141,7 @@ function escapeHtml(value: string): string {
 function chips(obs: Observation): string {
   const parts = [
     obs.pending ? `<span class="chip pending">Pending</span>` : "",
+    obs.reviewed ? `<span class="chip monarch">Monarch: reviewed</span>` : "",
     obs.category ? `<span class="chip">${escapeHtml(obs.category)}</span>` : `<span class="chip warn">No category</span>`,
     `<span class="chip">${escapeHtml(obs.account)}</span>`,
     obs.tags ? `<span class="chip">${escapeHtml(obs.tags)}</span>` : "",
@@ -295,7 +320,13 @@ function render(): void {
       </header>
       <div class="toolbar">
         <p class="hint"><kbd>J</kbd>/<kbd>K</kbd> move · <kbd>Enter</kbd> apply · <kbd>S</kbd> skip · <kbd>V</kbd> void. Refresh or Reset clears in-memory state. No browser storage, no network egress.</p>
-        <button class="btn ghost" data-act="reset">Reset</button>
+        <div class="toolbar-actions">
+          <label class="toggle">
+            <input type="checkbox" data-honor-reviewed ${honorMonarchReviewed ? "checked" : ""} />
+            Honor Monarch Reviewed
+          </label>
+          <button class="btn ghost" data-act="reset">Reset</button>
+        </div>
       </div>
       ${flashHtml}
       ${body}
@@ -319,6 +350,10 @@ function render(): void {
       else if (act === "void") voidSelected();
       else if (act === "reset") reset();
     });
+  });
+  const honorBox = app.querySelector<HTMLInputElement>("[data-honor-reviewed]");
+  honorBox?.addEventListener("change", () => {
+    setHonorMonarchReviewed(honorBox.checked);
   });
   app.querySelectorAll("article.card").forEach((el) => {
     el.addEventListener("click", () => {
@@ -380,10 +415,10 @@ async function start(): Promise<void> {
     if (!res.ok) throw new Error("bootstrap failed");
     const data = (await res.json()) as Bootstrap;
     sourceLabel = data.source === "env" ? "YA_MONARCH_CSV" : "synthetic fixture";
-    treatments = treatmentsFor(data.observations);
-    initialBooks = booksFromObservations(data.observations);
-    books = initialBooks;
-    selectedKey = inboxLines(books)[0]?.key ?? "";
+    loadedObservations = data.observations;
+    honorMonarchReviewed = data.honorMonarchReviewed === true;
+    treatments = treatmentsFor(loadedObservations);
+    loadBooks();
     render();
   } catch {
     app.innerHTML = `<p class="error">Could not load observations from the local server.</p>`;

@@ -4,6 +4,11 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { extname, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseMonarchCsv } from "./csv.ts";
+import { booksFromObservations, progress } from "./ledger.ts";
+
+/** Default for this prototype: ignore Monarch Reviewed so a fully-reviewed export is still triable. */
+const DEFAULT_HONOR_MONARCH_REVIEWED = false;
+
 
 const HOST = "127.0.0.1";
 const PORT = 5172;
@@ -91,10 +96,17 @@ function handle(req: IncomingMessage, res: ServerResponse, bootstrap: ReturnType
   }
   if (url.split("?")[0] === "/api/bootstrap") {
     // Counts only in the server log; the body is for the local browser.
+    const start = progress(
+      booksFromObservations(bootstrap.observations, {
+        honorMonarchReviewed: DEFAULT_HONOR_MONARCH_REVIEWED,
+      }),
+    );
     const body = JSON.stringify({
       source: bootstrap.source,
       count: bootstrap.count,
       issueCount: bootstrap.issueCount,
+      honorMonarchReviewed: DEFAULT_HONOR_MONARCH_REVIEWED,
+      unreviewedCount: start.unreviewed,
       observations: bootstrap.observations,
     });
     send(res, 200, body, "application/json; charset=utf-8");

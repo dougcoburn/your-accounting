@@ -40,7 +40,7 @@ npm test
 
 ## What it does
 
-- **Inbox.** One card per observation whose Monarch `Reviewed` column is false. Pending rows are badged but still triaged here.
+- **Inbox.** By default every imported observation starts unreviewed (Monarch's `Reviewed` column is ignored) so a fully-reviewed export is still triable. A small **Monarch: reviewed** badge on the card is only a hint. An in-memory **Honor Monarch Reviewed** toggle (off by default, no browser storage) starts those rows as reconciled instead. Pending rows are badged but still triaged here.
 - **One-click treatment.** Each card offers a suggested recipe plus category: Purchase, Refund (contra-expense), Perk credit, Card payment, Own-account transfer, or Paycheck.
 - **Settlement groups.** A card payment is paired with the matching bank outflow (same amount, opposite sign, date window, card vs deposit account). A paycheck is split into gross, taxes, pre-tax, Roth, HSA employee deduction, and net. An **Expected HSA** slot is shown on the card; it can stay unfilled as its own draft group (ADR 0006).
 - **Progress.** Count of observed lines that are reconciled, voided, or open, over the total imported. Inbox (unreviewed) and interpreted lines are not yet there.
@@ -64,6 +64,5 @@ The bundled synthetic file has 37 invented October 2025 rows covering ordinary s
 - This is an in-browser toy ledger, not the Rust kernel. Entries are not append-only events, ids are not ULIDs, and there is no `doctor` or statement reconciliation screen (U09) or correction lineage (U10).
 - Suggestions are deterministic heuristics (recipe-owned match hints), never auto-committed.
 - Paycheck splits use a canned Northwind Staffing stub when the net matches the fixture; other payroll rows get a balanced estimate from net pay.
-- The prototype **honors the Monarch Reviewed column**. Already-reviewed fixture rows start reconciled. A real export that marks every row reviewed will open with an empty inbox (see month-1 open question 9). Flip `Reviewed` to false in a local copy if you want those rows in the inbox; do not commit that copy.
-- Already-reviewed rows get simple opening ledger entries; historical settlement groups are not reconstructed.
+- Monarch `Reviewed` is ignored by default (month-1 open question 9). The honor toggle is in-memory only; turning it on rebuilds the toy books and, when honored, already-reviewed rows get simple opening ledger entries. Historical settlement groups are not reconstructed.
 - Void is a confirm-free in-memory tombstone, not a kernel commit.
