@@ -1,6 +1,6 @@
 # SPEC v2 delta: kernel schema v2
 
-**Status:** Proposed (U15, 2026-11-22). Needs Principal approval; Doug merges.
+**Status:** Proposed (U15, 2026-11-22). Principal approved the direction (PR 19 review) and the required fixes are applied; Doug merges.
 **Applies to:** `docs/SPEC.md` (v0.2, amended 2026-11-22).
 **Executable schema:** `docs/schema-v2.sql` (fresh migration 1). Smoke checks: `docs/schema-v2-smoke.sh` (synthetic data only).
 
@@ -87,14 +87,14 @@ This file lists what v2 changes in the v0.2 spec and why. Where this delta and `
 - Replace "mutable current-state ledger plus immutable revision/audit records" with ADR 0002: **append-only commits**. A correction is one commit containing reversal events (`reverses_id`), replacement events, `superseded_by` set on each reversed event, and any group or claim rows it needs.
 - Steps 1 to 6 stay, with step 1 written as `begin_transaction(expected_revision)`, so the commit's `seq` = expected_revision + 1 (AT-032). Step 6 becomes "append the commit; otherwise commit nothing".
 - `audit_operations` and `audit_changes` are removed. The audit is the log itself: commit actor, reason and recorded_at, plus event lineage.
-- Closed-month rule (ADR 0002): a commit is accepted only if every balance assertion with a cutoff on or after its earliest effective date, on every account it touches, recomputes unchanged. **Enforced by the commit validator (U19)**, not by a trigger.
+- Closed-month rule (ADR 0002): a commit is accepted only if every balance assertion with a cutoff on or after its earliest effective date, on every account it touches, recomputes unchanged. For a correction, that earliest date is **min(reversal date, replacement date)**. The reversal keeps the target's date, and the replacement may carry a corrected date (§5 Q2). **Enforced by the commit validator (U19)**, not by a trigger.
 
 ### §10 Proposed relational schema (replaced)
 `docs/schema-v2.sql` is now executable DDL. It covers concrete columns, CHECKs, foreign keys, the signed-balance convention, the money representation and the journal account mapping, which §10 said were missing.
 
 Removed: `entities.visibility`, `parties.opaque_entity_id`, `account_owner_valid`, `canonical_transactions`, `account_movements`, `movement_observations`, `event_transactions`, `scenarios` (renamed `recipes`), `transaction_tags`, `audit_operations`, `audit_changes`, `reporting_groups`, `reporting_group_members`, and the `mcp_*` tables. Also every mutable `state`/`revision`/`status` column.
 
-Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`, `import_runs`, `observation_voids`, `posting_observations`, `settlement_group_states`, `settlement_draft_participants`, `obligation_postings`, `cross_entity_outbox`, `cross_entity_inbox`, `evidence_deletions` and `valuation_snapshots`.
+Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`, `import_runs`, `observation_voids`, `posting_observations`, `settlement_group_states`, `settlement_draft_participants`, `obligation_postings`, `cross_entity_outbox`, `cross_entity_inbox`, `evidence_deletions`, `valuation_snapshots` and `reference_renames`.
 
 ### §11 Acceptance tests affected
 - **AT-001, AT-016:** two databases, with the legs paired by the outbox and inbox. "Business owes Household" is a payable to a party in one database and a receivable in the other.
@@ -118,19 +118,31 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
 - SPEC **ADR-005** (mutable current-state ledger) is superseded by docs/adr 0002.
 
 ## 3. Commit protocol (normative)
-1. The writer reads the current revision `N = max(commits.seq)`. With `PRAGMA foreign_keys=ON`, it opens one SQLite transaction (`BEGIN IMMEDIATE`).
-2. The writer inserts every row of the commit. Each carries `commit_id`, and events carry the commit's `recorded_at`. To correct an event it inserts the reversal, then `UPDATE accounting_events SET superseded_by = <reversal id> WHERE id = <target>`. This is the only UPDATE the schema accepts.
-3. The writer inserts the `commits` row with `seq = N + 1` **last**. The `commits_seal` trigger checks the following and aborts on any failure:
-   - the revision (AT-032)
-   - the shared recorded_at
-   - at least two postings per event (INV-002)
-   - balance per event, entity and currency (INV-001)
-   - reversals cancel their targets exactly and flag them `superseded_by` (ADR 0002 amendment)
-   - drafts hold no postings (INV-006)
-   - reconciled groups hold postings with zero clearing residual (INV-008, INV-017, AT-030)
-   - voids reverse the events linked to them (ADR 0002)
-4. The writer issues COMMIT. If the commits row was never written, the deferred foreign keys fail at COMMIT and nothing persists.
-5. Once sealed, a commit accepts no new rows. Open-commit triggers on every commit-scoped table enforce this.
+**Connection guard (PR 19 fix 1).** `PRAGMA foreign_keys` is per connection and is not stored in the database file. The kernel's `open()` MUST run `PRAGMA foreign_keys = ON` and then assert that `PRAGMA foreign_keys` returns 1. If it doesn't, `open()` MUST refuse to write: it returns a typed error and leaves the connection read-only. Without the pragma, commit-scoped rows can be inserted under a `commit_id` that never gets a `commits` row. Those rows persist unsealed and skip every seal check. The smoke script shows this on a connection with the pragma OFF.
+
+**Write protocol (PR 19 fix 2).** `begin_transaction(expected_revision)` takes `expected_revision` from the **caller**. That is the revision the user or the planning step saw. The kernel MUST NOT recompute it inside the transaction.
+1. Run `BEGIN IMMEDIATE`, which takes the write lock before any read.
+2. Read `current = coalesce(max(commits.seq), 0)`. If `current != expected_revision`, fail with the AT-032 conflict and write nothing. The `commits_seal` trigger makes the same check against `commits.expected_revision` as a storage backstop. It can only catch a stale write if the kernel stores the caller's value there unchanged.
+3. Insert every row of the commit. Each row carries `commit_id`, and events carry the commit's `recorded_at`. To correct an event, insert the reversal, then run `UPDATE accounting_events SET superseded_by = <reversal id> WHERE id = <target>`. That is the only UPDATE the schema accepts.
+4. Insert the `commits` row **last**, with `expected_revision` set to the caller's value and `seq = expected_revision + 1` (a CHECK enforces this). The `commits_seal` trigger aborts the commit on any of these:
+   - a stale revision (AT-032)
+   - a recorded_at that differs from the commit's
+   - an event with fewer than 2 postings (INV-002)
+   - an imbalance per event, entity and currency (INV-001)
+   - a reversal that doesn't exactly cancel and flag its target (ADR 0002 amendment)
+   - postings in a draft (INV-006)
+   - a reconciled group with no postings, or a nonzero clearing residual (INV-008, INV-017, AT-030)
+   - a void whose linked events are not reversed (ADR 0002)
+   - a dissolved reconciled group whose legs are not all reversed, or whose observed legs are not reposted (§5 Q3)
+5. `COMMIT`. If the commits row was never written, the deferred foreign keys fail at COMMIT and nothing persists.
+6. Once sealed, a commit accepts no new rows. Open-commit triggers on all 23 commit-scoped tables enforce this, and the smoke script tries each table.
+
+**doctor rules (U21; all must be clean, exit nonzero otherwise):**
+- `PRAGMA integrity_check` returns `ok`.
+- `PRAGMA foreign_key_check` returns no rows. This is a doctor rule, not just a smoke check.
+- `doctor_unsealed_rows` returns no rows. It lists rows in commit-scoped tables, and rows hanging off them, whose commit has no `commits` row.
+- `doctor_unbalanced_events`, `doctor_superseded_drift` and `doctor_observation_double_consumed` return no rows.
+- The ADR 0004 cross-database checks (outbox/inbox pairing, evidence hashes) pass.
 
 ## 4. Where each rule is enforced
 
@@ -156,11 +168,15 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
 | ADR 0004 outbox pairing | idempotency-key uniqueness | doctor (cross-database) |
 | ADR 0005 valuation snapshots | `valuation_snapshots_noncash` | — |
 | ADR 0006 exclusivity | `settlement_postings.posting_id` UNIQUE | — |
+| ADR 0006 dissolving a reconciled group (§5 Q3) | `commits_seal`: all legs reversed, observed legs reposted | U19: replacement legs regrouped |
+| AT-032 revision | `commits.expected_revision`, `seq = expected_revision + 1`, `commits_seal` | Kernel: `BEGIN IMMEDIATE`, compare against the caller's value (§3) |
+| Foreign keys on (§3) | — | Kernel `open()` asserts the pragma; doctor: `doctor_unsealed_rows`, `PRAGMA foreign_key_check` |
+| Reference names (§5 Q5) | Reference rows immutable; `reference_renames` append-only | — |
 
-## 5. Open questions (for Principal review; Doug where marked)
-1. **Commit row last, with deferred foreign keys.** Does this fit `begin_transaction(expected_revision)` in the existing kernel interface? If the Principal prefers a header row first plus a separate seal row, the checks move to that seal row unchanged.
-2. **A reversal keeps its target's effective date.** This is my reading of "corrections are effective-dated to the underlying observation's date", and the trigger enforces it. The replacement event can carry a different date if the observation's date was itself wrong.
-3. **Dissolving a reconciled group** does not, at storage level, require reversing every posting in the group. INV-013 transitive validation (U19, U35) has to decide whether a surviving leg stays ungrouped or must be reposted.
-4. **Exact match in `posting_observations`.** An observation is explained by a single financial-account posting of the same amount, and splits happen on the category side. A bank row that is genuinely split across two events would need two observations or a relaxed rule.
-5. **Reference data** (parties, financial and ledger accounts, tags, feeds) is not commit-scoped. Only display names can change in place, and nothing is deleted. Ledger-account re-parenting stays deferred (ADR 0008).
-6. **Doug:** the plan's open question 5, "Rewrite without migration", is assumed **yes** here, per Captain's U15 assignment ("Fresh migration 1, no data migration").
+## 5. Decisions (PR 19 Principal review, 2026-11-22)
+1. **Commit row last, with deferred foreign keys. Decided: keep it.** It fits `begin_transaction(expected_revision)` only when the caller supplies `expected_revision` and the kernel never re-reads it inside the transaction (§3). A header row plus a separate seal would need an UPDATE or a second row, which conflicts with ADR 0002.
+2. **A reversal keeps its target's effective date. Decided: agreed.** The trigger enforces it, and the replacement may carry a corrected date. The U19 closed-month check uses min(reversal date, replacement date) (§7).
+3. **Dissolving a reconciled group. Decided.** `settlement_postings.posting_id` is UNIQUE forever, so a surviving leg could never join another group. Dissolving a reconciled group therefore must reverse, in the same commit, every leg still in the group, and repost every leg that still needs reconciling. **Enforced in the seal** (`commits_seal`): every leg's event must be reversed, and every non-voided observation behind a leg must have a current interpreting posting. Putting the reposted legs into their new reconciled group is a **U19 requirement**, not a choice left to U35.
+4. **Exact 1:1 match in `posting_observations`. Decided: keep it for month 1.** Splits go on the category side of one event, including cross-entity receivable legs. Relax the rule only when a real case needs two events for one bank row.
+5. **Reference data. Decided: agreed.** Reference data is not commit-scoped. Display names are now **append-only in the schema**: reference rows (entity, parties, financial and ledger accounts, tags, feeds) reject every UPDATE, and a rename is a `reference_renames` row. `reference_current_names` gives the latest name, so replay and audit show what a row was called at the time. Party aliases stay in `party_aliases`.
+6. **Doug, still open:** the plan's open question 5, "Rewrite without migration". This delta assumes yes, per the U15 assignment ("Fresh migration 1, no data migration"), pending Doug's answer.

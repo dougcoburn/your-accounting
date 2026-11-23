@@ -26,6 +26,10 @@
 -- Conventions
 --   * Requires SQLite >= 3.37 (STRICT tables) and PRAGMA foreign_keys=ON on
 --     every connection (rusqlite's bundled libsqlite3-sys 0.30 is 3.46).
+--     The pragma is per connection and is NOT stored in the file: the kernel's
+--     open() must assert PRAGMA foreign_keys = 1 and refuse to write otherwise
+--     (SPEC-v2-delta §3). A connection without it can leave unsealed rows;
+--     doctor reports them via doctor_unsealed_rows and PRAGMA foreign_key_check.
 --   * Ids: 26-char Crockford base32 ULIDs, unique across ALL entity databases
 --     (ADR 0004). Foreign keys never cross databases; a counterpart entity is
 --     referenced through its party id (ADR 0003). Id source and clock are
@@ -72,15 +76,19 @@ CREATE TABLE entity (
 ) STRICT;
 
 -- Commits: the append-only unit of change (ADR 0002). seq is the entity's
--- revision; a writer that began at expected_revision N must insert seq N+1, so
--- a concurrent second writer fails (AT-032). Written LAST in its transaction.
+-- revision. expected_revision is the revision the CALLER saw (supplied to
+-- begin_transaction, never re-read inside the transaction); the seal rejects the
+-- commit unless it equals the current max(seq) (AT-032), and seq is always
+-- expected_revision + 1. Written LAST in its transaction.
 CREATE TABLE commits (
-    id          TEXT PRIMARY KEY CHECK (length(id) = 26 AND id NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
-    seq         INTEGER NOT NULL UNIQUE CHECK (seq >= 1),
+    id                TEXT PRIMARY KEY CHECK (length(id) = 26 AND id NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
+    expected_revision INTEGER NOT NULL CHECK (expected_revision >= 0),
+    seq               INTEGER NOT NULL UNIQUE CHECK (seq >= 1),
     kind        TEXT NOT NULL CHECK (kind IN ('setup','import','interpret','settle','correct','void','assert','cross_entity','grant')),
     actor       TEXT NOT NULL CHECK (length(actor) > 0),
     reason      TEXT NOT NULL DEFAULT '',
-    recorded_at TEXT NOT NULL CHECK (recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z' AND julianday(recorded_at) IS NOT NULL)
+    recorded_at TEXT NOT NULL CHECK (recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z' AND julianday(recorded_at) IS NOT NULL),
+    CHECK (seq = expected_revision + 1)
 ) STRICT;
 
 -- ADR 0003: users are granted access to entities. Append-only; a revocation is
@@ -121,6 +129,18 @@ CREATE TABLE recipes (
     version     TEXT NOT NULL CHECK (length(version) > 0),
     PRIMARY KEY (id, version)
 ) STRICT;
+
+-- PR 19 Q5: append-only display-name history for reference rows (entity,
+-- parties, financial/ledger accounts, tags, feeds). Not commit-scoped, like the
+-- reference rows themselves. Party aliases stay in party_aliases.
+CREATE TABLE reference_renames (
+    id          TEXT PRIMARY KEY CHECK (length(id) = 26 AND id NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
+    target_kind TEXT NOT NULL CHECK (target_kind IN ('entity','party','financial_account','ledger_account','tag','feed')),
+    target_id   TEXT NOT NULL CHECK (length(target_id) = 26 AND target_id NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
+    name        TEXT NOT NULL CHECK (length(name) > 0),
+    recorded_at TEXT NOT NULL CHECK (recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z')
+) STRICT;
+CREATE INDEX reference_renames_target ON reference_renames(target_kind, target_id, recorded_at);
 
 -- -----------------------------------------------------------------------------
 -- 3. Financial accounts and typed ledger accounts (ADR 0005, ADR 0008)
@@ -502,35 +522,44 @@ CREATE TABLE valuation_snapshots (
 -- TRIGGERS
 -- =============================================================================
 
--- --- Reference data: only display names may change; nothing is deleted -------
-CREATE TRIGGER entity_immutable BEFORE UPDATE ON entity
-WHEN NEW.id IS NOT OLD.id OR NEW.party_id IS NOT OLD.party_id OR NEW.created_at IS NOT OLD.created_at
-BEGIN SELECT RAISE(ABORT, 'ADR 0003/0004: entity id and party_id are permanent'); END;
+-- --- Reference data: immutable, never deleted; renames are appended ---------
+-- PR 19 Q5: display names never change in place, so replay and audit show what
+-- a row was called at the time. A rename is a reference_renames row (below);
+-- the current name is the latest rename, else the row's original name.
+CREATE TRIGGER entity_no_update BEFORE UPDATE ON entity
+BEGIN SELECT RAISE(ABORT, 'ADR 0003/0004: entity is immutable; rename via reference_renames'); END;
 CREATE TRIGGER entity_no_delete BEFORE DELETE ON entity
 BEGIN SELECT RAISE(ABORT, 'ADR 0004: the entity row is never deleted'); END;
-
-CREATE TRIGGER parties_immutable BEFORE UPDATE ON parties
-WHEN NEW.id IS NOT OLD.id OR NEW.created_at IS NOT OLD.created_at
-BEGIN SELECT RAISE(ABORT, 'ADR 0003: party id is permanent'); END;
+CREATE TRIGGER parties_no_update BEFORE UPDATE ON parties
+BEGIN SELECT RAISE(ABORT, 'ADR 0003: parties are immutable; rename via reference_renames or add a party_aliases row'); END;
 CREATE TRIGGER parties_no_delete BEFORE DELETE ON parties
 BEGIN SELECT RAISE(ABORT, 'ADR 0003: parties are never deleted'); END;
-
-CREATE TRIGGER financial_accounts_immutable BEFORE UPDATE ON financial_accounts
-WHEN NEW.id IS NOT OLD.id OR NEW.kind IS NOT OLD.kind OR NEW.currency IS NOT OLD.currency
-  OR NEW.tracking_mode IS NOT OLD.tracking_mode OR NEW.created_at IS NOT OLD.created_at
-BEGIN SELECT RAISE(ABORT, 'INV-004/ADR 0005: account kind, currency and tracking mode are fixed (mode switch is a deferred wizard)'); END;
+CREATE TRIGGER financial_accounts_no_update BEFORE UPDATE ON financial_accounts
+BEGIN SELECT RAISE(ABORT, 'INV-004/ADR 0005: financial accounts are immutable (mode switch is a deferred wizard); rename via reference_renames'); END;
 CREATE TRIGGER financial_accounts_no_delete BEFORE DELETE ON financial_accounts
 BEGIN SELECT RAISE(ABORT, 'ADR 0002: financial accounts are never deleted'); END;
-
--- ADR 0008: type, kind, entity, backing account and parent are fixed; moving
--- history between categories is a correction. Re-parenting is deferred.
-CREATE TRIGGER ledger_accounts_immutable BEFORE UPDATE ON ledger_accounts
-WHEN NEW.id IS NOT OLD.id OR NEW.entity_id IS NOT OLD.entity_id OR NEW.financial_account_id IS NOT OLD.financial_account_id
-  OR NEW.account_type IS NOT OLD.account_type OR NEW.kind IS NOT OLD.kind OR NEW.parent_id IS NOT OLD.parent_id
-  OR NEW.created_at IS NOT OLD.created_at
-BEGIN SELECT RAISE(ABORT, 'ADR 0008: only a ledger account name may change'); END;
+-- ADR 0008: moving history between categories is a correction; re-parenting is deferred.
+CREATE TRIGGER ledger_accounts_no_update BEFORE UPDATE ON ledger_accounts
+BEGIN SELECT RAISE(ABORT, 'ADR 0008: ledger accounts are immutable; rename via reference_renames'); END;
 CREATE TRIGGER ledger_accounts_no_delete BEFORE DELETE ON ledger_accounts
 BEGIN SELECT RAISE(ABORT, 'ADR 0002: ledger accounts are never deleted'); END;
+CREATE TRIGGER tags_no_update BEFORE UPDATE ON tags
+BEGIN SELECT RAISE(ABORT, 'tags are immutable; rename via reference_renames'); END;
+CREATE TRIGGER tags_no_delete BEFORE DELETE ON tags
+BEGIN SELECT RAISE(ABORT, 'tags are never deleted'); END;
+CREATE TRIGGER feeds_no_update BEFORE UPDATE ON feeds
+BEGIN SELECT RAISE(ABORT, 'ADR 0007: feeds are immutable; rename via reference_renames'); END;
+CREATE TRIGGER feeds_no_delete BEFORE DELETE ON feeds
+BEGIN SELECT RAISE(ABORT, 'ADR 0007: feeds are never deleted'); END;
+CREATE TRIGGER reference_renames_target_valid BEFORE INSERT ON reference_renames
+WHEN NOT EXISTS (
+       SELECT 1 FROM entity             WHERE NEW.target_kind = 'entity'            AND id = NEW.target_id
+ UNION ALL SELECT 1 FROM parties            WHERE NEW.target_kind = 'party'             AND id = NEW.target_id
+ UNION ALL SELECT 1 FROM financial_accounts WHERE NEW.target_kind = 'financial_account' AND id = NEW.target_id
+ UNION ALL SELECT 1 FROM ledger_accounts    WHERE NEW.target_kind = 'ledger_account'    AND id = NEW.target_id
+ UNION ALL SELECT 1 FROM tags               WHERE NEW.target_kind = 'tag'               AND id = NEW.target_id
+ UNION ALL SELECT 1 FROM feeds              WHERE NEW.target_kind = 'feed'              AND id = NEW.target_id)
+BEGIN SELECT RAISE(ABORT, 'PR 19 Q5: rename target does not exist'); END;
 
 -- ADR 0008 / INV-003: a category's parent is a same-entity, same-type category
 -- that has no postings (postings only on leaves).
@@ -551,14 +580,6 @@ WHEN NEW.financial_account_id IS NOT NULL AND NOT (
   OR (NEW.kind = 'fixed_asset' AND (SELECT kind FROM financial_accounts WHERE id = NEW.financial_account_id) IN ('real_estate','vehicle','other_asset')))
 BEGIN SELECT RAISE(ABORT, 'ADR 0008: ledger kind does not match the financial account kind'); END;
 
-CREATE TRIGGER tags_immutable BEFORE UPDATE ON tags WHEN NEW.id IS NOT OLD.id
-BEGIN SELECT RAISE(ABORT, 'tag id is permanent'); END;
-CREATE TRIGGER tags_no_delete BEFORE DELETE ON tags
-BEGIN SELECT RAISE(ABORT, 'tags are never deleted'); END;
-CREATE TRIGGER feeds_immutable BEFORE UPDATE ON feeds WHEN NEW.id IS NOT OLD.id OR NEW.kind IS NOT OLD.kind
-BEGIN SELECT RAISE(ABORT, 'ADR 0007: feed id and kind are permanent'); END;
-CREATE TRIGGER feeds_no_delete BEFORE DELETE ON feeds
-BEGIN SELECT RAISE(ABORT, 'ADR 0007: feeds are never deleted'); END;
 
 -- --- Append-only tables: no UPDATE, no DELETE (ADR 0002) ----------------------
 -- accounting_events has its own UPDATE rule (superseded_by) further down.
@@ -570,6 +591,8 @@ CREATE TRIGGER user_grants_no_update BEFORE UPDATE ON user_grants BEGIN SELECT R
 CREATE TRIGGER user_grants_no_delete BEFORE DELETE ON user_grants BEGIN SELECT RAISE(ABORT, 'ADR 0003/0002 append-only: user_grants rows are never deleted'); END;
 CREATE TRIGGER party_aliases_no_update BEFORE UPDATE ON party_aliases BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: party_aliases rows are never updated'); END;
 CREATE TRIGGER party_aliases_no_delete BEFORE DELETE ON party_aliases BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: party_aliases rows are never deleted'); END;
+CREATE TRIGGER reference_renames_no_update BEFORE UPDATE ON reference_renames BEGIN SELECT RAISE(ABORT, 'PR 19 Q5 append-only: reference_renames rows are never updated'); END;
+CREATE TRIGGER reference_renames_no_delete BEFORE DELETE ON reference_renames BEGIN SELECT RAISE(ABORT, 'PR 19 Q5 append-only: reference_renames rows are never deleted'); END;
 CREATE TRIGGER recipes_no_update BEFORE UPDATE ON recipes BEGIN SELECT RAISE(ABORT, 'AT-012 append-only: recipes rows are never updated'); END;
 CREATE TRIGGER recipes_no_delete BEFORE DELETE ON recipes BEGIN SELECT RAISE(ABORT, 'AT-012 append-only: recipes rows are never deleted'); END;
 CREATE TRIGGER journal_postings_no_update BEFORE UPDATE ON journal_postings BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: journal_postings rows are never updated'); END;
@@ -641,22 +664,22 @@ CREATE TRIGGER valuation_snapshots_open_commit BEFORE INSERT ON valuation_snapsh
 -- Rows that hang off a posting, obligation or group state join their parent's commit.
 CREATE TRIGGER journal_postings_open_commit BEFORE INSERT ON journal_postings
 WHEN EXISTS (SELECT 1 FROM accounting_events e JOIN commits c ON c.id = e.commit_id WHERE e.id = NEW.event_id)
-BEGIN SELECT RAISE(ABORT, 'ADR 0002: postings may only be added to an event in an open commit'); END;
+BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed (postings may only be added to an event in an open commit)'); END;
 CREATE TRIGGER posting_tags_open_commit BEFORE INSERT ON posting_tags
 WHEN EXISTS (SELECT 1 FROM journal_postings p JOIN accounting_events e ON e.id = p.event_id JOIN commits c ON c.id = e.commit_id WHERE p.id = NEW.posting_id)
-BEGIN SELECT RAISE(ABORT, 'ADR 0002: tags are written with their posting; retagging is a correction'); END;
+BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed (tags are written with their posting; retagging is a correction)'); END;
 CREATE TRIGGER posting_observations_open_commit BEFORE INSERT ON posting_observations
 WHEN EXISTS (SELECT 1 FROM journal_postings p JOIN accounting_events e ON e.id = p.event_id JOIN commits c ON c.id = e.commit_id WHERE p.id = NEW.posting_id)
-BEGIN SELECT RAISE(ABORT, 'ADR 0002: an interpretation link is written with its posting'); END;
+BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed (an interpretation link is written with its posting)'); END;
 CREATE TRIGGER refund_links_open_commit BEFORE INSERT ON refund_links
 WHEN EXISTS (SELECT 1 FROM journal_postings p JOIN accounting_events e ON e.id = p.event_id JOIN commits c ON c.id = e.commit_id WHERE p.id = NEW.refund_posting_id)
-BEGIN SELECT RAISE(ABORT, 'ADR 0002: a refund link is written with the refund posting (linking later = correction)'); END;
+BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed (a refund link is written with the refund posting; linking later is a correction)'); END;
 CREATE TRIGGER obligation_postings_open_commit BEFORE INSERT ON obligation_postings
 WHEN EXISTS (SELECT 1 FROM obligations o JOIN commits c ON c.id = o.commit_id WHERE o.id = NEW.obligation_id)
-BEGIN SELECT RAISE(ABORT, 'ADR 0001: claim links are written with the claim'); END;
+BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed (claim links are written with the claim, ADR 0001)'); END;
 CREATE TRIGGER settlement_draft_participants_open_commit BEFORE INSERT ON settlement_draft_participants
 WHEN EXISTS (SELECT 1 FROM settlement_group_states s JOIN commits c ON c.id = s.commit_id WHERE s.id = NEW.group_state_id)
-BEGIN SELECT RAISE(ABORT, 'ADR 0002: draft participants are written with their group state'); END;
+BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed (draft participants are written with their group state)'); END;
 
 -- --- Journal rules -----------------------------------------------------------
 -- ADR 0002 amendment: superseded_by is the only mutable column. It may go from
@@ -778,8 +801,9 @@ BEGIN SELECT RAISE(ABORT, 'ADR 0005/INV-011: valuation snapshots only on non-cas
 CREATE TRIGGER commits_seal BEFORE INSERT ON commits
 BEGIN
     -- AT-032: optimistic concurrency; seq = expected_revision + 1.
-    SELECT RAISE(ABORT, 'AT-032: stale revision (commit seq must be the next revision)')
-    WHERE NEW.seq IS NOT (SELECT coalesce(max(seq), 0) + 1 FROM commits);
+    -- AT-032: the caller's expected_revision must be the current revision.
+    SELECT RAISE(ABORT, 'AT-032: stale revision (expected_revision is not the current revision)')
+    WHERE NEW.expected_revision IS NOT (SELECT coalesce(max(seq), 0) FROM commits);
     -- ADR 0002: every event in a commit shares the commit's recorded_at.
     SELECT RAISE(ABORT, 'ADR 0002: event recorded_at must equal its commit recorded_at')
     WHERE EXISTS (SELECT 1 FROM accounting_events WHERE commit_id = NEW.id AND recorded_at IS NOT NEW.recorded_at);
@@ -828,6 +852,31 @@ BEGIN
                   JOIN journal_postings p ON p.id = po.posting_id
                   JOIN accounting_events e ON e.id = p.event_id
                   WHERE v.commit_id = NEW.id AND e.superseded_by IS NULL AND e.reverses_id IS NULL);
+    -- ADR 0006 / PR 19 Q3: settlement_postings.posting_id is UNIQUE forever, so
+    -- dissolving a reconciled group must reverse every leg in the same commit
+    -- (or earlier) ...
+    SELECT RAISE(ABORT, 'ADR 0006: dissolving a reconciled group must reverse all of its legs')
+    WHERE EXISTS (SELECT 1 FROM settlement_group_states s
+                  JOIN settlement_group_states prev ON prev.group_id = s.group_id AND prev.seq = s.seq - 1 AND prev.state = 'reconciled'
+                  JOIN settlement_postings sp ON sp.group_id = s.group_id
+                  JOIN journal_postings p ON p.id = sp.posting_id
+                  JOIN accounting_events e ON e.id = p.event_id
+                  WHERE s.commit_id = NEW.id AND s.state = 'dissolved' AND e.superseded_by IS NULL);
+    -- ... and repost every observed leg that still needs reconciling: each
+    -- non-voided observation behind a reversed leg has a current interpreting
+    -- posting after the commit. (Re-grouping the replacement: U19.)
+    SELECT RAISE(ABORT, 'ADR 0006: a dissolved group''s observed legs must be reposted in the same commit')
+    WHERE EXISTS (SELECT 1 FROM settlement_group_states s
+                  JOIN settlement_group_states prev ON prev.group_id = s.group_id AND prev.seq = s.seq - 1 AND prev.state = 'reconciled'
+                  JOIN settlement_postings sp ON sp.group_id = s.group_id
+                  JOIN posting_observations po ON po.posting_id = sp.posting_id
+                  WHERE s.commit_id = NEW.id AND s.state = 'dissolved'
+                    AND NOT EXISTS (SELECT 1 FROM observation_voids v WHERE v.observation_id = po.observation_id)
+                    AND NOT EXISTS (SELECT 1 FROM posting_observations po2
+                                    JOIN journal_postings p2 ON p2.id = po2.posting_id
+                                    JOIN accounting_events e2 ON e2.id = p2.event_id
+                                    WHERE po2.observation_id = po.observation_id
+                                      AND e2.superseded_by IS NULL AND e2.reverses_id IS NULL));
 END;
 
 -- =============================================================================
@@ -889,7 +938,41 @@ SELECT o.id AS obligation_id, o.currency, o.original_minor,
                                     WHERE s.obligation_id = o.id AND e.superseded_by IS NULL), 0) AS remaining_minor
 FROM obligations o;
 
--- doctor (U21): each view must return no rows.
+-- PR 19 Q5: current display name = latest rename, else the original name.
+CREATE VIEW reference_current_names AS
+SELECT r.target_kind, r.target_id, r.name FROM reference_renames r
+WHERE r.recorded_at || r.id = (SELECT max(x.recorded_at || x.id) FROM reference_renames x
+                               WHERE x.target_kind = r.target_kind AND x.target_id = r.target_id);
+
+-- doctor (U21): each view must return no rows. doctor also runs
+-- PRAGMA integrity_check and PRAGMA foreign_key_check (SPEC-v2-delta §3).
+-- PR 19 fix 1(b): rows in commit-scoped tables (and rows hanging off them)
+-- whose commit has no commits row. Only possible on a connection that wrote
+-- with foreign_keys OFF; such rows skipped every seal check.
+CREATE VIEW doctor_unsealed_rows AS
+SELECT 'user_grants' AS table_name, t.rowid AS row_id, t.commit_id FROM user_grants t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
+UNION ALL SELECT 'accounting_events' AS table_name, t.rowid AS row_id, t.commit_id FROM accounting_events t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
+UNION ALL SELECT 'evidence_deletions' AS table_name, t.rowid AS row_id, t.commit_id FROM evidence_deletions t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
+UNION ALL SELECT 'evidence_links' AS table_name, t.rowid AS row_id, t.commit_id FROM evidence_links t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
+UNION ALL SELECT 'import_runs' AS table_name, t.rowid AS row_id, t.commit_id FROM import_runs t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
+UNION ALL SELECT 'observations' AS table_name, t.rowid AS row_id, t.commit_id FROM observations t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
+UNION ALL SELECT 'observation_voids' AS table_name, t.rowid AS row_id, t.commit_id FROM observation_voids t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
+UNION ALL SELECT 'settlement_groups' AS table_name, t.rowid AS row_id, t.commit_id FROM settlement_groups t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
+UNION ALL SELECT 'settlement_group_states' AS table_name, t.rowid AS row_id, t.commit_id FROM settlement_group_states t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
+UNION ALL SELECT 'settlement_postings' AS table_name, t.rowid AS row_id, t.commit_id FROM settlement_postings t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
+UNION ALL SELECT 'obligations' AS table_name, t.rowid AS row_id, t.commit_id FROM obligations t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
+UNION ALL SELECT 'obligation_settlements' AS table_name, t.rowid AS row_id, t.commit_id FROM obligation_settlements t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
+UNION ALL SELECT 'cross_entity_outbox' AS table_name, t.rowid AS row_id, t.commit_id FROM cross_entity_outbox t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
+UNION ALL SELECT 'cross_entity_inbox' AS table_name, t.rowid AS row_id, t.commit_id FROM cross_entity_inbox t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
+UNION ALL SELECT 'statements' AS table_name, t.rowid AS row_id, t.commit_id FROM statements t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
+UNION ALL SELECT 'balance_assertions' AS table_name, t.rowid AS row_id, t.commit_id FROM balance_assertions t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
+UNION ALL SELECT 'valuation_snapshots' AS table_name, t.rowid AS row_id, t.commit_id FROM valuation_snapshots t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
+UNION ALL SELECT 'journal_postings', t.rowid, e.commit_id FROM journal_postings t LEFT JOIN accounting_events e ON e.id = t.event_id WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = e.commit_id)
+UNION ALL SELECT 'posting_tags', t.rowid, e.commit_id FROM posting_tags t LEFT JOIN journal_postings p ON p.id = t.posting_id LEFT JOIN accounting_events e ON e.id = p.event_id WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = e.commit_id)
+UNION ALL SELECT 'posting_observations', t.rowid, e.commit_id FROM posting_observations t LEFT JOIN journal_postings p ON p.id = t.posting_id LEFT JOIN accounting_events e ON e.id = p.event_id WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = e.commit_id)
+UNION ALL SELECT 'refund_links', t.rowid, e.commit_id FROM refund_links t LEFT JOIN journal_postings p ON p.id = t.refund_posting_id LEFT JOIN accounting_events e ON e.id = p.event_id WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = e.commit_id)
+UNION ALL SELECT 'obligation_postings', t.rowid, o.commit_id FROM obligation_postings t LEFT JOIN obligations o ON o.id = t.obligation_id WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = o.commit_id)
+UNION ALL SELECT 'settlement_draft_participants', t.rowid, s.commit_id FROM settlement_draft_participants t LEFT JOIN settlement_group_states s ON s.id = t.group_state_id WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = s.commit_id);
 CREATE VIEW doctor_unbalanced_events AS            -- INV-001
 SELECT event_id, entity_id, currency FROM journal_postings
 GROUP BY event_id, entity_id, currency
@@ -907,8 +990,12 @@ GROUP BY po.observation_id HAVING count(*) > 1;
 -- NOT ENFORCED HERE (commit validator U19 / doctor U21 / application)
 -- =============================================================================
 -- * ADR 0002 closed-month invariant: every balance assertion with cutoff on or
---   after the commit's earliest effective_date, on every account touched,
+--   after the commit's earliest effective_date (for a correction:
+--   min(reversal date, replacement date)), on every account touched,
 --   recomputes unchanged (needs SPEC §6 arithmetic; U19 with U32).
+-- * Re-grouping a dissolved group's reposted legs (U19); storage only checks
+--   that they are reversed and, if observed, reinterpreted.
+-- * PRAGMA foreign_keys = 1 on every writing connection (kernel open(), §3).
 -- * INV-013 transitive validation of corrections (groups, obligations, refunds).
 -- * INV-008 group completeness under its recipe (required roles present).
 -- * INV-010 statement reconciliation (exact agreement after in-flight items).
