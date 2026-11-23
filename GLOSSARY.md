@@ -100,7 +100,7 @@ Restating a foreign-currency account's exact balance in the reporting currency a
 Valuation snapshot minus book basis. Derived for display only, never journaled. Only a realized event (e.g. a sale) becomes a transaction. _Avoid_: "valuation adjustment" or a plug entry.
 
 **Transaction date vs. posting date**:
-Transaction date is when the purchase happened (preferred effective date). Posting date is when the institution posted it (used to reconcile to statements and the fallback effective date).
+Transaction date (the Occurred date) is when the purchase happened. It is the effective date and alone decides the period for everything, including reconciliation. Posting date (the Posted date) is when the institution posted it; it is kept only to explain In-flight items against a statement, never to reconcile (2026-11-22; supersedes the 2026-11-19 rule that reconciled on posting date). _Avoid_: "reconcile by posting date".
 
 **Party**:
 Anyone outside the transparent books: merchants, employers, people (e.g. Esther, Numetric, Costco). Can hold obligations. UI may label as vendor/person/organization. _Avoid_: "opaque entity" as a separate concept; an entity a viewer cannot see simply appears as a party to that viewer.
