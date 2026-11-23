@@ -86,13 +86,16 @@ ADRs: docs/adr/0001-0008 (drafted 2026-11-19, revised after Eng Leads review 202
 
 - Pure double entry in the kernel (2026-11-22, ADR 0008): every ledger account has a type (asset, liability, equity, income, expense); categories are income/expense ledger accounts (per entity, tree, leaf-only postings); the v0.2 `allocations` table is removed and a purchase is simply debit expense, credit card liability. Reason: income/expense lived in a separate allocations table, so the balance could not be proved from postings alone. Contra-expense for refunds and perk credits stays (credit to the original expense account).
 - Supersede flag allowed (2026-11-22, ADR 0002 amendment): facts are never updated; one `superseded_by` flag may be set only in the same commit as the reversing entry, for fast "active only" views. Balances remain the sum of postings; the register hides reversed pairs; audit sees all; `doctor` rebuilds the flag from reversal links; the journal is never compacted.
+- Retirement sub-accounts (2026-11-22): pre-tax and Roth balances are separate ledger accounts even when they sit in one real account, because account holders report them separately. Resolves the remaining payroll deferral question.
+- Statement cutoff (2026-11-22): the occurred date assigns a transaction to a period for everything, including reconciliation. Feed rows also keep the posted date, used only to explain the gap to the statement: occurred-date balance at the cutoff, minus items that occurred on or before it but posted after, plus items that posted on or before it but occurred after, must equal the statement ending balance.
+- Settlement groups (2026-11-22): no participation limits for month 1.
+- Agent approval / MCP auth (2026-11-22): deferred past month 1.
 
 ## Not yet specified (fog)
 - Party-to-entity conversion wizard (when Esther joins).
-- Investment accounts, later: pre-tax vs Roth sub-accounts; taxable brokerage dividends/realized gains detail (quarter map or later).
-- Payroll classification (v0.2 open decision 5), remaining: categories for pre-tax vs. Roth retirement deferrals.
+- Investment accounts, later: taxable brokerage dividends/realized gains detail (quarter map or later).
 - Mode-switch wizard: exact reclassification mechanics (opening balance vs. re-pointing past postings, per-period vs. whole-history).
-- v0.2 section 13 open decisions still open: 2 FX journal model, 3 statement cutoff (partly settled), 5 payroll (partly settled), 6 multi-currency reporting, 7 account ownership transfer, 8 settlement participation constraints, 10 approval/MCP auth, 11 budgets, 12 data retention. Settled: 1 money, 4 refunds, 9 corrections.
+- v0.2 section 13 open decisions still open: 2 FX journal model, 6 multi-currency reporting, 7 account ownership transfer, 8 settlement participation constraints (no limits in month 1), 10 approval/MCP auth (deferred), 11 budgets, 12 data retention. Settled: 1 money, 3 statement cutoff, 4 refunds, 5 payroll, 9 corrections.
 - Balance checkpoints (deferred past month 1): rebuildable per-account balances at cutoffs to bound the cost of closed-month checks and as-of-recorded replay as corrections accumulate. Caches only, verified by `doctor`, never authoritative.
 - Prototype gaps remaining: evidence strength (strong vs weak) as an input to match suggestions; editable registries UI; paired in/out transfer expected slots (brokerage).
 
