@@ -113,3 +113,12 @@ Removing an erroneous or duplicate observation from the books. Appears as a dele
 
 **Worklist**:
 All observations not yet reconciled or voided. Open is a to-do state, not an end state.
+
+**Occurred date**:
+The date a transaction actually happened. It alone decides which period a transaction belongs to, including for reconciliation (2026-11-22).
+
+**Posted date**:
+The date the institution posted a feed row. Kept as evidence only, to explain differences between occurred-date balances and a statement's ending balance.
+
+**In-flight item**:
+A line whose occurred and posted dates fall on opposite sides of a statement cutoff. In-flight items are the only allowed difference between an occurred-date balance and the statement's ending balance.
