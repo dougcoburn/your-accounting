@@ -1,0 +1,194 @@
+{
+  "marker": "# synthetic",
+  "currency": "USD",
+  "defaultCutoff": "2025-10-31",
+  "entities": [
+    { "id": "ent_doug", "name": "Doug" },
+    { "id": "ent_household", "name": "Household" },
+    { "id": "ent_dragonfly", "name": "Dragonfly" }
+  ],
+  "parties": [
+    { "id": "party_northline", "name": "Northline Studio" }
+  ],
+  "tagMap": {
+    "e-dragonfly": "ent_dragonfly",
+    "e-northline": "party_northline"
+  },
+  "accounts": [
+    {
+      "id": "acct_personal_checking",
+      "name": "Personal Checking •1188",
+      "entityId": "ent_doug",
+      "accountType": "asset",
+      "kind": "cash",
+      "openingMinor": 210000,
+      "openingOn": "2025-09-30"
+    },
+    {
+      "id": "acct_hsa",
+      "name": "Personal HSA •2207",
+      "entityId": "ent_doug",
+      "accountType": "asset",
+      "kind": "investment",
+      "openingMinor": 5000,
+      "openingOn": "2025-09-30"
+    },
+    {
+      "id": "acct_hh_checking",
+      "name": "Household Checking •4821",
+      "entityId": "ent_household",
+      "accountType": "asset",
+      "kind": "cash",
+      "openingMinor": 350000,
+      "openingOn": "2025-09-30"
+    },
+    {
+      "id": "acct_visa",
+      "name": "Household Visa •4410",
+      "entityId": "ent_household",
+      "accountType": "liability",
+      "kind": "card",
+      "openingMinor": 124000,
+      "openingOn": "2025-09-30"
+    },
+    {
+      "id": "acct_df_checking",
+      "name": "Dragonfly Checking •7730",
+      "entityId": "ent_dragonfly",
+      "accountType": "asset",
+      "kind": "cash",
+      "openingMinor": 80000,
+      "openingOn": "2025-09-30"
+    }
+  ],
+  "categories": [
+    {
+      "id": "cat_hh_food",
+      "name": "Food",
+      "entityId": "ent_household",
+      "accountType": "expense",
+      "parentId": null,
+      "leaf": false
+    },
+    {
+      "id": "cat_hh_groceries",
+      "name": "Groceries",
+      "entityId": "ent_household",
+      "accountType": "expense",
+      "parentId": "cat_hh_food",
+      "leaf": true
+    },
+    {
+      "id": "cat_hh_dining",
+      "name": "Dining",
+      "entityId": "ent_household",
+      "accountType": "expense",
+      "parentId": "cat_hh_food",
+      "leaf": true
+    },
+    {
+      "id": "cat_hh_utilities",
+      "name": "Utilities",
+      "entityId": "ent_household",
+      "accountType": "expense",
+      "parentId": null,
+      "leaf": true
+    },
+    {
+      "id": "cat_hh_subscriptions",
+      "name": "Subscriptions",
+      "entityId": "ent_household",
+      "accountType": "expense",
+      "parentId": null,
+      "leaf": true
+    },
+    {
+      "id": "cat_hh_interest",
+      "name": "Interest",
+      "entityId": "ent_household",
+      "accountType": "income",
+      "parentId": null,
+      "leaf": true
+    },
+    {
+      "id": "cat_df_ops",
+      "name": "Operations",
+      "entityId": "ent_dragonfly",
+      "accountType": "expense",
+      "parentId": null,
+      "leaf": false
+    },
+    {
+      "id": "cat_df_office",
+      "name": "Office supplies",
+      "entityId": "ent_dragonfly",
+      "accountType": "expense",
+      "parentId": "cat_df_ops",
+      "leaf": true
+    },
+    {
+      "id": "cat_df_software",
+      "name": "Software",
+      "entityId": "ent_dragonfly",
+      "accountType": "expense",
+      "parentId": "cat_df_ops",
+      "leaf": true
+    },
+    {
+      "id": "cat_doug_wages",
+      "name": "Wages",
+      "entityId": "ent_doug",
+      "accountType": "income",
+      "parentId": null,
+      "leaf": true
+    }
+  ],
+  "postedDates": {
+    "syn-1001": "2025-10-02",
+    "syn-1002": "2025-10-05",
+    "syn-1003": "2025-10-06",
+    "syn-1004": "2025-10-09",
+    "syn-1005": "2025-10-13",
+    "syn-1006": "2025-10-15",
+    "syn-1007": "2025-10-16",
+    "syn-1008": "2025-10-18",
+    "syn-1009": "2025-10-20",
+    "syn-1010": "2025-10-20",
+    "syn-1011": "2025-10-22",
+    "syn-1012": "2025-11-02",
+    "syn-1013": "2025-10-31",
+    "syn-1014": "2025-10-31",
+    "syn-1015": "2025-10-11"
+  },
+  "statements": [
+    {
+      "accountName": "Household Visa •4410",
+      "cutoff": "2025-10-31",
+      "endingMinor": 207544,
+      "note": "Invented statement ending. Before any correction, in-flight items explain it exactly."
+    },
+    {
+      "accountName": "Household Checking •4821",
+      "cutoff": "2025-10-31",
+      "endingMinor": 314112,
+      "note": "Invented statement ending. Nothing is in flight."
+    }
+  ],
+  "demonstration": {
+    "observationId": "syn-1005",
+    "steps": [
+      {
+        "fromAmountMinor": 95000,
+        "amountMinor": 9000,
+        "categoryId": "cat_df_office",
+        "reason": "Mis-key: 950.00 should have been 90.00."
+      },
+      {
+        "fromAmountMinor": 9000,
+        "amountMinor": 9500,
+        "categoryId": "cat_df_software",
+        "reason": "90.00 should be 95.00, and it belongs in software."
+      }
+    ]
+  }
+}

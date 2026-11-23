@@ -1,0 +1,17 @@
+# synthetic
+Date,Merchant,Category,Account,Original Statement,Notes,Amount,Tags,Owner,Reviewed,Reviewed At,Reviewed By,Pending,Id
+2025-10-02,Northwind Market,Groceries,Household Visa •4410,VISA NORTHWIND MARKET 84.20,,-84.20,,Casey Morgan,true,2025-10-03T15:04:00Z,Casey Morgan,false,syn-1001
+2025-10-04,Pebble Transit,Travel,Household Visa •4410,VISA PEBBLE TRANSIT 100.00,paid for Northline Studio,-100.00,e-northline,Casey Morgan,true,2025-10-05T15:04:00Z,Casey Morgan,false,syn-1002
+2025-10-05,Copper Kettle Cafe,Dining,Household Visa •4410,VISA COPPER KETTLE 36.50,,-36.50,,Casey Morgan,true,2025-10-06T15:04:00Z,Casey Morgan,false,syn-1003
+2025-10-08,Birch Pharmacy,Groceries,Household Visa •4410,VISA BIRCH PHARMACY REFUND,,12.40,,Casey Morgan,true,2025-10-09T15:04:00Z,Casey Morgan,false,syn-1004
+2025-10-11,Glasswing Software,Software,Dragonfly Checking •7730,GLASSWING SOFTWARE 29.00,,-29.00,,Casey Morgan,true,2025-10-12T15:04:00Z,Casey Morgan,false,syn-1015
+2025-10-12,Harbor Office Supply,Office supplies,Household Visa •4410,VISA HARBOR OFFICE 950.00,paid for Dragonfly,-950.00,e-dragonfly,Casey Morgan,true,2025-10-13T15:04:00Z,Casey Morgan,false,syn-1005
+2025-10-15,Pinecone Payroll,Wages,Personal Checking •1188,PAYROLL PINECONE,,2410.55,,Casey Morgan,true,2025-10-16T15:04:00Z,Casey Morgan,false,syn-1006
+2025-10-16,Personal HSA,Transfer,Personal HSA •2207,HSA CONTRIBUTION,counterpart deduction was not in this extract,150.00,,Casey Morgan,true,2025-10-17T15:04:00Z,Casey Morgan,false,syn-1007
+2025-10-18,Maple Light and Water,Utilities,Household Visa •4410,VISA MAPLE LIGHT 61.15,,-61.15,,Casey Morgan,true,2025-10-19T15:04:00Z,Casey Morgan,false,syn-1008
+2025-10-20,Household Visa Payment,Credit Card Payment,Household Checking •4821,VISA PAYMENT 400.00,,-400.00,,Casey Morgan,true,2025-10-21T15:04:00Z,Casey Morgan,false,syn-1009
+2025-10-20,Household Visa Payment,Credit Card Payment,Household Visa •4410,VISA PAYMENT THANK YOU,,400.00,,Casey Morgan,true,2025-10-21T15:04:00Z,Casey Morgan,false,syn-1010
+2025-10-22,Northline Studio,Reimbursement,Household Checking •4821,NORTHLINE ACH 40.00,"partial repayment, claim still open",40.00,e-northline,Casey Morgan,true,2025-10-23T15:04:00Z,Casey Morgan,false,syn-1011
+2025-10-30,Northwind Market,Groceries,Household Visa •4410,VISA NORTHWIND MARKET 27.80,,-27.80,,Casey Morgan,true,2025-10-31T15:04:00Z,Casey Morgan,false,syn-1012
+2025-10-31,Cinder Savings,Interest,Household Checking •4821,INTEREST PAID,,1.12,,Casey Morgan,true,2025-10-31T18:00:00Z,Casey Morgan,false,syn-1013
+2025-11-01,Lumen Streaming,Subscriptions,Household Visa •4410,VISA LUMEN STREAMING 15.99,,-15.99,,Casey Morgan,true,2025-11-02T15:04:00Z,Casey Morgan,false,syn-1014

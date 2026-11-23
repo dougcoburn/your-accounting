@@ -1,0 +1,6 @@
+{
+  "name": "prototype-c-journal",
+  "private": true,
+  "type": "module",
+  "description": "Throwaway journal-first prototype. Not part of the kernel build."
+}
