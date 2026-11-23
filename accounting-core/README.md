@@ -13,6 +13,15 @@ This Cargo workspace provides a clean, decoupled Domain-Driven Design (DDD) arch
 
 See [`docs/KERNEL_INTERFACE_SPEC.md`](docs/KERNEL_INTERFACE_SPEC.md) for full terminology definitions and architectural rules.
 
+## Design docs
+
+Design checkpoint (Formal Spec v0.2 and the month-1 wayfinder). These live at the repository root; the reference schema is [`docs/schema-v0.2.sql`](../docs/schema-v0.2.sql) and is not wired into the code.
+
+- [`docs/SPEC.md`](../docs/SPEC.md) — Formal Spec v0.2, the design baseline
+- [`docs/design/MAP.md`](../docs/design/MAP.md) — wayfinder map
+- [`GLOSSARY.md`](../GLOSSARY.md) — shared vocabulary
+- [`docs/adr/`](../docs/adr/) — architecture decision records 0001–0008
+
 ## Quickstart
 
 ```bash
