@@ -6,7 +6,7 @@ Status: Proposed (revised 2026-11-20 after Eng Leads review)
 Doug pays for things on behalf of other entities and parties (Dragonfly, Numetric, others). In Monarch he faked this with e-* tags and watched a running balance return to zero. That shows whether he is repaid in total, not which purchases were repaid.
 
 ## Decision
-- Every expense paid on behalf of another entity or party creates a **reimbursement claim**: a v0.2 `obligation` (no new table) in a receivable/payable ledger account, linked to the specific purchase allocation(s).
+- Every expense paid on behalf of another entity or party creates a **reimbursement claim**: a v0.2 `obligation` (no new table) in a receivable/payable ledger account, linked to the specific purchase posting(s) (ADR 0008: no allocations table).
 - A reimbursement payment settles one or more linked claims. **Partial settlement is allowed**; the remainder stays open until paid or **forgiven/written off**.
 - When forgiving, the user chooses the treatment (gift, capital contribution, etc.) at decision time; the system does not fix it.
 - **One pattern for everything**: Numetric, Dragonfly, any party or entity.

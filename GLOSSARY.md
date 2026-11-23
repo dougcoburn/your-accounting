@@ -42,8 +42,23 @@ Observed (from a feed row) or Expected (a recipe says it should exist, not yet s
 **Tracking mode** (of a financial account):
 Transparent (balance tracked; money in and out is transfers) or Black box (money sent there is booked like an expense; nothing inside is tracked). Changed only through the mode-switch wizard.
 
+**Ledger account**:
+An account in one entity's books that postings hit. Has exactly one Account type. Financial accounts (checking, card) map to asset/liability ledger accounts; Categories are income/expense ledger accounts (ADR 0008).
+
+**Account type**:
+One of asset, liability, equity, income, expense. Fixes which side increases the account (debit for asset/expense, credit for the rest). Contra amounts are opposite-side postings, not a sixth type.
+
+**Category**:
+An income or expense Ledger account, per entity, arranged in a tree; only leaf categories take postings (ADR 0008).
+
+**Posting**:
+One debit or credit line in the journal: ledger account, entity, currency, side, positive `amount_minor`. Every event's postings balance per entity and currency, so the books balance from postings alone.
+
+**Allocation** (retired 2026-11-22):
+Spec v0.2's separate P&L record. Replaced by ordinary postings to Category accounts (ADR 0008). _Avoid_: "allocation"; say posting or category posting.
+
 **Contra-expense** (refund, rebate, statement credit):
-A credit that reduces an expense category rather than counting as income. _Avoid_: "income" or "reward" for card-perk credits (implies taxability).
+A credit posting to the original expense category that reduces it rather than counting as income. _Avoid_: "income" or "reward" for card-perk credits (implies taxability).
 
 **Income**:
 Reserved for inflows that are genuinely earned or received (wages, interest, business revenue). Not refunds or reimbursements.
@@ -55,7 +70,10 @@ A rule a recipe declares to find candidate participants for its settlement group
 An atomic, append-only batch of journal entries (reversals plus replacements). Valid only if every transaction and settlement group it touches is valid afterward. _Avoid_: "edit" for anything in the journal.
 
 **Append-only journal**:
-Journal entries are never updated or deleted; apparent edits in the UI are reversals plus new entries.
+Journal entries are never updated or deleted; apparent edits in the UI are reversals plus new entries. The one exception is the Superseded flag (ADR 0002 amendment).
+
+**Superseded** (`superseded_by`):
+A flag on a journal entry pointing to the entry that reverses it, set only in that reversal's commit. Hides the pair from the register; balances ignore it; `doctor` can rebuild it from reversal links. _Avoid_: "deleted" or "edited".
 
 **Effective date vs. recorded-at**:
 Effective date is when the entry counts for reporting (for corrections, the observation's date). Recorded-at is when the entry was appended to the journal.

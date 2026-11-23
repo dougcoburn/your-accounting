@@ -2,6 +2,7 @@
 
 **Status:** Implementation baseline (review required for explicitly open decisions)  
 **Date:** 2026-10-29  
+**Amended 2026-11-22:** pure double-entry kernel, categories are income/expense ledger accounts, allocations removed (docs/adr/0008); supersede flag for corrections (docs/adr/0002 amendment). Other docs/adr decisions are not yet folded into this text; where they conflict, docs/adr wins.  
 **Architecture decision:** SQLite is the sole authoritative transactional store; one filesystem-backed evidence store; deterministic Rust core with CLI and service adapters.
 
 ## 0. Normative language and scope
@@ -63,18 +64,18 @@ CLI / UI / MCP clients / import agents
 ### 2.3 Currency and amounts
 
 - Monetary amounts MUST use exact arithmetic: signed integers in currency minor units or exact decimal representation with declared scale. **Never IEEE floating point.**
-- Accounting allocation magnitude MUST be nonnegative; direction is a separate debit/credit or economic-role field.
+- Posting magnitude MUST be positive; direction is the posting's explicit debit/credit side.
 - Every posting has an explicit currency. Each committed event MUST balance **per transparent entity and currency**.
-- Categories are independent of currency. Reports default to separate currency totals; no implicit cross-currency sum.
+- Categories (income/expense ledger accounts) are independent of currency. Reports default to separate currency totals; no implicit cross-currency sum.
 - FX transactions record actual source and destination amounts, currency pair, rate provenance, and any explicit conversion/valuation effects. The design MUST NOT assume a USD functional currency for each entity.
 - Converted reports require target currency, valuation date, and rate policy. Native-currency reports are authoritative.
 
-### 2.4 Categories, allocations, and tags
+### 2.4 Categories and tags
 
-- Each transparent entity owns its own hierarchical category tree. Only leaf categories can be assigned to income/expense allocations.
-- `Allocation`: stable ID, accounting interpretation/event, transparent entity, leaf category, nonnegative magnitude, currency, economic direction, optional notes. P&L allocations need exactly one entity and one category. Non-P&L journal postings do **not** require categories.
-- A canonical transaction can have multiple allocations and offsetting economic components. Discounts ordinarily reduce the corresponding expense category via an explicit credit line, not a negative allocation magnitude.
-- Tags are flat, free-form, zero or more at transaction or allocation level. Tags are **filter predicates**, not independent totals; nested AND/OR/NOT filters MUST avoid multiplying allocations through joins.
+- A **category is an income or expense ledger account** (ADR 0008). Each transparent entity owns its own hierarchical category tree (`parent_id` on `ledger_accounts`, same entity and same account type). Only leaf categories can receive postings.
+- Income and expense amounts are ordinary journal postings: a purchase is a debit to a leaf expense account and a credit to the paying asset or liability account. There is no separate allocation record. Non-P&L postings do **not** use categories.
+- A canonical transaction can have multiple postings and offsetting economic components. Discounts, refunds and card-perk credits are contra amounts: an explicit credit posting to the corresponding expense account (debit for contra-income), never a negative magnitude and never income.
+- Tags are flat, free-form, zero or more at transaction or posting level. Tags are **filter predicates**, not independent totals; nested AND/OR/NOT filters MUST avoid multiplying postings through joins.
 - Counterparties (e.g., Amazon) are parties, not tags.
 
 ### 2.5 Evidence, observations, and movements
@@ -91,11 +92,11 @@ CLI / UI / MCP clients / import agents
 
 `AccountingEvent` is a scenario-generated committed interpretation of one or more canonical transactions, or an accounting-only action without a canonical transaction (e.g., forgiving a receivable). It has scenario ID/version, effective-date override only when needed, postings, classifications, links, and revision history.
 
-**Document-level evidence links** are many-to-many between documents and transactions/events; line-level PDF locators are not required. Invoices may inform allocations without line-level permanent pointers.
+**Document-level evidence links** are many-to-many between documents and transactions/events; line-level PDF locators are not required. Invoices may inform category postings without line-level permanent pointers.
 
 ### 2.6 Internal ledger, obligations, and settlement groups
 
-`LedgerAccount` is engine-managed: asset, liability, equity, income, expense, contra, clearing, etc. Each posting references a ledger account, transparent entity, currency, debit/credit direction, and nonnegative magnitude.
+`LedgerAccount` has exactly one **account type**: asset, liability, equity, income, or expense (ADR 0008). Engine sub-kinds (cash, card, receivable, payable, clearing, opening equity, category) are a separate `kind`; contra amounts are opposite-side postings, not a sixth type. Each posting references a ledger account, transparent entity, currency, debit/credit direction, and nonnegative magnitude.
 
 `Obligation` represents a real due-to/due-from or receivable/payable relationship, with creditor/debtor, currency, original amount, remaining amount, linked events, and settlement records. Cross-entity entries generate balanced postings for **each** transparent entity; opaque parties need no mirror books.
 
@@ -134,9 +135,9 @@ Posting date is the default accounting date. An accounting event MAY specify a s
 
 ## 4. Accounting invariants (machine-enforced)
 
-**INV-001** Every committed journal event balances exactly by `(transparent_entity, currency)`.  
+**INV-001** Every committed journal event balances exactly by `(transparent_entity, currency)` within `journal_postings` alone: sum(debits) = sum(credits). The trial balance and Assets = Liabilities + Equity + (Income - Expenses) close from that one table (ADR 0008).  
 **INV-002** Every posting has one entity, ledger account, currency, nonnegative magnitude, and explicit debit/credit direction.  
-**INV-003** All income/expense allocations use a leaf category owned by the same transparent entity.  
+**INV-003** Every posting to an income/expense account uses a leaf category account owned by the posting's transparent entity.  
 **INV-004** A financial account has one owner at any instant and one currency.  
 **INV-005** Account movements match their account's currency; no silent FX.  
 **INV-006** No draft produces committed postings or changes official balances.  
@@ -148,8 +149,8 @@ Posting date is the default accounting date. An accounting event MAY specify a s
 **INV-012** Correcting past classification is an audited correction; a new economic decision (e.g., gift forgiveness) is a new event.  
 **INV-013** A committed correction validates all transitively affected obligations, groups, movements, statements, and journal postings before atomically replacing current state.  
 **INV-014** Source evidence bytes and accepted source facts are never silently rewritten by accounting corrections.  
-**INV-015** Refund-to-purchase links do not exceed refundable allocation magnitudes unless an explicit excess-credit scenario accounts for the difference.  
-**INV-016** Report filters never duplicate an allocation, and never aggregate different currencies into a single native-currency total.  
+**INV-015** Refund-to-purchase links do not exceed the refundable magnitude of the linked purchase postings unless an explicit excess-credit scenario accounts for the difference.  
+**INV-016** Report filters never duplicate a posting, and never aggregate different currencies into a single native-currency total.  
 **INV-017** Payroll clearing residual MUST be zero per committed payroll group/entity/currency, even if the aggregate clearing account balance happens to be zero.  
 **INV-018** A client's MCP grant cannot be enlarged by that client or by a tool response; approval occurs in a trusted application interface.  
 **INV-019** No unauthorized source record may influence an MCP client's returned aggregate or metadata.  
@@ -184,7 +185,7 @@ A scenario MAY combine multiple roles in one canonical transaction. Scenario sel
 
 ### 5.1 Refunds and purchase cohorts
 
-Returns are new events linked to original purchase allocations; they do not retroactively mutate the purchase. The refund destination account and its owner may differ from the original payer. The original purchase allocation determines the expense reversal's entity/category; any cross-entity destination produces appropriate obligations.
+Returns are new events linked to the original purchase's expense postings (`refund_links`); they do not retroactively mutate the purchase. The refund destination account and its owner may differ from the original payer. The original purchase's expense posting determines the expense reversal's entity/category; any cross-entity destination produces appropriate obligations.
 
 Reports MUST support:
 - **period accounting** (default): expense on purchase posting date, reversal on refund posting date;
@@ -214,7 +215,7 @@ Use a **mutable current-state ledger plus immutable revision/audit records**, no
 
 An approved correction operation:
 1. Loads current records at an expected revision.
-2. Computes transitive dependencies (postings, allocations, obligations, refund links, settlement groups, movement matches, balance assertions, reconciled statements, reporting dates).
+2. Computes transitive dependencies (postings, obligations, refund links, settlement groups, movement matches, balance assertions, reconciled statements, reporting dates).
 3. Produces a full proposed before/after change set and user-readable impact summary.
 4. Revalidates all affected invariants, including any prior statement reconciliation.
 5. Requires explicit trusted-interface approval, including when initiated by MCP.
@@ -234,7 +235,7 @@ No correction may leave an inconsistent dependent record. If dependencies cannot
 - Offline store migration: stop writers, copy all objects, verify hashes, prepare updated store config, atomically activate destination only after validation, retain source until confirmed; failures leave old store usable.
 - Importers are mutable and need not be perfectly reproducible. Retain accepted structured observations used by reconciled records and lightweight provenance; discard unused intermediate artifacts according to retention policy.
 - Agent-assisted importer changes require approval and regression comparison against prior evidence. Reimports propose differences, not silent changes.
-- Evidence linking is document-level. Extracted invoice line items MAY inform allocations without persisted line-level source pointers.
+- Evidence linking is document-level. Extracted invoice line items MAY inform category postings without persisted line-level source pointers.
 
 ## 9. Reporting and MCP
 
@@ -243,7 +244,7 @@ No correction may leave an inconsistent dependent record. If dependencies cannot
 - Entity P&L, balance sheet, budgets, category rollups, and selectable consolidated reporting.
 - Default native-currency columns; conversion optional with explicit target, date, rate policy.
 - Boolean filter AST: `AND`, `OR`, `NOT` over entity, account, party, category subtree, tag, date, and other approved dimensions.
-- Tags are predicates only. Allocation identity is preserved under joins; never double count.
+- Tags are predicates only. Posting identity is preserved under joins; never double count.
 - Purchase-cohort and period accounting views are distinct query semantics, not ledger mutations.
 - Consolidation eliminates eligible internal positions and transfers; external obligations remain.
 
@@ -273,16 +274,15 @@ All IDs are opaque stable identifiers (UUID/ULID or equivalent). Timestamps use 
 | `parties`, `party_aliases` | counterparty identity and aliases |
 | `reporting_groups`, `reporting_group_members` | selectable consolidation membership |
 | `financial_accounts`, `account_ownership_history` | account, kind, currency, dated owner |
-| `ledger_accounts` | engine-managed account type, entity, optional financial account |
-| `categories` | entity, parent, leaf enforcement, income/expense kind |
-| `tags`, `transaction_tags`, `allocation_tags` | flat tagging |
+| `ledger_accounts` | account type (asset/liability/equity/income/expense), engine kind, entity, optional financial account; income/expense accounts are the category tree (parent, leaf enforcement) |
+| `tags`, `transaction_tags`, `posting_tags` | flat tagging |
 | `evidence_objects`, `evidence_documents`, `evidence_uploads` | hash/blob, logical document, upload provenance |
 | `extraction_runs`, `observations`, `observation_evidence` | accepted extracted facts and provenance |
 | `statements`, `statement_observations`, `balance_assertions` | statement scope and balances |
 | `canonical_transactions`, `account_movements`, `movement_observations` | deduplicated economic events and bank-side movements |
 | `draft_interpretations` | proposed scenario inputs and review state |
-| `accounting_events`, `event_transactions`, `journal_postings` | committed scenario and balanced ledger |
-| `allocations`, `refund_allocation_links` | classified P&L and return relationships |
+| `accounting_events`, `event_transactions`, `journal_postings` | committed scenario and balanced ledger (P&L included); append-only, `recorded_at`, `reverses_id`, `superseded_by` (ADR 0002) |
+| `refund_links` | refund posting to purchase posting relationships |
 | `obligations`, `obligation_settlements` | due-to/due-from and settlements |
 | `settlement_groups`, `settlement_participants`, `settlement_postings` | flat group membership and zero-residual scope |
 | `evidence_links` | document-to-transaction/event links |
@@ -300,7 +300,7 @@ Each test below is a contract. Implement as deterministic Rust integration tests
 Given a $150 Household-owned card charge, $100 Household groceries and $50 Business supplies; when reconciled; then both entities balance, expense categories match their entities, and Business owes Household $50.
 
 **AT-002 — Category ownership rejection**  
-Given an allocation assigned to a leaf category of another entity; when committed; then reject and persist no postings.
+Given a posting to a leaf category account of another entity; when committed; then reject and persist no postings.
 
 **AT-003 — Matched controlled transfer**  
 Given checking withdrawal $500 and card payment credit $500 with independently verified observations; when grouped and reconciled; then one atomic accounting interpretation, no P&L.
@@ -318,7 +318,7 @@ Given that receivable and a $40 deposit; when settled; then $60 receivable remai
 Given $60 outstanding; when user approves forgive-as-gift; then a new $60 gift expense event closes the receivable without rewriting original expense.
 
 **AT-008 — Tag filter does not multiply**  
-Given one Amazon transaction with multiple allocations and tags; when filtered by party AND tag; then each eligible allocation appears once.
+Given one Amazon transaction with multiple category postings and tags; when filtered by party AND tag; then each eligible posting appears once.
 
 **AT-009 — Statement discrepancy blocks**  
 Given March ending $5,000, April posted net -$800, April asserted $4,150; then difference -$50 blocks reconciliation; March assertion unchanged.
@@ -348,7 +348,7 @@ Given Household's $100 expense and a $100 refund to Personal-owned gift card; th
 Given $100 September purchase and $100 October linked return; period report shows September expense and October reversal; September cohort view shows $0 eventual net cost.
 
 **AT-018 — Refund cap**  
-Given a $100 purchase allocation and linked refunds totaling $110 with no excess-credit scenario; then reject excess $10 and preserve prior state.
+Given a $100 purchase expense posting and linked refunds totaling $110 with no excess-credit scenario; then reject excess $10 and preserve prior state.
 
 **AT-019 — Payroll clearing**  
 Given gross pay, employer HSA contribution, deductions, taxes, and matched net/HSA movements; then payroll group balances and its clearing residual is zero per group/entity/currency.
@@ -363,7 +363,7 @@ Given two known purchases, a $300 reimbursement, and one unresolved required pur
 Given a committed purchase later recognized as part of a reimbursement group; when approved correction runs; then its prior interpretation is replaced atomically, audit preserved, group revalidated.
 
 **AT-023 — Transitive correction failure**  
-Given a corrected purchase allocation that would invalidate an already-settled obligation; then reject unless the complete dependent change set is valid and approved.
+Given a corrected purchase posting that would invalidate an already-settled obligation; then reject unless the complete dependent change set is valid and approved.
 
 **AT-024 — Manual balance assertion parity**  
 Given a manual gift-card balance assertion; then apply the same exact balance arithmetic as a statement assertion and retain manual provenance.
@@ -392,6 +392,12 @@ Given simulated failure after evidence blob publication but before SQLite metada
 **AT-032 — Audit and revision conflict**  
 Given concurrent proposed corrections to the same reconciled event; when first commits; then second fails expected-revision check, with no partial changes.
 
+**AT-033 — Correction of a correction**  
+Given a $950 purchase corrected to $90 (reversal + replacement), then corrected again to $95; then the register shows only the $95 entry, audit lineage returns all five events in order, every account balance equals the plain sum of all postings, `superseded_by` matches the reversal links (doctor clean), and a balance assertion in an already-reconciled month is unchanged.
+
+**AT-034 — Trial balance from postings alone**  
+Given a month of purchases, refunds (contra-expense credits), income and transfers; then summing `journal_postings` alone per entity/currency gives debits = credits and Assets = Liabilities + Equity + (Income - Expenses), with no other table consulted.
+
 ## 12. Implementation milestones and definition of done
 
 **M0 — Foundation:** Rust workspace; SQLite migrations; entity/account/category schema; exact money types; journal engine; invariant tests; CLI fixture runner.
@@ -415,7 +421,7 @@ These are **not** authorization for an implementation agent to invent behavior:
 1. **Money representation:** integer minor units versus arbitrary-precision fixed decimal, including nonstandard scales and FX rounding.
 2. **Journal account model for multi-currency FX:** precise clearing/valuation posting template that balances each entity/currency without creating fictitious gains.
 3. **Statement cutoff semantics:** timezone, posting-day ordering, and which balances (posted/ledger/available) can be asserted.
-4. **Refund linkage accounting:** allocation-level refund cap across multiple refunds, shipping/tax/discount allocation policy.
+4. **Refund linkage accounting:** posting-level refund cap across multiple refunds, shipping/tax/discount split policy.
 5. **Payroll tax classification:** withholding as tax expense versus prepaid tax/receivable by user preference and reporting jurisdiction; employer benefits may be income or informational depending on reporting context.
 6. **Entity reporting across currencies:** how native-currency multi-column balance sheets express retained earnings and equity without a designated functional currency.
 7. **Account ownership transfer:** treatment of historic statements and transfers at the ownership-change boundary.

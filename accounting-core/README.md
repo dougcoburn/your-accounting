@@ -20,7 +20,7 @@ Design checkpoint (Formal Spec v0.2 and the month-1 wayfinder). These live at th
 - [`docs/SPEC.md`](../docs/SPEC.md) — Formal Spec v0.2, the design baseline
 - [`docs/design/MAP.md`](../docs/design/MAP.md) — wayfinder map
 - [`GLOSSARY.md`](../GLOSSARY.md) — shared vocabulary
-- [`docs/adr/`](../docs/adr/) — architecture decision records 0001–0007
+- [`docs/adr/`](../docs/adr/) — architecture decision records 0001–0008
 
 ## Quickstart
 

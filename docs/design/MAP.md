@@ -4,7 +4,7 @@
 Take one real month (October 2025 sample) from imported observations to a posted, balanced ledger. Every observation is either reconciled, voided (e.g. a duplicate from an extraction bug), or still open on the worklist (unreviewed or interpreted). Open is not an end state; it is work still to do. Revised 2026-11-20: dropped "open with a named reason" as a terminal state.
 
 ## Decisions so far
-ADRs: docs/adr/0001-0007 (drafted 2026-11-19, revised after Eng Leads review 2026-11-20).
+ADRs: docs/adr/0001-0008 (drafted 2026-11-19, revised after Eng Leads review 2026-11-20; 0008 and 0002 amendment 2026-11-22).
 
 - Destination set (2026-11-19).
 - Observation source for month 1: Monarch CSV rows; Monarch category is a suggestion, not truth. Missing accounts (e.g. HSA) supplied by Doug's offline extraction (2026-11-19).
@@ -84,12 +84,16 @@ ADRs: docs/adr/0001-0007 (drafted 2026-11-19, revised after Eng Leads review 202
   - Observation lifecycle: open (unreviewed/interpreted) -> reconciled, or voided. No 'open with a reason' end state and no open-reason enum. An erroneous or duplicate observation can be deleted from the user's view; under the append-only journal this is a void/tombstone commit, not a physical delete.
   - Restore: one entity database at a time is allowed; the health check flags resulting cross-entity gaps.
 
+- Pure double entry in the kernel (2026-11-22, ADR 0008): every ledger account has a type (asset, liability, equity, income, expense); categories are income/expense ledger accounts (per entity, tree, leaf-only postings); the v0.2 `allocations` table is removed and a purchase is simply debit expense, credit card liability. Reason: income/expense lived in a separate allocations table, so the balance could not be proved from postings alone. Contra-expense for refunds and perk credits stays (credit to the original expense account).
+- Supersede flag allowed (2026-11-22, ADR 0002 amendment): facts are never updated; one `superseded_by` flag may be set only in the same commit as the reversing entry, for fast "active only" views. Balances remain the sum of postings; the register hides reversed pairs; audit sees all; `doctor` rebuilds the flag from reversal links; the journal is never compacted.
+
 ## Not yet specified (fog)
 - Party-to-entity conversion wizard (when Esther joins).
 - Investment accounts, later: pre-tax vs Roth sub-accounts; taxable brokerage dividends/realized gains detail (quarter map or later).
 - Payroll classification (v0.2 open decision 5), remaining: categories for pre-tax vs. Roth retirement deferrals.
 - Mode-switch wizard: exact reclassification mechanics (opening balance vs. re-pointing past postings, per-period vs. whole-history).
 - v0.2 section 13 open decisions still open: 2 FX journal model, 3 statement cutoff (partly settled), 5 payroll (partly settled), 6 multi-currency reporting, 7 account ownership transfer, 8 settlement participation constraints, 10 approval/MCP auth, 11 budgets, 12 data retention. Settled: 1 money, 4 refunds, 9 corrections.
+- Balance checkpoints (deferred past month 1): rebuildable per-account balances at cutoffs to bound the cost of closed-month checks and as-of-recorded replay as corrections accumulate. Caches only, verified by `doctor`, never authoritative.
 - Prototype gaps remaining: evidence strength (strong vs weak) as an input to match suggestions; editable registries UI; paired in/out transfer expected slots (brokerage).
 
 ## Out of scope
