@@ -1,0 +1,204 @@
+# synthetic
+Date,Merchant,Category,Account,Original Statement,Notes,Amount,Tags,Owner,Reviewed,Reviewed At,Reviewed By,Pending,Id
+2025-10-01,Card Payment (fictional),Credit Card Payment,Lumen Cash ...4471,ACH DEBIT Credit Card Payment REF 0015,,-1280.69,e-sample,Casey Sample,true,2025-10-01 09:27:00,Rowan Checker,false,sf015
+2025-10-01,Card Payment (fictional),Credit Card Payment,Fable Rewards ...6603,ACH CREDIT Credit Card Payment REF 0016,,1280.69,e-sample,Casey Sample,true,2025-10-01 09:45:00,Rowan Checker,false,sf016
+2025-10-01,Nettle Pantry (fictional),Other Income,Pebble Checking ...2210,ACH CREDIT Other Income REF 0034,,328.52,e-personal,Casey Sample,true,2025-10-01 14:51:00,Rowan Checker,false,sf034
+2025-10-01,Nettle Cafe (fictional),Coffee Shops,Cinder Visa ...5582,POS Nettle Cafe (fictional) REF 0079,,-20.49,e-personal,Casey Sample,true,2025-10-01 09:36:00,Rowan Checker,false,sf079
+2025-10-01,Quill Hardware (fictional),Fees,Lumen Cash ...4471,POS Quill Hardware (fictional) REF 0138,,-553.15,e-sample,Casey Sample,true,2025-10-01 09:06:00,Rowan Checker,false,sf138
+2025-10-02,Moth & Maple Grocer (fictional),Groceries,Cinder Visa ...5582,POS MOTH AND MAPLE GROCER REF 1102,,-64.18,e-household,Casey Sample,true,2025-10-02 16:42:00,Rowan Checker,false,s-card-01
+2025-10-02,Outside Transfer (fictional),Transfer,Harbor Joint Checking ...3340,ACH DEBIT OUTSIDE TRANSFER REF 0018,,-335.56,e-dragonfly,Casey Sample,true,2025-10-02 09:48:00,Rowan Checker,false,sf018
+2025-10-02,Nettle Cafe (fictional),Fitness,Cinder Mastercard ...5590,POS Nettle Cafe (fictional) REF 0059,,-162.74,e-sample,Casey Sample,true,2025-10-02 11:59:00,Rowan Checker,false,sf059
+2025-10-02,Lantern Clinic (fictional),Pharmacy,Fable Rewards ...6603,POS Lantern Clinic (fictional) REF 0085,,-37.94,e-acme,Casey Sample,true,2025-10-02 13:22:00,Rowan Checker,false,sf085
+2025-10-02,Quill Workshop (fictional),Rent,Harbor Joint Checking ...3340,POS Quill Workshop (fictional) REF 0122,,-1634.07,e-sinking,Casey Sample,true,2025-10-02 09:09:00,Rowan Checker,false,sf122
+2025-10-02,Nettle Cafe (fictional),Electronics,Cinder Mastercard ...5590,POS Nettle Cafe (fictional) REF 0127,,-65.89,e-acme,Casey Sample,true,2025-10-02 15:14:00,Rowan Checker,false,sf127
+2025-10-03,HSA Contribution (fictional),HSA Contribution,Pebble Checking ...2210,ACH DEBIT HSA CONTRIBUTION REF 1250,"Synthetic: HSA contribution leaves checking in this file.
+The matching HSA deposit is missing.",-125.00,e-household,Casey Sample,true,2025-10-03 14:49:00,Rowan Checker,false,s-hsa-01
+2025-10-03,Acme Corp Payroll (fictional),Paychecks,Pebble Checking ...2210,PAYROLL DEPOSIT ACME CORP REF 1003,,2180.42,e-acme,Casey Sample,true,2025-10-03 14:22:00,Rowan Checker,false,s-pay-01
+2025-10-03,Moss Transit (fictional),Gifts Received,Harbor Joint Checking ...3340,ACH CREDIT Gifts Received REF 0031,,364.09,e-household,Casey Sample,true,2025-10-03 17:36:00,Rowan Checker,false,sf031
+2025-10-03,Copper Supply (fictional),Internet & Cable,Lumen Cash ...4471,POS Copper Supply (fictional) REF 0089,,-1923.87,e-sample,Casey Sample,true,2025-10-03 09:55:00,Rowan Checker,false,sf089
+2025-10-03,Copper Diner (fictional),Mortgage,Lumen Cash ...4471,POS Copper Diner (fictional) REF 0092,,-329.55,e-acme,Casey Sample,true,2025-10-03 15:28:00,Rowan Checker,false,sf092
+2025-10-03,Moss Workshop (fictional),Medical,Nimbus Store Card ...7714,POS Moss Workshop (fictional) REF 0115,,-139.20,e-sinking,Casey Sample,true,2025-10-03 18:20:00,Rowan Checker,false,sf115
+2025-10-03,Quill Transit (fictional),Shopping,Nimbus Store Card ...7714,POS Quill Transit (fictional) REF 0125,,-36.87,e-household,Casey Sample,true,2025-10-03 15:27:00,Rowan Checker,false,sf125
+2025-10-03,Fern Clinic (fictional),Travel,Cinder Visa ...5582,POS Fern Clinic (fictional) REF 0130,,-170.74,e-taxset,Casey Sample,true,2025-10-03 17:49:00,Rowan Checker,false,sf130
+2025-10-03,Copper Diner (fictional),Utilities,Harbor Joint Checking ...3340,POS Copper Diner (fictional) REF 0150,,-2264.38,e-sinking,Casey Sample,true,2025-10-03 09:37:00,Rowan Checker,false,sf150
+2025-10-04,Aster Books (fictional),Business Income,Dragonfly Operating ...9936,ACH CREDIT Business Income REF 0035,,192.83,e-sinking,Casey Sample,true,2025-10-04 18:41:00,Rowan Checker,false,sf035
+2025-10-04,Nettle Market (fictional),Gas,Dragonfly Operating ...9936,POS Nettle Market (fictional) REF 0053,,-83.27,e-dragonfly,Casey Sample,true,2025-10-04 08:48:00,Rowan Checker,false,sf053
+2025-10-04,Nettle Cafe (fictional),Charity,Cinder Mastercard ...5590,POS Nettle Cafe (fictional) REF 0073,,-92.22,e-sample,Casey Sample,true,2025-10-04 12:32:00,Rowan Checker,false,sf073
+2025-10-04,Fern Clinic (fictional),Insurance,Pebble Checking ...2210,POS Fern Clinic (fictional) REF 0087,,-1167.02,e-sinking,Casey Sample,true,2025-10-04 09:01:00,Rowan Checker,false,sf087
+2025-10-04,Spoon Press (fictional),Personal Care,Fable Rewards ...6603,POS Spoon Press (fictional) REF 0132,,-48.57,e-household,Casey Sample,true,2025-10-04 09:03:00,Rowan Checker,false,sf132
+2025-10-04,Quill Hardware (fictional),Electronics,Nimbus Store Card ...7714,POS Quill Hardware (fictional) REF 0158,,-148.35,e-taxset,Casey Sample,true,2025-10-04 11:44:00,Rowan Checker,false,sf158
+2025-10-04,Nettle Pantry (fictional),Personal Care,Cinder Visa ...5582,POS Nettle Pantry (fictional) REF 0163,,-6.86,e-personal,Casey Sample,true,2025-10-04 14:33:00,Rowan Checker,false,sf163
+2025-10-04,Nettle Supply (fictional),Groceries,Cinder Visa ...5582,POS Nettle Supply (fictional) REF 0170,,-184.45,e-personal,Casey Sample,true,2025-10-04 11:36:00,Rowan Checker,false,sf170
+2025-10-05,Sable Auto Payment (fictional),Loan Payment,Harbor Joint Checking ...3340,ACH DEBIT Loan Payment REF 0011,,-736.92,e-sinking,Casey Sample,true,2025-10-05 14:55:00,Rowan Checker,false,sf011
+2025-10-05,Sable Auto Payment (fictional),Loan Payment,Sable Auto Loan ...2059,ACH CREDIT Loan Payment REF 0012,,736.92,e-sinking,Casey Sample,true,2025-10-05 12:17:00,Rowan Checker,false,sf012
+2025-10-05,Nettle Supply (fictional),Public Transit,Fable Rewards ...6603,POS Nettle Supply (fictional) REF 0081,,-33.80,e-taxset,Casey Sample,true,2025-10-05 12:12:00,Rowan Checker,false,sf081
+2025-10-05,Nettle Books (fictional),Internet & Cable,Lumen Cash ...4471,POS Nettle Books (fictional) REF 0151,,-300.39,e-taxset,Casey Sample,true,2025-10-05 18:14:00,Rowan Checker,false,sf151
+2025-10-05,Quill Workshop (fictional),Phone,Pebble Checking ...2210,POS Quill Workshop (fictional) REF 0152,,-1541.46,e-sample,Casey Sample,true,2025-10-05 09:10:00,Rowan Checker,false,sf152
+2025-10-06,Kettlewhistle Coffee (fictional),Coffee Shops,Fable Rewards ...6603,POS KETTLEWHISTLE COFFEE REF 1106,,-4.75,e-household,Casey Sample,true,2025-10-06 14:45:00,Rowan Checker,false,s-card-02
+2025-10-07,Outside Transfer (fictional),Transfer,Harbor Joint Checking ...3340,ACH DEBIT OUTSIDE TRANSFER REF 0024,,-213.87,e-household,Casey Sample,true,2025-10-07 14:42:00,Rowan Checker,false,sf024
+2025-10-07,Copper Workshop (fictional),Other Income,Pebble Checking ...2210,ACH CREDIT Other Income REF 0029,,627.22,e-taxset,Casey Sample,true,2025-10-07 13:52:00,Rowan Checker,false,sf029
+2025-10-07,Lantern Books (fictional),Other Income,Pebble Checking ...2210,ACH CREDIT Other Income REF 0044,,181.55,e-sample,Casey Sample,true,2025-10-07 09:03:00,Rowan Checker,false,sf044
+2025-10-07,Spoon Workshop (fictional),Business Income,Dragonfly Operating ...9936,ACH CREDIT Business Income REF 0045,,2510.55,e-household,Casey Sample,true,2025-10-07 18:36:00,Rowan Checker,false,sf045
+2025-10-07,Copper Diner (fictional),Taxes,Harbor Joint Checking ...3340,POS Copper Diner (fictional) REF 0106,,-100.17,e-acme,Casey Sample,true,2025-10-07 10:13:00,Rowan Checker,false,sf106
+2025-10-07,Moss Clinic (fictional),Groceries,Fable Rewards ...6603,POS Moss Clinic (fictional) REF 0139,,-39.32,e-household,Casey Sample,true,2025-10-07 17:22:00,Rowan Checker,false,sf139
+2025-10-07,Moss Diner (fictional),Taxi & Rideshare,Nimbus Store Card ...7714,POS Moss Diner (fictional) REF 0144,,-21.66,e-taxset,Casey Sample,true,2025-10-07 14:01:00,Rowan Checker,false,sf144
+2025-10-08,Pineboard Lumber (fictional),Home Improvement,Cinder Mastercard ...5590,POS PINEBOARD LUMBER REF 1008,"Synthetic: Dragonfly Homes jobsite materials, paid on a household card.",-186.20,e-dragonfly,Casey Sample,true,2025-10-08 17:17:00,Rowan Checker,false,s-dfly-01
+2025-10-08,Fern Depot (fictional),Dividends,Bramble Brokerage ...3160,ACH CREDIT Dividends REF 0033,,75.77,e-acme,Casey Sample,true,2025-10-08 15:24:00,Rowan Checker,false,sf033
+2025-10-08,Lantern Books (fictional),Interest,Pebble Savings ...2218,ACH CREDIT Interest REF 0047,,1.17,e-acme,Casey Sample,true,2025-10-08 14:46:00,Rowan Checker,false,sf047
+2025-10-08,Fern Hardware (fictional),Entertainment,Fable Rewards ...6603,POS Fern Hardware (fictional) REF 0128,,-78.45,e-personal,Casey Sample,true,2025-10-08 13:32:00,Rowan Checker,false,sf128
+2025-10-08,Pebble Books (fictional),Medical,Cinder Mastercard ...5590,POS Pebble Books (fictional) REF 0146,,-57.94,e-household,Casey Sample,true,2025-10-08 13:24:00,Rowan Checker,false,sf146
+2025-10-08,Moth Cafe (fictional),Insurance,Pebble Checking ...2210,POS Moth Cafe (fictional) REF 0149,,-836.15,e-personal,Casey Sample,true,2025-10-08 09:08:00,Rowan Checker,false,sf149
+2025-10-09,Lantern Workshop (fictional),Education,Cinder Visa ...5582,POS LANTERN WORKSHOP REF 1009,Synthetic: Acme-tagged workshop fee.,-96.40,e-acme,Casey Sample,true,2025-10-09 13:25:00,Rowan Checker,false,s-exp-01
+2025-10-09,Lantern Market (fictional),Phone,Pebble Checking ...2210,POS Lantern Market (fictional) REF 0063,,-2297.22,e-personal,Casey Sample,true,2025-10-09 14:23:00,Rowan Checker,false,sf063
+2025-10-09,Aster Workshop (fictional),Auto Maintenance,Cinder Visa ...5582,POS Aster Workshop (fictional) REF 0083,,-5.85,e-household,Casey Sample,true,2025-10-09 15:07:00,Rowan Checker,false,sf083
+2025-10-09,Moth Clinic (fictional),Gifts,Cinder Mastercard ...5590,POS Moth Clinic (fictional) REF 0102,,-81.36,e-taxset,Casey Sample,true,2025-10-09 15:28:00,Rowan Checker,false,sf102
+2025-10-09,Quill Transit (fictional),Child Care,Pebble Checking ...2210,POS Quill Transit (fictional) REF 0105,,-134.67,e-dragonfly,Casey Sample,true,2025-10-09 12:08:00,Rowan Checker,false,sf105
+2025-10-09,Spoon Depot (fictional),Groceries,Cinder Visa ...5582,POS Spoon Depot (fictional) REF 0108,,-145.31,e-sinking,Casey Sample,true,2025-10-09 15:52:00,Rowan Checker,false,sf108
+2025-10-09,Copper Supply (fictional),Taxes,Harbor Joint Checking ...3340,POS Copper Supply (fictional) REF 0137,,-285.23,e-taxset,Casey Sample,true,2025-10-09 12:54:00,Rowan Checker,false,sf137
+2025-10-10,Savings Transfer (fictional),Savings Transfer,Harbor Joint Checking ...3340,ACH DEBIT Savings Transfer REF 0003,,-505.07,e-household,Casey Sample,true,2025-10-10 18:42:00,Rowan Checker,false,sf003
+2025-10-10,Savings Transfer (fictional),Savings Transfer,Pebble Savings ...2218,ACH CREDIT Savings Transfer REF 0004,,505.07,e-household,Casey Sample,true,2025-10-10 11:29:00,Rowan Checker,false,sf004
+2025-10-10,Moth Supply (fictional),Interest,Pebble Savings ...2218,ACH CREDIT Interest REF 0037,,4.19,e-sample,Casey Sample,true,2025-10-10 08:07:00,Rowan Checker,false,sf037
+2025-10-10,Spoon Books (fictional),Public Transit,Cinder Visa ...5582,POS Spoon Books (fictional) REF 0054,,-75.16,e-dragonfly,Casey Sample,true,2025-10-10 16:12:00,Rowan Checker,false,sf054
+2025-10-10,Cinder Press (fictional),Pharmacy,Cinder Visa ...5582,POS Cinder Press (fictional) REF 0058,,-134.05,e-taxset,Casey Sample,true,2025-10-10 15:23:00,Rowan Checker,false,sf058
+2025-10-10,Bramble Depot (fictional),Insurance,Pebble Checking ...2210,POS Bramble Depot (fictional) REF 0118,,-185.48,e-household,Casey Sample,true,2025-10-10 16:56:00,Rowan Checker,false,sf118
+2025-10-10,Nettle Workshop (fictional),Internet & Cable,Lumen Cash ...4471,POS Nettle Workshop (fictional) REF 0120,,-1922.51,e-acme,Casey Sample,true,2025-10-10 16:15:00,Rowan Checker,false,sf120
+2025-10-10,Moth Books (fictional),Pets,Cinder Mastercard ...5590,POS Moth Books (fictional) REF 0131,,-132.96,e-sample,Casey Sample,true,2025-10-10 16:01:00,Rowan Checker,false,sf131
+2025-10-10,Cinder Pantry (fictional),Restaurants & Bars,Nimbus Store Card ...7714,POS Cinder Pantry (fictional) REF 0140,,-33.48,e-dragonfly,Casey Sample,true,2025-10-10 12:58:00,Rowan Checker,false,sf140
+2025-10-11,Paperkite Supplies (fictional),Shopping,Nimbus Store Card ...7714,"POS PURCHASE PAPERKITE SUPPLIES
+SAMPLE CITY REF 4410",,-28.40,e-household,Casey Sample,true,2025-10-11 18:29:00,Rowan Checker,false,s-card-03
+2025-10-11,Brokerage Transfer (fictional),Investment Transfer,Lumen Cash ...4471,ACH DEBIT Investment Transfer REF 0007,,-396.34,e-acme,Casey Sample,true,2025-10-11 11:45:00,Rowan Checker,false,sf007
+2025-10-11,Brokerage Transfer (fictional),Investment Transfer,Bramble Brokerage ...3160,ACH CREDIT Investment Transfer REF 0008,,396.34,e-acme,Casey Sample,true,2025-10-11 09:27:00,Rowan Checker,false,sf008
+2025-10-11,Outside Transfer (fictional),Transfer,Harbor Joint Checking ...3340,ACH DEBIT OUTSIDE TRANSFER REF 0021,,-1253.26,e-sinking,Casey Sample,true,2025-10-11 12:05:00,Rowan Checker,false,sf021
+2025-10-11,Nettle Diner (fictional),Gifts,Cinder Visa ...5582,POS Nettle Diner (fictional) REF 0072,,-9.38,e-taxset,Casey Sample,true,2025-10-11 08:05:00,Rowan Checker,false,sf072
+2025-10-11,Spoon Cafe (fictional),Auto Maintenance,Fable Rewards ...6603,POS Spoon Cafe (fictional) REF 0114,,-41.90,e-personal,Casey Sample,true,2025-10-11 12:43:00,Rowan Checker,false,sf114
+2025-10-12,Bluefern Diner (fictional),Restaurants & Bars,Fable Rewards ...6603,POS BLUEFERN DINER REF 2315,,-23.15,e-household,Casey Sample,true,2025-10-12 14:47:00,Rowan Checker,false,s-dup-a
+2025-10-12,Bluefern Diner (fictional),Restaurants & Bars,Fable Rewards ...6603,POS BLUEFERN DINER REF 2315,,-23.15,e-household,Casey Sample,true,2025-10-12 14:47:00,Rowan Checker,false,s-dup-b
+2025-10-12,Cinder Diner (fictional),Gifts Received,Harbor Joint Checking ...3340,ACH CREDIT Gifts Received REF 0046,,164.31,e-dragonfly,Casey Sample,true,2025-10-12 14:13:00,Rowan Checker,false,sf046
+2025-10-12,Quill Hardware (fictional),Utilities,Harbor Joint Checking ...3340,POS Quill Hardware (fictional) REF 0061,,-1729.41,e-dragonfly,Casey Sample,true,2025-10-12 16:15:00,Rowan Checker,false,sf061
+2025-10-12,Fern Books (fictional),Clothing,Fable Rewards ...6603,POS Fern Books (fictional) REF 0095,,-132.57,e-taxset,Casey Sample,true,2025-10-12 14:03:00,Rowan Checker,false,sf095
+2025-10-12,Moth Supply (fictional),Travel,Fable Rewards ...6603,POS Moth Supply (fictional) REF 0099,,-14.08,e-acme,Casey Sample,true,2025-10-12 12:34:00,Rowan Checker,false,sf099
+2025-10-12,Bramble Transit (fictional),Fees,Lumen Cash ...4471,POS Bramble Transit (fictional) REF 0107,,-1770.94,e-personal,Casey Sample,true,2025-10-12 15:46:00,Rowan Checker,false,sf107
+2025-10-12,Bramble Hardware (fictional),Pharmacy,Cinder Visa ...5582,POS Bramble Hardware (fictional) REF 0178,,-96.68,e-sinking,Casey Sample,true,2025-10-12 15:23:00,Rowan Checker,false,sf178
+2025-10-13,Outside Transfer (fictional),Transfer,Pebble Checking ...2210,ACH DEBIT OUTSIDE TRANSFER REF 0020,,-546.88,e-personal,Casey Sample,true,2025-10-13 11:42:00,Rowan Checker,false,sf020
+2025-10-13,Moth Depot (fictional),Dividends,Bramble Brokerage ...3160,ACH CREDIT Dividends REF 0028,,190.48,e-sinking,Casey Sample,true,2025-10-13 10:49:00,Rowan Checker,false,sf028
+2025-10-13,Quill Depot (fictional),Business Income,Dragonfly Operating ...9936,ACH CREDIT Business Income REF 0030,,3601.73,e-sample,Casey Sample,true,2025-10-13 09:14:00,Rowan Checker,false,sf030
+2025-10-13,Quill Pantry (fictional),Electronics,Nimbus Store Card ...7714,POS Quill Pantry (fictional) REF 0067,,-121.25,e-household,Casey Sample,true,2025-10-13 09:50:00,Rowan Checker,false,sf067
+2025-10-13,Cinder Press (fictional),Rent,Harbor Joint Checking ...3340,POS Cinder Press (fictional) REF 0091,,-1594.99,e-dragonfly,Casey Sample,true,2025-10-13 14:00:00,Rowan Checker,false,sf091
+2025-10-13,Quill Clinic (fictional),Pharmacy,Cinder Visa ...5582,POS Quill Clinic (fictional) REF 0116,,-136.61,e-taxset,Casey Sample,true,2025-10-13 17:12:00,Rowan Checker,false,sf116
+2025-10-13,Lantern Hardware (fictional),Education,Cinder Mastercard ...5590,POS Lantern Hardware (fictional) REF 0135,,-13.57,e-personal,Casey Sample,true,2025-10-13 17:23:00,Rowan Checker,false,sf135
+2025-10-13,Bramble Clinic (fictional),Mortgage,Lumen Cash ...4471,POS Bramble Clinic (fictional) REF 0154,,-1845.45,e-dragonfly,Casey Sample,true,2025-10-13 08:57:00,Rowan Checker,false,sf154
+2025-10-13,Spoon Press (fictional),Shopping,Cinder Mastercard ...5590,POS Spoon Press (fictional) REF 0156,,-58.31,e-personal,Casey Sample,true,2025-10-13 12:32:00,Rowan Checker,false,sf156
+2025-10-13,Pebble Press (fictional),Charity,Fable Rewards ...6603,POS Pebble Press (fictional) REF 0165,,-53.60,e-taxset,Casey Sample,true,2025-10-13 17:41:00,Rowan Checker,false,sf165
+2025-10-13,Pebble Workshop (fictional),Coffee Shops,Fable Rewards ...6603,POS Pebble Workshop (fictional) REF 0172,,-159.30,e-taxset,Casey Sample,true,2025-10-13 08:40:00,Rowan Checker,false,sf172
+2025-10-13,Copper Workshop (fictional),Taxi & Rideshare,Cinder Mastercard ...5590,POS Copper Workshop (fictional) REF 0175,,-158.77,e-dragonfly,Casey Sample,true,2025-10-13 11:31:00,Rowan Checker,false,sf175
+2025-10-13,Copper Supply (fictional),Fitness,Cinder Mastercard ...5590,POS Copper Supply (fictional) REF 0179,,-10.74,e-taxset,Casey Sample,true,2025-10-13 09:44:00,Rowan Checker,false,sf179
+2025-10-14,Moth & Maple Grocer (fictional),Groceries,Cinder Visa ...5582,RETURN MOTH AND MAPLE GROCER REF 1014,,18.50,e-household,Casey Sample,true,2025-10-14 16:26:00,Rowan Checker,false,s-refund-01
+2025-10-14,Cinder Clinic (fictional),Medical,Nimbus Store Card ...7714,POS Cinder Clinic (fictional) REF 0057,,-183.97,e-sinking,Casey Sample,true,2025-10-14 12:49:00,Rowan Checker,false,sf057
+2025-10-14,Pebble Hardware (fictional),Fees,Lumen Cash ...4471,POS Pebble Hardware (fictional) REF 0076,,-442.53,e-acme,Casey Sample,true,2025-10-14 11:47:00,Rowan Checker,false,sf076
+2025-10-15,Spoon Press (fictional),Gifts Received,Harbor Joint Checking ...3340,ACH CREDIT Gifts Received REF 0041,,702.43,e-personal,Casey Sample,true,2025-10-15 17:03:00,Rowan Checker,false,sf041
+2025-10-15,Bramble Diner (fictional),Insurance,Pebble Checking ...2210,POS Bramble Diner (fictional) REF 0060,,-1486.50,e-household,Casey Sample,true,2025-10-15 16:16:00,Rowan Checker,false,sf060
+2025-10-15,Pebble Market (fictional),Taxi & Rideshare,Nimbus Store Card ...7714,POS Pebble Market (fictional) REF 0082,,-6.91,e-sample,Casey Sample,true,2025-10-15 18:20:00,Rowan Checker,false,sf082
+2025-10-15,Lantern Clinic (fictional),Home Improvement,Cinder Visa ...5582,POS Lantern Clinic (fictional) REF 0093,,-113.16,e-personal,Casey Sample,true,2025-10-15 14:57:00,Rowan Checker,false,sf093
+2025-10-15,Cinder Diner (fictional),Charity,Fable Rewards ...6603,POS Cinder Diner (fictional) REF 0103,,-163.35,e-sample,Casey Sample,true,2025-10-15 11:28:00,Rowan Checker,false,sf103
+2025-10-15,Bramble Depot (fictional),Gas,Nimbus Store Card ...7714,POS Bramble Depot (fictional) REF 0111,,-13.61,e-household,Casey Sample,true,2025-10-15 08:53:00,Rowan Checker,false,sf111
+2025-10-15,Moss Press (fictional),Pets,Nimbus Store Card ...7714,POS Moss Press (fictional) REF 0162,,-34.91,e-acme,Casey Sample,true,2025-10-15 13:52:00,Rowan Checker,false,sf162
+2025-10-15,Lantern Transit (fictional),Gifts,Cinder Mastercard ...5590,POS Lantern Transit (fictional) REF 0164,,-38.92,e-sinking,Casey Sample,true,2025-10-15 17:31:00,Rowan Checker,false,sf164
+2025-10-15,Pebble Diner (fictional),Utilities,Harbor Joint Checking ...3340,POS Pebble Diner (fictional) REF 0181,,-139.29,e-household,Casey Sample,true,2025-10-15 09:41:00,Rowan Checker,false,sf181
+2025-10-16,Fern Hardware (fictional),Interest,Pebble Savings ...2218,ACH CREDIT Interest REF 0032,,2.78,e-dragonfly,Casey Sample,true,2025-10-16 09:45:00,Rowan Checker,false,sf032
+2025-10-16,Bramble Cafe (fictional),Restaurants & Bars,Nimbus Store Card ...7714,POS Bramble Cafe (fictional) REF 0078,,-64.90,,Casey Sample,true,2025-10-16 13:22:00,Rowan Checker,false,sf078
+2025-10-16,Lantern Market (fictional),Gas,Cinder Mastercard ...5590,POS Lantern Market (fictional) REF 0080,,-91.37,e-sinking,Casey Sample,true,2025-10-16 18:20:00,Rowan Checker,false,sf080
+2025-10-16,Fern Books (fictional),Utilities,Harbor Joint Checking ...3340,POS Fern Books (fictional) REF 0088,,-2081.34,e-taxset,Casey Sample,true,2025-10-16 14:36:00,Rowan Checker,false,sf088
+2025-10-16,Bramble Hardware (fictional),Mortgage,Lumen Cash ...4471,POS Bramble Hardware (fictional) REF 0123,,-927.25,e-taxset,Casey Sample,true,2025-10-16 15:24:00,Rowan Checker,false,sf123
+2025-10-16,Bramble Clinic (fictional),Auto Maintenance,Cinder Visa ...5582,POS Bramble Clinic (fictional) REF 0145,,-108.35,e-sample,Casey Sample,true,2025-10-16 16:35:00,Rowan Checker,false,sf145
+2025-10-16,Nettle Books (fictional),Taxes,Harbor Joint Checking ...3340,POS Nettle Books (fictional) REF 0168,,-1876.70,e-dragonfly,Casey Sample,true,2025-10-16 10:55:00,Rowan Checker,false,sf168
+2025-10-16,Nettle Cafe (fictional),Medical,Nimbus Store Card ...7714,POS Nettle Cafe (fictional) REF 0177,,-59.49,e-personal,Casey Sample,true,2025-10-16 11:10:00,Rowan Checker,false,sf177
+2025-10-17,Acme Corp Payroll (fictional),Paychecks,Pebble Checking ...2210,PAYROLL DEPOSIT ACME CORP REF 1017,,2180.42,e-acme,Casey Sample,true,2025-10-17 14:22:00,Rowan Checker,false,s-pay-02
+2025-10-17,Nettle Hardware (fictional),Clothing,Fable Rewards ...6603,POS Nettle Hardware (fictional) REF 0066,,-176.03,e-sample,Casey Sample,true,2025-10-17 11:51:00,Rowan Checker,false,sf066
+2025-10-17,Spoon Books (fictional),Public Transit,Cinder Visa ...5582,POS Spoon Books (fictional) REF 0112,,-109.75,e-dragonfly,Casey Sample,true,2025-10-17 12:51:00,Rowan Checker,false,sf112
+2025-10-17,Nettle Diner (fictional),Phone,Pebble Checking ...2210,POS Nettle Diner (fictional) REF 0121,,-1741.98,e-personal,Casey Sample,true,2025-10-17 17:22:00,Rowan Checker,false,sf121
+2025-10-17,Lantern Market (fictional),Subscriptions,Cinder Mastercard ...5590,POS Lantern Market (fictional) REF 0160,,-78.15,e-household,Casey Sample,true,2025-10-17 16:56:00,Rowan Checker,false,sf160
+2025-10-17,Spoon Books (fictional),Child Care,Pebble Checking ...2210,POS Spoon Books (fictional) REF 0167,,-855.00,e-household,Casey Sample,true,2025-10-17 11:43:00,Rowan Checker,false,sf167
+2025-10-17,Cinder Hardware (fictional),Auto Maintenance,Fable Rewards ...6603,POS Cinder Hardware (fictional) REF 0176,,-158.36,e-acme,Casey Sample,true,2025-10-17 11:39:00,Rowan Checker,false,sf176
+2025-10-17,Lantern Workshop (fictional),Internet & Cable,Lumen Cash ...4471,POS Lantern Workshop (fictional) REF 0182,,-1626.66,e-dragonfly,Casey Sample,true,2025-10-17 17:23:00,Rowan Checker,false,sf182
+2025-10-18,Cinder Perk Credit (fictional),Subscriptions,Cinder Visa ...5582,STATEMENT CREDIT PERK REF 1018,"Synthetic: statement credit, ""perk"" offset to Subscriptions.",12.99,e-household,Casey Sample,true,2025-10-18 08:36:00,Rowan Checker,false,s-perk-01
+2025-10-18,Lantern Transit (fictional),Fitness,Nimbus Store Card ...7714,POS Lantern Transit (fictional) REF 0086,,-59.90,e-personal,Casey Sample,true,2025-10-18 13:05:00,Rowan Checker,false,sf086
+2025-10-18,Nettle Market (fictional),Restaurants & Bars,Cinder Mastercard ...5590,POS Nettle Market (fictional) REF 0171,,-150.71,e-sinking,Casey Sample,true,2025-10-18 14:46:00,Rowan Checker,false,sf171
+2025-10-18,Bramble Hardware (fictional),Gas,Nimbus Store Card ...7714,POS Bramble Hardware (fictional) REF 0173,,-75.90,e-sample,Casey Sample,true,2025-10-18 15:49:00,Rowan Checker,false,sf173
+2025-10-19,Spoon Clinic (fictional),Interest,Pebble Savings ...2218,ACH CREDIT Interest REF 0042,,5.43,e-sinking,Casey Sample,true,2025-10-19 14:49:00,Rowan Checker,false,sf042
+2025-10-19,Aster Depot (fictional),Personal Care,Nimbus Store Card ...7714,POS Aster Depot (fictional) REF 0071,,-75.47,e-sinking,Casey Sample,true,2025-10-19 13:08:00,Rowan Checker,false,sf071
+2025-10-19,Copper Books (fictional),Entertainment,Cinder Visa ...5582,POS Copper Books (fictional) REF 0097,,-89.18,e-household,Casey Sample,true,2025-10-19 13:49:00,Rowan Checker,false,sf097
+2025-10-19,Aster Workshop (fictional),Coffee Shops,Fable Rewards ...6603,POS Aster Workshop (fictional) REF 0110,,-169.67,e-sample,Casey Sample,true,2025-10-19 11:17:00,Rowan Checker,false,sf110
+2025-10-19,Lantern Books (fictional),Public Transit,Fable Rewards ...6603,POS Lantern Books (fictional) REF 0143,,-25.62,e-sinking,Casey Sample,true,2025-10-19 17:34:00,Rowan Checker,false,sf143
+2025-10-19,Pebble Workshop (fictional),Public Transit,Cinder Visa ...5582,POS Pebble Workshop (fictional) REF 0174,,-74.43,e-household,Casey Sample,true,2025-10-19 13:54:00,Rowan Checker,false,sf174
+2025-10-19,Cinder Supply (fictional),Phone,Pebble Checking ...2210,POS Cinder Supply (fictional) REF 0183,,-182.37,e-acme,Casey Sample,true,2025-10-19 18:18:00,Rowan Checker,false,sf183
+2025-10-20,Cinder Visa Payment (fictional),Credit Card Payment,Cinder Visa ...5582,ACH CREDIT CARD PAYMENT REF 2021,,450.00,e-household,Casey Sample,true,2025-10-20 16:01:00,Rowan Checker,false,s-cc-in
+2025-10-20,Cinder Visa Payment (fictional),Credit Card Payment,Pebble Checking ...2210,ACH DEBIT CARD PAYMENT REF 2020,,-450.00,e-household,Casey Sample,true,2025-10-20 13:10:00,Rowan Checker,false,s-cc-out
+2025-10-20,Moth Diner (fictional),Business Income,Dragonfly Operating ...9936,ACH CREDIT Business Income REF 0050,,2896.79,e-taxset,Casey Sample,true,2025-10-20 13:13:00,Rowan Checker,false,sf050
+2025-10-20,Pebble Depot (fictional),Home Improvement,Cinder Visa ...5582,POS Pebble Depot (fictional) REF 0155,,-76.54,e-acme,Casey Sample,true,2025-10-20 09:50:00,Rowan Checker,false,sf155
+2025-10-21,Oak Mortgage Payment (fictional),Loan Payment,Pebble Checking ...2210,ACH DEBIT Loan Payment REF 0009,,-1125.64,e-personal,Casey Sample,true,2025-10-21 11:15:00,Rowan Checker,false,sf009
+2025-10-21,Oak Mortgage Payment (fictional),Loan Payment,Oak Mortgage ...1048,ACH CREDIT Loan Payment REF 0010,,1125.64,e-personal,Casey Sample,true,2025-10-21 12:56:00,Rowan Checker,false,sf010
+2025-10-21,Moss Depot (fictional),Interest,Pebble Savings ...2218,ACH CREDIT Interest REF 0027,,2.23,e-personal,Casey Sample,true,2025-10-21 17:51:00,Rowan Checker,false,sf027
+2025-10-21,Nettle Workshop (fictional),Entertainment,Cinder Visa ...5582,POS Nettle Workshop (fictional) REF 0068,,-73.61,e-dragonfly,Casey Sample,true,2025-10-21 16:25:00,Rowan Checker,false,sf068
+2025-10-21,Pebble Workshop (fictional),Travel,Cinder Mastercard ...5590,POS Pebble Workshop (fictional) REF 0069,,-61.11,e-acme,Casey Sample,true,2025-10-21 08:05:00,Rowan Checker,false,sf069
+2025-10-21,Pebble Cafe (fictional),Home Improvement,Fable Rewards ...6603,POS Pebble Cafe (fictional) REF 0124,,-61.69,e-sample,Casey Sample,true,2025-10-21 10:15:00,Rowan Checker,false,sf124
+2025-10-21,Fern Market (fictional),Charity,Cinder Visa ...5582,POS Fern Market (fictional) REF 0134,,-58.14,e-acme,Casey Sample,true,2025-10-21 17:41:00,Rowan Checker,false,sf134
+2025-10-21,Cinder Books (fictional),Insurance,Pebble Checking ...2210,POS Cinder Books (fictional) REF 0180,,-1730.43,e-sample,Casey Sample,true,2025-10-21 09:54:00,Rowan Checker,false,sf180
+2025-10-22,Acme Corp Reimburse (fictional),Reimbursements,Pebble Checking ...2210,ACH CREDIT REIMBURSE REF 1022,Synthetic: partial Acme Corp reimbursement. Remainder stays open.,40.00,e-acme,Casey Sample,true,2025-10-22 17:22:00,Rowan Checker,false,s-reimb-01
+2025-10-22,Fern Clinic (fictional),Gifts Received,Harbor Joint Checking ...3340,ACH CREDIT Gifts Received REF 0036,,370.04,e-taxset,Casey Sample,true,2025-10-22 10:44:00,Rowan Checker,false,sf036
+2025-10-22,Pebble Cafe (fictional),Dividends,Bramble Brokerage ...3160,ACH CREDIT Dividends REF 0043,,127.97,e-taxset,Casey Sample,true,2025-10-22 11:06:00,Rowan Checker,false,sf043
+2025-10-22,Bramble Workshop (fictional),Other Income,Pebble Checking ...2210,ACH CREDIT Other Income REF 0049,,401.05,e-sinking,Casey Sample,true,2025-10-22 10:20:00,Rowan Checker,false,sf049
+2025-10-22,Aster Clinic (fictional),Mortgage,Lumen Cash ...4471,POS Aster Clinic (fictional) REF 0065,,-1025.67,e-taxset,Casey Sample,true,2025-10-22 08:43:00,Rowan Checker,false,sf065
+2025-10-22,Lantern Hardware (fictional),Fitness,Cinder Mastercard ...5590,POS Lantern Hardware (fictional) REF 0117,,-127.72,e-sample,Casey Sample,true,2025-10-22 17:48:00,Rowan Checker,false,sf117
+2025-10-22,Moss Press (fictional),Subscriptions,Nimbus Store Card ...7714,POS Moss Press (fictional) REF 0129,,-132.98,e-sinking,Casey Sample,true,2025-10-22 11:41:00,Rowan Checker,false,sf129
+2025-10-23,Outside Transfer (fictional),Transfer,Lumen Cash ...4471,ACH DEBIT OUTSIDE TRANSFER REF 0025,,-1184.71,e-dragonfly,Casey Sample,true,2025-10-23 08:24:00,Rowan Checker,false,sf025
+2025-10-23,Nettle Pantry (fictional),Other Income,Pebble Checking ...2210,ACH CREDIT Other Income REF 0039,,285.82,e-dragonfly,Casey Sample,true,2025-10-23 15:30:00,Rowan Checker,false,sf039
+2025-10-23,Moth Depot (fictional),Phone,Pebble Checking ...2210,POS Moth Depot (fictional) REF 0090,,-1794.97,e-household,Casey Sample,true,2025-10-23 12:14:00,Rowan Checker,false,sf090
+2025-10-23,Spoon Books (fictional),Subscriptions,Cinder Mastercard ...5590,POS Spoon Books (fictional) REF 0098,,-37.34,e-dragonfly,Casey Sample,true,2025-10-23 12:54:00,Rowan Checker,false,sf098
+2025-10-23,Fern Supply (fictional),Pets,Nimbus Store Card ...7714,POS Fern Supply (fictional) REF 0100,,-80.90,e-personal,Casey Sample,true,2025-10-23 18:07:00,Rowan Checker,false,sf100
+2025-10-23,Quill Depot (fictional),Personal Care,Cinder Visa ...5582,POS Quill Depot (fictional) REF 0101,,-76.14,e-sinking,Casey Sample,true,2025-10-23 12:24:00,Rowan Checker,false,sf101
+2025-10-23,Pebble Market (fictional),Gifts,Nimbus Store Card ...7714,POS Pebble Market (fictional) REF 0133,,-25.84,e-dragonfly,Casey Sample,true,2025-10-23 09:42:00,Rowan Checker,false,sf133
+2025-10-24,Cinder Press (fictional),Shopping,Cinder Mastercard ...5590,POS Cinder Press (fictional) REF 0094,,-171.69,e-sinking,Casey Sample,true,2025-10-24 12:20:00,Rowan Checker,false,sf094
+2025-10-24,Fern Diner (fictional),Electronics,Nimbus Store Card ...7714,POS Fern Diner (fictional) REF 0096,,-32.30,e-sample,Casey Sample,true,2025-10-24 16:10:00,Rowan Checker,false,sf096
+2025-10-24,Pebble Books (fictional),Education,Nimbus Store Card ...7714,POS Pebble Books (fictional) REF 0104,,-95.04,e-household,Casey Sample,true,2025-10-24 17:18:00,Rowan Checker,false,sf104
+2025-10-24,Bramble Clinic (fictional),Child Care,Pebble Checking ...2210,POS Bramble Clinic (fictional) REF 0136,,-384.33,e-sinking,Casey Sample,true,2025-10-24 15:08:00,Rowan Checker,false,sf136
+2025-10-24,Quill Cafe (fictional),Rent,Harbor Joint Checking ...3340,POS Quill Cafe (fictional) REF 0153,,-1613.65,e-household,Casey Sample,true,2025-10-24 18:38:00,Rowan Checker,false,sf153
+2025-10-25,Outside Transfer (fictional),Transfer,Pebble Checking ...2210,ACH DEBIT OUTSIDE TRANSFER REF 0023,,-1092.93,e-sample,Casey Sample,true,2025-10-25 10:36:00,Rowan Checker,false,sf023
+2025-10-25,Moss Market (fictional),Internet & Cable,Lumen Cash ...4471,POS Moss Market (fictional) REF 0062,,-683.62,e-acme,Casey Sample,true,2025-10-25 11:46:00,Rowan Checker,false,sf062
+2025-10-25,Moth Workshop (fictional),Taxes,Harbor Joint Checking ...3340,POS Moth Workshop (fictional) REF 0075,,-1412.56,e-dragonfly,Casey Sample,true,2025-10-25 09:03:00,Rowan Checker,false,sf075
+2025-10-26,Outside Transfer (fictional),Transfer,Lumen Cash ...4471,ACH DEBIT OUTSIDE TRANSFER REF 0022,,-732.79,e-taxset,Casey Sample,true,2025-10-26 10:22:00,Rowan Checker,false,sf022
+2025-10-26,Copper Pantry (fictional),Dividends,Bramble Brokerage ...3160,ACH CREDIT Dividends REF 0038,,49.50,e-household,Casey Sample,true,2025-10-26 09:21:00,Rowan Checker,false,sf038
+2025-10-26,Aster Depot (fictional),Groceries,Fable Rewards ...6603,POS Aster Depot (fictional) REF 0077,,-73.94,,Casey Sample,true,2025-10-26 17:35:00,Rowan Checker,false,sf077
+2025-10-26,Lantern Market (fictional),Medical,Cinder Mastercard ...5590,POS Lantern Market (fictional) REF 0084,,-79.57,e-dragonfly,Casey Sample,true,2025-10-26 08:10:00,Rowan Checker,false,sf084
+2025-10-26,Fern Hardware (fictional),Utilities,Harbor Joint Checking ...3340,POS Fern Hardware (fictional) REF 0119,,-1001.01,e-dragonfly,Casey Sample,true,2025-10-26 10:45:00,Rowan Checker,false,sf119
+2025-10-26,Fern Cafe (fictional),Fitness,Nimbus Store Card ...7714,POS Fern Cafe (fictional) REF 0148,,-146.99,e-acme,Casey Sample,true,2025-10-26 14:04:00,Rowan Checker,false,sf148
+2025-10-27,Outside Transfer (fictional),Transfer,Pebble Checking ...2210,ACH DEBIT OUTSIDE TRANSFER REF 0017,,-811.46,e-household,Casey Sample,true,2025-10-27 17:06:00,Rowan Checker,false,sf017
+2025-10-27,Cinder Market (fictional),Dividends,Bramble Brokerage ...3160,ACH CREDIT Dividends REF 0048,,37.73,e-personal,Casey Sample,true,2025-10-27 13:20:00,Rowan Checker,false,sf048
+2025-10-27,Pebble Supply (fictional),Gifts Received,Harbor Joint Checking ...3340,ACH CREDIT Gifts Received REF 0051,,11.89,e-sample,Casey Sample,true,2025-10-27 17:54:00,Rowan Checker,false,sf051
+2025-10-27,Spoon Depot (fictional),Taxi & Rideshare,Cinder Mastercard ...5590,POS Spoon Depot (fictional) REF 0055,,-38.61,e-acme,Casey Sample,true,2025-10-27 09:44:00,Rowan Checker,false,sf055
+2025-10-27,Nettle Hardware (fictional),Child Care,Pebble Checking ...2210,POS Nettle Hardware (fictional) REF 0074,,-2196.87,e-household,Casey Sample,true,2025-10-27 17:37:00,Rowan Checker,false,sf074
+2025-10-28,Savings Transfer (fictional),Savings Transfer,Pebble Checking ...2210,ACH DEBIT Savings Transfer REF 0001,,-738.00,e-sample,Casey Sample,true,2025-10-28 08:47:00,Rowan Checker,false,sf001
+2025-10-28,Savings Transfer (fictional),Savings Transfer,Pebble Savings ...2218,ACH CREDIT Savings Transfer REF 0002,,738.00,e-sample,Casey Sample,true,2025-10-28 11:26:00,Rowan Checker,false,sf002
+2025-10-28,Outside Transfer (fictional),Transfer,Pebble Checking ...2210,ACH DEBIT OUTSIDE TRANSFER REF 0026,,-1763.91,e-acme,Casey Sample,true,2025-10-28 08:04:00,Rowan Checker,false,sf026
+2025-10-28,Fern Books (fictional),Business Income,Dragonfly Operating ...9936,ACH CREDIT Business Income REF 0040,,2481.16,e-acme,Casey Sample,true,2025-10-28 11:15:00,Rowan Checker,false,sf040
+2025-10-28,Moth Hardware (fictional),Coffee Shops,Cinder Visa ...5582,POS Moth Hardware (fictional) REF 0141,,-116.11,e-acme,Casey Sample,true,2025-10-28 18:00:00,Rowan Checker,false,sf141
+2025-10-29,Aster Market (fictional),Rent,Harbor Joint Checking ...3340,POS Aster Market (fictional) REF 0064,,-1485.70,e-sinking,Casey Sample,true,2025-10-29 12:46:00,Rowan Checker,false,sf064
+2025-10-29,Fern Supply (fictional),Pets,Fable Rewards ...6603,POS Fern Supply (fictional) REF 0070,,-172.07,e-personal,Casey Sample,true,2025-10-29 18:54:00,Rowan Checker,false,sf070
+2025-10-29,Spoon Workshop (fictional),Taxi & Rideshare,Cinder Mastercard ...5590,POS Spoon Workshop (fictional) REF 0113,,-112.28,e-acme,Casey Sample,true,2025-10-29 14:57:00,Rowan Checker,false,sf113
+2025-10-29,Aster Hardware (fictional),Gas,Cinder Mastercard ...5590,POS Aster Hardware (fictional) REF 0142,,-29.63,e-personal,Casey Sample,true,2025-10-29 12:23:00,Rowan Checker,false,sf142
+2025-10-29,Moss Transit (fictional),Clothing,Fable Rewards ...6603,POS Moss Transit (fictional) REF 0157,,-105.09,e-sinking,Casey Sample,true,2025-10-29 17:18:00,Rowan Checker,false,sf157
+2025-10-29,Aster Clinic (fictional),Entertainment,Cinder Visa ...5582,POS Aster Clinic (fictional) REF 0159,,-130.40,e-sample,Casey Sample,true,2025-10-29 08:28:00,Rowan Checker,false,sf159
+2025-10-29,Quill Workshop (fictional),Education,Nimbus Store Card ...7714,POS Quill Workshop (fictional) REF 0166,,-110.51,e-sample,Casey Sample,true,2025-10-29 14:58:00,Rowan Checker,false,sf166
+2025-10-29,Moth Press (fictional),Rent,Harbor Joint Checking ...3340,POS Moth Press (fictional) REF 0184,,-808.12,e-personal,Casey Sample,true,2025-10-29 10:30:00,Rowan Checker,false,sf184
+2025-10-30,Brokerage Transfer (fictional),Investment Transfer,Pebble Checking ...2210,ACH DEBIT Investment Transfer REF 0005,,-1795.23,e-dragonfly,Casey Sample,true,2025-10-30 18:45:00,Rowan Checker,false,sf005
+2025-10-30,Brokerage Transfer (fictional),Investment Transfer,Bramble Brokerage ...3160,ACH CREDIT Investment Transfer REF 0006,,1795.23,e-dragonfly,Casey Sample,true,2025-10-30 13:26:00,Rowan Checker,false,sf006
+2025-10-30,Card Payment (fictional),Credit Card Payment,Pebble Checking ...2210,ACH DEBIT Credit Card Payment REF 0013,,-1688.34,e-taxset,Casey Sample,true,2025-10-30 13:18:00,Rowan Checker,false,sf013
+2025-10-30,Card Payment (fictional),Credit Card Payment,Cinder Mastercard ...5590,ACH CREDIT Credit Card Payment REF 0014,,1688.34,e-taxset,Casey Sample,true,2025-10-30 09:54:00,Rowan Checker,false,sf014
+2025-10-30,Outside Transfer (fictional),Transfer,Lumen Cash ...4471,ACH DEBIT OUTSIDE TRANSFER REF 0019,,-476.17,e-acme,Casey Sample,true,2025-10-30 11:57:00,Rowan Checker,false,sf019
+2025-10-30,Nettle Books (fictional),Interest,Pebble Savings ...2218,ACH CREDIT Interest REF 0052,,7.79,e-household,Casey Sample,true,2025-10-30 13:51:00,Rowan Checker,false,sf052
+2025-10-30,Moth Cafe (fictional),Auto Maintenance,Fable Rewards ...6603,POS Moth Cafe (fictional) REF 0056,,-89.28,e-personal,Casey Sample,true,2025-10-30 16:12:00,Rowan Checker,false,sf056
+2025-10-30,Moss Diner (fictional),Restaurants & Bars,Cinder Mastercard ...5590,POS Moss Diner (fictional) REF 0109,,-138.60,e-taxset,Casey Sample,true,2025-10-30 09:06:00,Rowan Checker,false,sf109
+2025-10-30,Moss Pantry (fictional),Clothing,Cinder Visa ...5582,POS Moss Pantry (fictional) REF 0126,,-106.62,e-dragonfly,Casey Sample,true,2025-10-30 17:54:00,Rowan Checker,false,sf126
+2025-10-30,Nettle Pantry (fictional),Pharmacy,Fable Rewards ...6603,POS Nettle Pantry (fictional) REF 0147,,-90.06,e-dragonfly,Casey Sample,true,2025-10-30 13:20:00,Rowan Checker,false,sf147
+2025-10-30,Moth Cafe (fictional),Travel,Fable Rewards ...6603,POS Moth Cafe (fictional) REF 0161,,-83.30,e-dragonfly,Casey Sample,true,2025-10-30 13:55:00,Rowan Checker,false,sf161
+2025-10-30,Cinder Diner (fictional),Fees,Lumen Cash ...4471,POS Cinder Diner (fictional) REF 0169,,-1427.68,e-acme,Casey Sample,true,2025-10-30 08:18:00,Rowan Checker,false,sf169
+2025-10-31,Savings Transfer (fictional),Savings Transfer,Pebble Checking ...2210,ACH DEBIT SAVINGS TRANSFER REF 1031,Synthetic: in-flight transfer. The other side posts in November and is absent from this file.,-275.00,e-household,Casey Sample,true,2025-10-31 11:06:00,Rowan Checker,false,s-fly-01

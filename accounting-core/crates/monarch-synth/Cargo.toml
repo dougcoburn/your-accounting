@@ -1,0 +1,10 @@
+[package]
+name = "monarch-synth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Seeded generator for a synthetic Monarch Money transactions CSV"
+
+[[bin]]
+name = "monarch-synth"
+path = "src/main.rs"

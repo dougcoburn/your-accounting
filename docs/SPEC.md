@@ -3,6 +3,7 @@
 **Status:** Implementation baseline (review required for explicitly open decisions)  
 **Date:** 2026-10-29  
 **Amended 2026-11-22:** pure double-entry kernel, categories are income/expense ledger accounts, allocations removed (docs/adr/0008); supersede flag for corrections (docs/adr/0002 amendment). Other docs/adr decisions are not yet folded into this text; where they conflict, docs/adr wins.  
+**Schema v2 (2026-11-22, U15):** `docs/schema-v2.sql` replaces §10 and `docs/schema-v0.2.sql`; `docs/SPEC-v2-delta.md` lists every section it changes (ADR 0002-0004, 0008; occurred-date reconciliation) and wins over this text where they differ.  
 **Architecture decision:** SQLite is the sole authoritative transactional store; one filesystem-backed evidence store; deterministic Rust core with CLI and service adapters.
 
 ## 0. Normative language and scope
