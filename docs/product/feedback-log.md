@@ -19,7 +19,7 @@ Synthetic names such as "Example Grocer" and amounts such as `12.34` are allowed
 
 Capture Doug's prototype reactions as product decisions so unit U13 can freeze the month-1 interaction spec and fold those decisions into the MAP, glossary, and ADRs. Questions come from the month-1 implementation plan's "Prototype feedback questions" section. The screens themselves are described in [month1-brief.md](month1-brief.md).
 
-One entry per question. Fill `decision`, `rationale`, `decision_date`, `follow_up`, and `links` only after a decision is made. Do not edit earlier decisions in place; add a new entry that supersedes the old id if a decision changes.
+One entry per question or review finding. Pre-seeded plan questions use `FQ-*` ids. Findings from a named prototype review use `PA-*`, `PB-*`, or `PC-*` ids. Fill `decision`, `rationale`, `decision_date`, `decided_by`, `follow_up`, and `links` only after a decision is made. Do not edit earlier decisions in place; add a new entry that supersedes the old id if a decision changes.
 
 ## Entry template
 
@@ -28,6 +28,7 @@ One entry per question. Fill `decision`, `rationale`, `decision_date`, `follow_u
 
 - id:
 - decision_date:    YYYY-MM-DD (date the decision was made, not a transaction date)
+- decided_by:       (empty until decided)
 - screen:
 - question:
 - decision:         (empty until decided)
@@ -40,7 +41,7 @@ One entry per question. Fill `decision`, `rationale`, `decision_date`, `follow_u
 
 ## Open entries
 
-Pre-seeded from the plan. Decisions are empty.
+Pre-seeded from the plan (FQ-01–FQ-22), plus open follow-ups from prototype reviews. Decisions are empty until filled.
 
 ### FQ-01 — Worklist: one list or two tabs
 
@@ -283,3 +284,81 @@ Pre-seeded from the plan. Decisions are empty.
 - rationale:
 - follow_up:
 - links: [month1-brief.md](month1-brief.md)
+
+### PA-06 — Map each prototype interface to the workflow it fits
+
+- id: PA-06
+- decision_date:
+- decided_by:
+- screen: Overall
+- question: Which contexts or workflows should Prototype A (spreadsheet register), Prototype B (card triage), and Prototype C (journal-first) each serve?
+- decision:
+- rationale:
+- follow_up: Produce this mapping after Prototype B and C feedback is also logged. Opened by PA-05.
+- links: [PR #21](https://github.com/dougcoburn/your-accounting/pull/21); PA-05; PA-01; FQ-20; [month1-brief.md](month1-brief.md)
+
+---
+
+## Decided entries
+
+Logged from Doug's review of Prototype A (spreadsheet register) on 2026-11-26. Source: [PR #21](https://github.com/dougcoburn/your-accounting/pull/21). These entries do not close FQ-01–FQ-22 unless a later entry says so; related open questions are cross-referenced in `links`.
+
+### PA-01 — Navigation needs rework
+
+- id: PA-01
+- decision_date: 2026-11-26
+- decided_by: Doug
+- screen: Overall (Prototype A: spreadsheet register)
+- question: How does navigation feel in Prototype A, and can primary workflows be reached easily?
+- decision: Finding: navigation feels hard and needs rework. Requirement: primary workflows must be easy to reach. No specific navigation pattern is chosen yet; this remains an open design issue.
+- rationale: From hands-on review of Prototype A's dense, keyboard-first register. The finding is about reachability of primary workflows, not about any particular row or filter.
+- follow_up: Open design issue. Rework navigation so primary month-1 workflows (register/worklist, recipe and category assignment, settlement grouping, reconciliation, corrections) are easy to reach. Owner: product, with design input once each prototype interface is mapped to the workflow it fits (PA-05, PA-06).
+- links: [PR #21](https://github.com/dougcoburn/your-accounting/pull/21); [month1-brief.md](month1-brief.md); FQ-20; FQ-21; PA-05; PA-06
+
+### PA-02 — Clear an assigned recipe and category
+
+- id: PA-02
+- decision_date: 2026-11-26
+- decided_by: Doug
+- screen: Register / worklist (Prototype A: in-cell recipe and category picking)
+- question: Can the user clear an assigned recipe or an assigned category from a transaction, or only assign them?
+- decision: Requirement: the user can clear an assigned recipe and an assigned category from a transaction, not only assign them.
+- rationale: Prototype A lets a recipe and a category be assigned to a transaction but does not support clearing either assignment. The month-1 brief already calls out changing or clearing a recipe on a line that is not yet committed; this entry confirms that requirement and extends the same clear action to an assigned category.
+- follow_up: Include clear-recipe and clear-category in the month-1 interaction spec (U13) and in any later register or picker UI. The brief's "not yet committed" limit for clearing a recipe still stands unless a later decision says otherwise.
+- links: [PR #21](https://github.com/dougcoburn/your-accounting/pull/21); [month1-brief.md](month1-brief.md) (Recipe picker: change or clear a recipe); FQ-06; FQ-21
+
+### PA-03 — Inline add category
+
+- id: PA-03
+- decision_date: 2026-11-26
+- decided_by: Doug
+- screen: Recipe picker / category combobox (Prototype A: in-cell category picking)
+- question: Can the user add a new category to the options list from the picker?
+- decision: Requirement: the category picker supports inline "add category", and the new category is added to the options list.
+- rationale: Prototype A offers a fixed category options list and has no way to add a category while picking. Month 1 needs inline creation from the picker, not only a separate chart-of-accounts editor.
+- follow_up: Specify inline add-category in the interaction spec (U13). Which tree a new category joins, and whether the chart seed is imported Monarch categories or a product-defined list, remains FQ-08 (and open product question 3 in the brief).
+- links: [PR #21](https://github.com/dougcoburn/your-accounting/pull/21); [month1-brief.md](month1-brief.md) (open product question 3); FQ-08
+
+### PA-04 — Show missing sibling transactions after applying a recipe
+
+- id: PA-04
+- decision_date: 2026-11-26
+- decided_by: Doug
+- screen: Register / worklist; settlement grouping (Prototype A)
+- question: After a recipe is applied to one transaction, does the UI show the other transactions that recipe group expects that are still missing or unmatched?
+- decision: Requirement: after a recipe is applied to one transaction, show which sibling transactions the recipe group expects that are still missing or unmatched.
+- rationale: In Prototype A, applying a recipe to one transaction does not surface the gaps for the other transactions that recipe group expects. The brief already treats expected lines and unmatched counterpart slots as worklist-visible; this entry requires those sibling gaps to become visible as a direct result of applying the recipe.
+- follow_up: Fold into the recipe-picker and settlement-grouping interaction spec (U13). How an open expected slot should nag (FQ-13) and when match suggestions appear (FQ-10) stay open; this requirement does not choose those presentation details.
+- links: [PR #21](https://github.com/dougcoburn/your-accounting/pull/21); [month1-brief.md](month1-brief.md) (expected lines, settlement grouping); [ADR 0006](../adr/0006-recipe-owned-suggestion-only-matching.md); FQ-10; FQ-13; FQ-21
+
+### PA-05 — Prototypes A, B, and C are not a pick-one choice
+
+- id: PA-05
+- decision_date: 2026-11-26
+- decided_by: Doug
+- screen: Overall
+- question: Should month 1 pick one of Prototypes A, B, and C as the product interface?
+- decision: Prototypes A (spreadsheet register), B (card triage), and C (journal-first) are not a pick-one choice. Each interface fits specific contexts or workflows. The plan is to map each interface to the workflow it fits.
+- rationale: Doug's review of Prototype A, with the same stance toward B and C: each prototype has a useful interface for particular contexts or workflows, so selecting a single prototype as the month-1 UI would drop useful fits.
+- follow_up: Open item PA-06 — produce the mapping of each prototype interface to the workflow it fits, after feedback on B and C is also logged. This also informs the open navigation issue in PA-01 and FQ-20 (which screen would be used daily).
+- links: [PR #21](https://github.com/dougcoburn/your-accounting/pull/21); FQ-20; FQ-21; PA-01; PA-06
