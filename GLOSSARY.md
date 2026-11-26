@@ -52,7 +52,7 @@ One of asset, liability, equity, income, expense. Fixes which side increases the
 An income or expense Ledger account, per entity, arranged in a tree; only leaf categories take postings (ADR 0008).
 
 **Posting**:
-One debit or credit line in the journal: ledger account, entity, currency, side, positive `amount_minor`. Every event's postings balance per entity and currency, so the books balance from postings alone.
+One debit or credit line in the journal: ledger account, currency, side, positive `amount_minor`. The entity is the database, not a column (ADR 0004). Every event's postings balance per currency, so the books balance from postings alone.
 
 **Allocation** (retired 2026-11-22):
 Spec v0.2's separate P&L record. Replaced by ordinary postings to Category accounts (ADR 0008). _Avoid_: "allocation"; say posting or category posting.

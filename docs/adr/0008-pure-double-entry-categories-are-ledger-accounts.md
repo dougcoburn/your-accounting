@@ -1,11 +1,13 @@
 # ADR 0008: Kernel is pure double-entry; categories are income/expense ledger accounts
 
-Status: Accepted (2026-11-22, Doug)
+Status: Accepted (2026-11-22, Doug; amended 2026-11-26, Doug)
 
 ## Context
 Spec v0.2 split the books in two: balance-sheet lines lived in `journal_postings`, while income and expense lived in a separate `allocations` table keyed to a `categories` tree. A purchase therefore never appeared in the journal as "debit expense, credit card liability", and the balance (Assets = Liabilities + Equity + Income - Expenses) could not be proved from postings alone. Doug expected ordinary double-entry in the kernel.
 
 ## Decision
+The 2026-11-26 amendment below replaces the same-entity wording in the category, leaf-rule and INV-001 bullets. Where they differ, the amendment wins.
+
 - Every ledger account has exactly one **account type**: asset, liability, equity, income, or expense (`ledger_accounts.account_type`, CHECK-constrained). Engine sub-kinds (cash, card, receivable, payable, clearing, opening equity, category) stay in `kind`.
 - **Categories are income/expense ledger accounts.** They are per entity, hierarchical through `parent_id` (same entity, same type), and only leaf accounts receive postings. The `categories` table is removed.
 - **Income and expense amounts are ordinary journal postings.** The `allocations` table is removed. A card purchase is a debit to a leaf expense account and a credit to the card's liability account.
@@ -23,3 +25,11 @@ Spec v0.2 split the books in two: balance-sheet lines lived in `journal_postings
 ## Alternatives considered
 - **Keep the v0.2 allocations model** (balance-sheet postings plus a separate P&L allocations table). Rejected: two sources of truth, and the balance cannot be proved from postings alone, so the kernel's central invariant would depend on cross-table reconciliation.
 - **Categories as tags or metadata on postings to one generic expense account.** Rejected: category totals would not be ledger balances, and leaf/ownership rules would live outside the kernel.
+
+## Amendment (2026-11-26, Doug): drop row-level entity_id
+This follows ADR 0004's 2026-11-26 amendment: one database is one entity, so ledger accounts and postings carry no `entity_id`.
+
+- **Categories:** still per entity, because each database is one entity. They are hierarchical through `parent_id` with the **same type** only. The "same entity" parent check is removed.
+- **The leaf/same-entity rule becomes leaf-only.** A posting to an income/expense account must use a leaf account. There is no posting-entity check, because every ledger account in the database is the entity's.
+- **INV-001:** for every accounting event, sum(debits) = sum(credits) **per currency** within `journal_postings` alone. The trial balance and A = L + Eq + (I - X) close per currency from that one table.
+- **Schema:** this removes `ledger_accounts.entity_id`, `journal_postings.entity_id`, their foreign keys to `entity`, the `journal_postings_entity_valid` trigger and the entity term in `ledger_accounts_parent_valid`. `commits_seal`, the clearing-residual check, `trial_balance` and `doctor_unbalanced_events` group by currency without `entity_id`.
