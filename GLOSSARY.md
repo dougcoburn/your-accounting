@@ -13,7 +13,7 @@ A source of Observations (month 1: Monarch CSV export; manual offline extraction
 A document supporting an Observation or interpretation (later: saved bank statements). Not a feed in month 1.
 
 **Accounting entity** (user-facing synonym: Division):
-A set of books, stored in its own database. Month 1: Doug, Household, Dragonfly (business). Esther and Numetric are Parties. See ADR 0003.
+A set of books, stored in its own database. Month 1: Doug, Household, Dragonfly (business). Esther and Acme Corp are Parties. See ADR 0003.
 
 **Visibility** (viewer-relative):
 Determined by a user's access grants, not by the entity. An entity a viewer cannot access appears to them as a Party. See ADR 0003. _Avoid_: "opaque entity".
@@ -103,7 +103,7 @@ Valuation snapshot minus book basis. Derived for display only, never journaled. 
 Transaction date is when the purchase happened (preferred effective date). Posting date is when the institution posted it (used to reconcile to statements and the fallback effective date).
 
 **Party**:
-Anyone outside the transparent books: merchants, employers, people (e.g. Esther, Numetric, Costco). Can hold obligations. UI may label as vendor/person/organization. _Avoid_: "opaque entity" as a separate concept; an entity a viewer cannot see simply appears as a party to that viewer.
+Anyone outside the transparent books: merchants, employers, people (e.g. Esther, Acme Corp, Costco). Can hold obligations. UI may label as vendor/person/organization. _Avoid_: "opaque entity" as a separate concept; an entity a viewer cannot see simply appears as a party to that viewer.
 
 **Health check**:
 A periodic application-level scan (at least on open) that finds broken invariants across entities, such as a cross-entity recipe leg missing its counterpart, and surfaces them as flagged open items.

@@ -22,7 +22,7 @@ const REQUIRED_SCENARIOS: &[&str] = &[
     "Paycheck",
     "HSA contribution (matching side missing)",
     "Dragonfly e-tagged buy",
-    "Numetric partial reimbursement",
+    "Acme Corp partial reimbursement",
     "Refund",
     "Card perk or statement credit",
     "Duplicate row",
@@ -310,9 +310,9 @@ fn assert_scenarios(rows: &[Row], table: &BTreeMap<String, Vec<String>>) {
         let row = by_id(rows, id);
         assert_eq!(row.category, "Paychecks");
         assert!(cents(row) > 0, "{id}");
-        assert!(row.merchant.contains("Numetric"), "{id}");
+        assert!(row.merchant.contains("Acme Corp"), "{id}");
         assert!(row.merchant.contains("fictional"), "{id}");
-        assert_eq!(row.tags, "e-numetric");
+        assert_eq!(row.tags, "e-acme");
     }
     assert!(!table["Paycheck"].is_empty());
 
@@ -349,25 +349,25 @@ fn assert_scenarios(rows: &[Row], table: &BTreeMap<String, Vec<String>>) {
         );
     }
 
-    let numetric = &table["Numetric partial reimbursement"];
-    assert_eq!(numetric.len(), 2);
-    let pair: Vec<&Row> = numetric.iter().map(|id| by_id(rows, id)).collect();
-    assert!(pair.iter().all(|row| row.tags == "e-numetric"));
+    let acme = &table["Acme Corp partial reimbursement"];
+    assert_eq!(acme.len(), 2);
+    let pair: Vec<&Row> = acme.iter().map(|id| by_id(rows, id)).collect();
+    assert!(pair.iter().all(|row| row.tags == "e-acme"));
     let expense = pair
         .iter()
         .copied()
         .find(|row| cents(row) < 0)
-        .expect("numetric expense");
+        .expect("acme expense");
     let reimbursement = pair
         .iter()
         .copied()
         .find(|row| cents(row) > 0)
-        .expect("numetric reimbursement");
+        .expect("acme reimbursement");
     assert_eq!(reimbursement.category, "Reimbursements");
     assert!(!TRANSFER.contains(&expense.category.as_str()));
     assert!(cents(reimbursement) < -cents(expense));
     assert!(reimbursement.notes.to_ascii_lowercase().contains("partial"));
-    assert!(reimbursement.merchant.contains("Numetric"));
+    assert!(reimbursement.merchant.contains("Acme Corp"));
     assert!(expense.merchant.contains("fictional"));
 
     for id in &table["Refund"] {

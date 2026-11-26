@@ -46,9 +46,9 @@ Every `Date` is in October 2025 (2025-10-01 through 2025-10-31). Amounts are sig
 
 ## Tags
 
+- e-acme
 - e-dragonfly
 - e-household
-- e-numetric
 - e-personal
 - e-sample
 - e-sinking
@@ -62,10 +62,10 @@ The ids below are the rows that exercise each scenario. Filler rows use the same
 | --- | --- | --- |
 | Card buys | s-card-01, s-card-02, s-card-03 | Negative purchases on fictional credit cards. |
 | Credit-card payment (both sides) | s-cc-out, s-cc-in | Checking outflow and card inflow on the same date with opposite signs, both Credit Card Payment. |
-| Paycheck | s-pay-01, s-pay-02 | Positive Paychecks rows from Numetric Payroll (fictional), tagged e-numetric. |
+| Paycheck | s-pay-01, s-pay-02 | Positive Paychecks rows from Acme Corp Payroll (fictional), tagged e-acme. |
 | HSA contribution (matching side missing) | s-hsa-01 | Checking outflow in HSA Contribution. The HSA deposit side is absent from this file. |
 | Dragonfly e-tagged buy | s-dfly-01 | Negative e-dragonfly purchase for Dragonfly Homes on a household credit card. |
-| Numetric partial reimbursement | s-exp-01, s-reimb-01 | e-numetric expense paired with a smaller e-numetric Reimbursements inflow. The note says the reimbursement is partial and the remainder stays open. |
+| Acme Corp partial reimbursement | s-exp-01, s-reimb-01 | e-acme expense paired with a smaller e-acme Reimbursements inflow. The note says the reimbursement is partial and the remainder stays open. |
 | Refund | s-refund-01 | Positive Groceries amount on a card, original statement contains RETURN, merchant matches an earlier buy. |
 | Card perk or statement credit | s-perk-01 | Positive Subscriptions amount on a card whose original statement contains STATEMENT CREDIT. |
 | Duplicate row | s-dup-a, s-dup-b | These two rows share every field except Id. |
