@@ -135,7 +135,7 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
    - a void whose linked events are not reversed (ADR 0002)
    - a dissolved reconciled group whose legs are not all reversed, or whose observed legs are not reposted (§5 Q3)
 5. `COMMIT`. If the commits row was never written, the deferred foreign keys fail at COMMIT and nothing persists.
-6. Once sealed, a commit accepts no new rows. Open-commit triggers on all 23 commit-scoped tables enforce this, and the smoke script tries each table.
+6. Once sealed, a commit accepts no new rows. Open-commit triggers on all 24 commit-scoped tables enforce this (23 in PR 19; U17 adds `kernel_state`), and the smoke script tries each table.
 
 **doctor rules (U21; all must be clean, exit nonzero otherwise):**
 - `PRAGMA integrity_check` returns `ok`.

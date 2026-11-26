@@ -249,7 +249,8 @@ sealed posting_observations "INSERT INTO posting_observations VALUES('${P}PS02',
 sealed refund_links "INSERT INTO refund_links(id,refund_posting_id,purchase_posting_id,amount_minor) VALUES('${P}R701','${P}PS03','${P}PS01',100);"
 sealed obligation_postings "INSERT INTO obligation_postings VALUES('${P}0B01','${P}PS01');"
 sealed settlement_draft_participants "INSERT INTO settlement_draft_participants(id,group_state_id,role,expected_json) VALUES('${P}DP01','${P}GS11','expected','{}');"
-equals "all 23 commit-scoped tables are covered by doctor_unsealed_rows" "23|23" "SELECT count(*), sum(instr((SELECT sql FROM sqlite_master WHERE name='doctor_unsealed_rows'), char(39)||t||char(39)) > 0) FROM (SELECT DISTINCT tbl_name AS t FROM sqlite_master WHERE type='trigger' AND name GLOB '*_open_commit');"
+sealed kernel_state "INSERT INTO kernel_state(id,state_key,active,code,commit_id,recorded_at) VALUES('${P}FRZ9','freeze',1,'UnsealedRows','$S','$T');"
+equals "all 24 commit-scoped tables are covered by doctor_unsealed_rows" "24|24" "SELECT count(*), sum(instr((SELECT sql FROM sqlite_master WHERE name='doctor_unsealed_rows'), char(39)||t||char(39)) > 0) FROM (SELECT DISTINCT tbl_name AS t FROM sqlite_master WHERE type='trigger' AND name GLOB '*_open_commit');"
 
 # --- read models ----------------------------------------------------------------
 equals "register hides the superseded entry and its reversal" "${P}EV03
@@ -265,6 +266,22 @@ ${P}AX12|4250" "SELECT ledger_account_id, balance_minor FROM account_balances OR
 equals "trial balance closes per currency (AT-034)" "0" "SELECT sum(net_debit_minor) FROM trial_balance WHERE currency='USD';"
 equals "doctor views are clean" "0|0|0|0" "SELECT (SELECT count(*) FROM doctor_unbalanced_events),(SELECT count(*) FROM doctor_superseded_drift),(SELECT count(*) FROM doctor_observation_double_consumed),(SELECT count(*) FROM doctor_unsealed_rows);"
 equals "integrity and foreign keys clean" "ok" "PRAGMA integrity_check; PRAGMA foreign_key_check;"
+
+# --- U17: kernel_state freeze row, commits.kind includes freeze -----------------
+ok "U17 freeze commit seals a kernel_state row" "
+BEGIN;
+INSERT INTO kernel_state(id,state_key,active,code,commit_id,recorded_at) VALUES('${P}FRZ1','freeze',1,'UnsealedRows','${P}CFR1','$T');
+INSERT INTO commits(id,expected_revision,seq,kind,actor,recorded_at) VALUES('${P}CFR1',(SELECT coalesce(max(seq),0) FROM commits),(SELECT coalesce(max(seq),0) FROM commits)+1,'freeze','smoke','$T');
+COMMIT;"
+rejects "U17 kernel_state is append-only" "never updated" "UPDATE kernel_state SET active=0 WHERE id='${P}FRZ1';"
+rejects "U17 kernel_state is never deleted" "never deleted" "DELETE FROM kernel_state WHERE id='${P}FRZ1';"
+ok "U17 clear appends active=0 and leaves the prior row" "
+BEGIN;
+INSERT INTO kernel_state(id,state_key,active,code,commit_id,recorded_at) VALUES('${P}FRZ2','freeze',0,'UnsealedRows','${P}CFR2','$T');
+INSERT INTO commits(id,expected_revision,seq,kind,actor,recorded_at) VALUES('${P}CFR2',(SELECT coalesce(max(seq),0) FROM commits),(SELECT coalesce(max(seq),0) FROM commits)+1,'freeze','smoke','$T');
+COMMIT;"
+equals "U17 latest freeze row is the clear" "0" "SELECT k.active FROM kernel_state k JOIN commits c ON c.id = k.commit_id WHERE k.state_key='freeze' ORDER BY c.seq DESC LIMIT 1;"
+equals "U17 clear does not update the prior freeze row" "1" "SELECT active FROM kernel_state WHERE id='${P}FRZ1';"
 
 
 # --- PR 19 fix 1: a connection with foreign_keys OFF can leave an unsealed row; doctor finds it

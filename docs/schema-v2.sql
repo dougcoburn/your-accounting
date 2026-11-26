@@ -2,6 +2,7 @@
 -- your-accounting kernel schema v2 (migration 1)
 -- =============================================================================
 -- Status: Proposed (U15, 2026-11-22). Replaces docs/schema-v0.2.sql.
+-- U17 (2026-11-26): adds kernel_state and commits.kind 'freeze' (kernel spec §3.13).
 -- Fresh migration 1: no real database exists, so there is no data migration
 -- from v0.2. The SPEC "upgraded DB" acceptance runs start at v2.
 --
@@ -84,12 +85,27 @@ CREATE TABLE commits (
     id                TEXT PRIMARY KEY CHECK (length(id) = 26 AND id NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
     expected_revision INTEGER NOT NULL CHECK (expected_revision >= 0),
     seq               INTEGER NOT NULL UNIQUE CHECK (seq >= 1),
-    kind        TEXT NOT NULL CHECK (kind IN ('setup','import','interpret','settle','correct','void','assert','cross_entity','grant')),
+    kind        TEXT NOT NULL CHECK (kind IN ('setup','import','interpret','settle','correct','void','assert','cross_entity','grant','freeze')),
     actor       TEXT NOT NULL CHECK (length(actor) > 0),
     reason      TEXT NOT NULL DEFAULT '',
     recorded_at TEXT NOT NULL CHECK (recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z' AND julianday(recorded_at) IS NOT NULL),
     CHECK (seq = expected_revision + 1)
 ) STRICT;
+
+-- U17 / kernel spec §3.13: the bugcheck write freeze. The live state is the
+-- latest row, by its commit's seq, whose state_key is 'freeze'. active = 1
+-- freezes writes; active = 0 is a clear and is a new row, never an update.
+-- No amounts, names, memos, or payloads. commit_id is deferred so the row
+-- cannot persist without its commits row (kind 'freeze').
+CREATE TABLE kernel_state (
+    id          TEXT PRIMARY KEY CHECK (length(id) = 26 AND id NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
+    state_key   TEXT NOT NULL CHECK (state_key = 'freeze'),
+    active      INTEGER NOT NULL CHECK (active IN (0, 1)),
+    code        TEXT NOT NULL CHECK (length(code) > 0),
+    commit_id   TEXT NOT NULL REFERENCES commits(id) DEFERRABLE INITIALLY DEFERRED,
+    recorded_at TEXT NOT NULL CHECK (recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z' AND julianday(recorded_at) IS NOT NULL)
+) STRICT;
+CREATE INDEX kernel_state_by_commit ON kernel_state(commit_id);
 
 -- ADR 0003: users are granted access to entities. Append-only; a revocation is
 -- a new row that points at the grant it revokes. user_id is a global ULID.
@@ -585,6 +601,8 @@ BEGIN SELECT RAISE(ABORT, 'ADR 0008: ledger kind does not match the financial ac
 -- accounting_events has its own UPDATE rule (superseded_by) further down.
 CREATE TRIGGER commits_no_update BEFORE UPDATE ON commits BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: commits rows are never updated'); END;
 CREATE TRIGGER commits_no_delete BEFORE DELETE ON commits BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: commits rows are never deleted'); END;
+CREATE TRIGGER kernel_state_no_update BEFORE UPDATE ON kernel_state BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: kernel_state rows are never updated'); END;
+CREATE TRIGGER kernel_state_no_delete BEFORE DELETE ON kernel_state BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: kernel_state rows are never deleted'); END;
 CREATE TRIGGER schema_migrations_no_update BEFORE UPDATE ON schema_migrations BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: schema_migrations rows are never updated'); END;
 CREATE TRIGGER schema_migrations_no_delete BEFORE DELETE ON schema_migrations BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: schema_migrations rows are never deleted'); END;
 CREATE TRIGGER user_grants_no_update BEFORE UPDATE ON user_grants BEGIN SELECT RAISE(ABORT, 'ADR 0003/0002 append-only: user_grants rows are never updated'); END;
@@ -661,6 +679,7 @@ CREATE TRIGGER cross_entity_inbox_open_commit BEFORE INSERT ON cross_entity_inbo
 CREATE TRIGGER statements_open_commit BEFORE INSERT ON statements WHEN EXISTS (SELECT 1 FROM commits WHERE id = NEW.commit_id) BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed'); END;
 CREATE TRIGGER balance_assertions_open_commit BEFORE INSERT ON balance_assertions WHEN EXISTS (SELECT 1 FROM commits WHERE id = NEW.commit_id) BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed'); END;
 CREATE TRIGGER valuation_snapshots_open_commit BEFORE INSERT ON valuation_snapshots WHEN EXISTS (SELECT 1 FROM commits WHERE id = NEW.commit_id) BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed'); END;
+CREATE TRIGGER kernel_state_open_commit BEFORE INSERT ON kernel_state WHEN EXISTS (SELECT 1 FROM commits WHERE id = NEW.commit_id) BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed'); END;
 -- Rows that hang off a posting, obligation or group state join their parent's commit.
 CREATE TRIGGER journal_postings_open_commit BEFORE INSERT ON journal_postings
 WHEN EXISTS (SELECT 1 FROM accounting_events e JOIN commits c ON c.id = e.commit_id WHERE e.id = NEW.event_id)
@@ -967,6 +986,7 @@ UNION ALL SELECT 'cross_entity_inbox' AS table_name, t.rowid AS row_id, t.commit
 UNION ALL SELECT 'statements' AS table_name, t.rowid AS row_id, t.commit_id FROM statements t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
 UNION ALL SELECT 'balance_assertions' AS table_name, t.rowid AS row_id, t.commit_id FROM balance_assertions t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
 UNION ALL SELECT 'valuation_snapshots' AS table_name, t.rowid AS row_id, t.commit_id FROM valuation_snapshots t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
+UNION ALL SELECT 'kernel_state' AS table_name, t.rowid AS row_id, t.commit_id FROM kernel_state t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
 UNION ALL SELECT 'journal_postings', t.rowid, e.commit_id FROM journal_postings t LEFT JOIN accounting_events e ON e.id = t.event_id WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = e.commit_id)
 UNION ALL SELECT 'posting_tags', t.rowid, e.commit_id FROM posting_tags t LEFT JOIN journal_postings p ON p.id = t.posting_id LEFT JOIN accounting_events e ON e.id = p.event_id WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = e.commit_id)
 UNION ALL SELECT 'posting_observations', t.rowid, e.commit_id FROM posting_observations t LEFT JOIN journal_postings p ON p.id = t.posting_id LEFT JOIN accounting_events e ON e.id = p.event_id WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = e.commit_id)
