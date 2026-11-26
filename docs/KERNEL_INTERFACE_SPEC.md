@@ -505,7 +505,7 @@ This v2 interface is `docs/KERNEL_INTERFACE_SPEC.md`, next to schema v2. v1's bu
 
 ADR 0007 says the kernel knows nothing about tags, match hints, visibility, or feeds, and that the application owns the outbox and `doctor`. Schema v2 stores feeds, observations, tags, grants, outbox, and inbox in the entity database and defines the doctor views. The U16 assignment lists import, outbox/inbox, and `doctor` as kernel operations.
 
-Choice: match hints, feed formats, and viewer-relative display stay outside the kernel. Import of already-keyed observations, the outbox row, the inbox apply, and `doctor` are kernel operations because the schema and this assignment put their rules here. The kernel stores tag rows and does not interpret them.
+Choice: match hints, feed formats, and viewer-relative display stay outside the kernel. Import of already-keyed observations, the outbox row, the inbox apply, and `doctor` are kernel operations because the schema and this assignment put their rules here. The kernel stores tag rows and does not interpret them. ADR 0007 now records this choice (amended 2026-11-25).
 
 ### 8.3 Settlement exclusivity is forever
 
