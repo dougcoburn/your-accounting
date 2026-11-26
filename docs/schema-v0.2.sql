@@ -1,3 +1,8 @@
+-- SUPERSEDED 2026-11-22 by docs/schema-v2.sql (U15; see docs/SPEC-v2-delta.md). Kept as history; do not implement from this file.
+-- Superseded here: entities.visibility (transparent/opaque), parties.opaque_entity_id and the account_owner_valid trigger
+-- (ADR 0003: one Party concept, user access grants; ADR 0004: one database per entity); the mutable state/revision columns on
+-- canonical_transactions and settlement_groups, statements.state and evidence_objects.status (ADR 0002: append-only, state derived);
+-- posting_date/effective_date_override (2026-11-22: occurred date for everything); per-prefix ids (ULIDs, ADR 0004).
 -- Initial draft; domain-service validation still required for balancing, group finalization and transitive corrections.
 -- Amended 2026-11-22 (file name kept): ADR 0008 pure double entry (categories are income/expense ledger accounts;
 -- allocations table removed) and ADR 0002 amendment (recorded_at, reverses_id, superseded_by currency flag).

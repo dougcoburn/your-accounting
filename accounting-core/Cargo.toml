@@ -4,6 +4,7 @@ members = [
     "crates/accounting-kernel",
     "crates/accounting-recipes",
     "crates/accounting-cli",
+    "crates/monarch-synth",
 ]
 
 [workspace.package]
