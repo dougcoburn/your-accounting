@@ -1,6 +1,6 @@
 # ADR 0007: Layering and boundaries
 
-Status: Proposed (2026-11-20; amended 2026-11-25 to match docs/KERNEL_INTERFACE_SPEC.md)
+Status: Proposed (2026-11-20; amended 2026-11-25 to match docs/KERNEL_INTERFACE_SPEC.md; clarified 2026-11-26)
 
 ## Decision
 From the core outward. Layers 1 and 3 are amended below (2026-11-25); where the list and the amendment differ, the amendment wins.
@@ -35,4 +35,10 @@ The merged kernel interface spec (`docs/KERNEL_INTERFACE_SPEC.md` §1, §3.6, §
   - **Import is not matching.** `import_observations` stores facts and nothing else. It never creates postings, groups or settlements, so a new observation is `unreviewed` unless the same caller-built changeset also interprets it. Matching stays a recipe-owned suggestion that a person confirms (ADR 0006).
   - **`doctor` is read-only.** It opens no write transaction and repairs nothing. It never compacts the journal or rewrites `superseded_by`. When a finding is bugcheck class, the kernel refuses later writes on that database until a clean `doctor`, but doctor itself changes no row (spec §3.12, §5). For cross-database pairing it reads counterpart databases named explicitly by the caller. Each database stays isolated for writes (ADR 0004).
 - **Why amend rather than supersede:** see the PR that introduced this amendment. In short, layers 2 to 4 and the observation natural key are unchanged. Only the kernel/application line in layers 1 and 3 moves, and this repo records that kind of change as a dated amendment (compare ADR 0002).
+
+## Clarification (2026-11-26)
+Where this clarification and the 2026-11-25 amendment differ, this clarification wins. It tracks `docs/KERNEL_INTERFACE_SPEC.md` §2.2, §3.9, §3.13, and §8.13.
+
+- An identical re-import, and an inbox retry whose payload hash matches, still use `begin_transaction(expected_revision)` with the caller's revision. When that transaction stages no other row, the kernel returns the original commit and seals no new `commits` row (no `seq` bump). A same idempotency key with a different payload hash is `IdempotencyConflict`: the kernel rejects, writes nothing, and does not overwrite the stored inbox row.
+- `doctor`'s checks still open no write transaction and change no row. The bugcheck write freeze is the latest `kernel_state` row with `state_key = 'freeze'` and `active = 1` in the entity database. `record_write_freeze` seals it in its own commit. Doctor reports that row. A later clean doctor does not clear it. `clear_write_freeze` is the only clear. The 2026-11-25 sentence that writes resume at the next clean `doctor` is withdrawn.
 
