@@ -72,7 +72,7 @@ This file lists what v2 changes in the v0.2 spec and why. Where this delta and `
 > The **occurred date** (the transaction or purchase date) is an event's `effective_date`, and it alone assigns the event to a period. That includes statement reconciliation. Feed rows also keep the **posted date** when the feed has one. It is used only to explain the gap to a statement: the occurred-date balance at the cutoff, minus items that occurred on or before the cutoff but posted after it, plus items that posted on or before the cutoff but occurred after it, must equal the statement's ending balance. Corrections and reversals keep the effective date of the event they correct (ADR 0002). The v0.2 `effective_date_override` is removed. (Decision 2026-11-22, MAP "Statement cutoff".)
 
 ### §4 Invariants
-- **INV-001** now applies per event and per (entity, currency) within `journal_postings` alone (ADR 0008). Because each database holds one entity, the entity partition is always that entity. `entity_id` stays on postings for explicitness and for `doctor`.
+- **INV-001** now applies per event and per currency within `journal_postings` alone (ADR 0008). Each database holds one entity, the singleton `entity` row (ADR 0004/0008 amendment), so postings do not carry `entity_id`.
 - **INV-012 and INV-013**: "atomically replacing current state" becomes "atomically appending reversals and replacements" (ADR 0002).
 - **New, from the ADR 0002 amendment:** `superseded_by` is NULL or the id of the single event whose `reverses_id` points at this event. It is set in that reversal's commit and never changed. A reversal targets a current, non-reversal event, cancels it account by account, and keeps its effective date.
 - **New, from the ADR 0002 void rule:** a void commit reverses every current event that interprets the voided observation.
@@ -128,7 +128,7 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
    - a stale revision (AT-032)
    - a recorded_at that differs from the commit's
    - an event with fewer than 2 postings (INV-002)
-   - an imbalance per event, entity and currency (INV-001)
+   - an imbalance per event and currency (INV-001)
    - a reversal that doesn't exactly cancel and flag its target (ADR 0002 amendment)
    - postings in a draft (INV-006)
    - a reconciled group with no postings, or a nonzero clearing residual (INV-008, INV-017, AT-030)
@@ -148,9 +148,9 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
 
 | Rule | Storage (schema-v2) | Commit validator (U19) / doctor (U21) |
 |---|---|---|
-| INV-001 balance per event, entity, currency | `commits_seal` | `doctor_unbalanced_events` |
+| INV-001 balance per event and currency | `commits_seal` | `doctor_unbalanced_events` |
 | INV-002 posting shape | CHECKs, STRICT, `commits_seal` (at least 2 postings) | — |
-| INV-003 leaf, same-entity category | `journal_postings_category_leaf`, `journal_postings_entity_valid`, `ledger_accounts_parent_valid` | — |
+| INV-003 leaf category | `journal_postings_category_leaf`, `ledger_accounts_parent_valid` | — |
 | INV-004, INV-005 one owner, one currency | singleton entity, `journal_postings_currency_valid`, `observations_currency_valid` | — |
 | INV-006 drafts never post | `commits_seal` | — |
 | INV-007 no double consumption | `posting_observations_valid`, observation natural key | `doctor_observation_double_consumed` |

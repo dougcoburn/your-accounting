@@ -96,7 +96,6 @@ pub struct FinancialAccountRow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LedgerAccountRow {
     pub id: String,
-    pub entity_id: String,
     pub financial_account_id: Option<String>,
     pub account_type: String,
     pub kind: String,
@@ -145,7 +144,6 @@ pub struct NewFinancialAccount {
 #[derive(Debug, Clone)]
 pub struct NewLedgerAccount {
     pub id: Option<String>,
-    pub entity_id: String,
     pub financial_account_id: Option<String>,
     pub account_type: AccountType,
     pub kind: LedgerKind,
@@ -157,7 +155,6 @@ pub struct NewLedgerAccount {
 pub struct NewPosting {
     pub id: Option<String>,
     pub ledger_account_id: String,
-    pub entity_id: String,
     pub currency: String,
     pub side: Side,
     pub amount_minor: i64,
@@ -178,6 +175,9 @@ pub struct InboxApply {
     pub idempotency_key: String,
     pub recipe_instance_id: String,
     pub source_party_id: String,
+    /// Target entity. Must equal this database's `entity.id`. Checked before the
+    /// §3.9 hash. Not stored: the inbox target column is not in the schema yet.
+    pub counterpart_entity_id: String,
     pub action: InboxAction,
     pub amount_minor: i64,
     pub currency: String,
@@ -212,7 +212,6 @@ impl Staged {
 }
 
 struct AccountSnap {
-    entity_id: String,
     account_type: String,
     financial_account_id: Option<String>,
 }
@@ -396,18 +395,17 @@ impl Kernel {
     pub fn ledger_account(&self, id: &str) -> Result<Option<LedgerAccountRow>, Error> {
         self.conn
             .query_row(
-                "SELECT id, entity_id, financial_account_id, account_type, kind, parent_id, name
+                "SELECT id, financial_account_id, account_type, kind, parent_id, name
                  FROM ledger_accounts WHERE id = ?1",
                 [id],
                 |row| {
                     Ok(LedgerAccountRow {
                         id: row.get(0)?,
-                        entity_id: row.get(1)?,
-                        financial_account_id: row.get(2)?,
-                        account_type: row.get(3)?,
-                        kind: row.get(4)?,
-                        parent_id: row.get(5)?,
-                        name: row.get(6)?,
+                        financial_account_id: row.get(1)?,
+                        account_type: row.get(2)?,
+                        kind: row.get(3)?,
+                        parent_id: row.get(4)?,
+                        name: row.get(5)?,
                     })
                 },
             )
@@ -1007,7 +1005,6 @@ impl Transaction<'_> {
     pub fn create_ledger_account(&mut self, new: NewLedgerAccount) -> Result<String, Error> {
         self.ensure_open()?;
         require_name(&new.name).map_err(|e| self.fail(e))?;
-        require_ulid(&new.entity_id).map_err(|e| self.fail(e))?;
         if !new.kind.fits(new.account_type) {
             return Err(self.fail(shape("ledger_kind")));
         }
@@ -1031,7 +1028,7 @@ impl Transaction<'_> {
                     vec![parent.clone()],
                 )));
             };
-            if snap.entity_id != new.entity_id || snap.account_type != new.account_type.as_str() {
+            if snap.account_type != new.account_type.as_str() {
                 return Err(self.fail(Error::new(
                     Code::CategoryParentInvalid,
                     &["INV-003", "ADR 0008"],
@@ -1050,16 +1047,12 @@ impl Transaction<'_> {
                 )));
             }
         }
-        let singleton = self.singleton_entity()?;
-        let Some(entity_id) = singleton else {
+        if self.singleton_entity()?.is_none() {
             return Err(self.fail(Error::new(
                 Code::DatabaseUninitialized,
                 &["ADR 0004"],
                 vec![],
             )));
-        };
-        if entity_id != new.entity_id {
-            return Err(self.fail(Error::new(Code::UnknownTarget, &[], vec![new.entity_id])));
         }
         if let Some(financial_id) = &new.financial_account_id {
             if !new.kind.allows_financial_account() {
@@ -1095,11 +1088,10 @@ impl Transaction<'_> {
         let recorded_at = self.recorded_at.clone();
         self.exec(
             "INSERT INTO ledger_accounts(
-                id, entity_id, financial_account_id, account_type, kind, parent_id, name, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                id, financial_account_id, account_type, kind, parent_id, name, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 id,
-                new.entity_id,
                 new.financial_account_id,
                 new.account_type.as_str(),
                 new.kind.as_str(),
@@ -1160,10 +1152,9 @@ impl Transaction<'_> {
             return Err(self.fail(Error::new(Code::InsufficientPostings, &["INV-002"], vec![])));
         }
         let mut prepared = Vec::with_capacity(new.postings.len());
-        let mut sums: BTreeMap<(String, String), i64> = BTreeMap::new();
+        let mut sums: BTreeMap<String, i64> = BTreeMap::new();
         for posting in &new.postings {
             require_ulid(&posting.ledger_account_id).map_err(|e| self.fail(e))?;
-            require_ulid(&posting.entity_id).map_err(|e| self.fail(e))?;
             require_currency(&posting.currency).map_err(|e| self.fail(e))?;
             require_positive(posting.amount_minor).map_err(|e| self.fail(e))?;
             let Some(account) = self.account_snap(&posting.ledger_account_id)? else {
@@ -1173,13 +1164,6 @@ impl Transaction<'_> {
                     vec![posting.ledger_account_id.clone()],
                 )));
             };
-            if account.entity_id != posting.entity_id {
-                return Err(self.fail(Error::new(
-                    Code::EntityMismatch,
-                    &["INV-003", "ADR 0004"],
-                    vec![posting.ledger_account_id.clone(), posting.entity_id.clone()],
-                )));
-            }
             if matches!(account.account_type.as_str(), "income" | "expense")
                 && self.count(
                     "SELECT count(*) FROM ledger_accounts WHERE parent_id = ?1",
@@ -1227,9 +1211,7 @@ impl Transaction<'_> {
             } else {
                 -posting.amount_minor
             };
-            let entry = sums
-                .entry((posting.entity_id.clone(), posting.currency.clone()))
-                .or_insert(0);
+            let entry = sums.entry(posting.currency.clone()).or_insert(0);
             *entry = entry
                 .checked_add(signed)
                 .ok_or_else(|| self.fail(Error::new(Code::InvalidMoney, &[], vec![])))?;
@@ -1266,13 +1248,12 @@ impl Transaction<'_> {
             let posting_id = self.allocate(posting.id.clone())?;
             self.exec(
                 "INSERT INTO journal_postings(
-                    id, event_id, ledger_account_id, entity_id, currency, side, amount_minor, party_id, memo
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, '')",
+                    id, event_id, ledger_account_id, currency, side, amount_minor, party_id, memo
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '')",
                 params![
                     posting_id,
                     event_id,
                     posting.ledger_account_id,
-                    posting.entity_id,
                     posting.currency,
                     posting.side.as_str(),
                     posting.amount_minor,
@@ -1285,6 +1266,7 @@ impl Transaction<'_> {
         Ok(event_id)
     }
 
+    /// Inbox apply. `counterpart_entity_id` must equal `entity.id` before the
     /// §3.9 hash compare. The caller stages the counterpart event with `stage_event`.
     pub fn apply_inbox(&mut self, apply: InboxApply) -> Result<(), Error> {
         self.ensure_open()?;
@@ -1293,8 +1275,17 @@ impl Transaction<'_> {
         }
         require_ulid(&apply.recipe_instance_id).map_err(|e| self.fail(e))?;
         require_ulid(&apply.source_party_id).map_err(|e| self.fail(e))?;
+        require_ulid(&apply.counterpart_entity_id).map_err(|e| self.fail(e))?;
         require_positive(apply.amount_minor).map_err(|e| self.fail(e))?;
         require_currency(&apply.currency).map_err(|e| self.fail(e))?;
+        let entity_id = self.singleton_entity()?;
+        if entity_id.as_deref() != Some(apply.counterpart_entity_id.as_str()) {
+            return Err(self.fail(Error::new(
+                Code::EntityMismatch,
+                &["ADR 0004"],
+                vec![apply.counterpart_entity_id],
+            )));
+        }
         let incoming = inbox_payload_hash(
             &apply.recipe_instance_id,
             &apply.source_party_id,
@@ -1491,13 +1482,12 @@ impl Transaction<'_> {
             .kernel
             .conn
             .query_row(
-                "SELECT entity_id, account_type, financial_account_id FROM ledger_accounts WHERE id = ?1",
+                "SELECT account_type, financial_account_id FROM ledger_accounts WHERE id = ?1",
                 [id],
                 |row| {
                     Ok(AccountSnap {
-                        entity_id: row.get(0)?,
-                        account_type: row.get(1)?,
-                        financial_account_id: row.get(2)?,
+                        account_type: row.get(0)?,
+                        financial_account_id: row.get(1)?,
                     })
                 },
             )

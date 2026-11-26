@@ -3,6 +3,8 @@
 -- =============================================================================
 -- Status: Proposed (U15, 2026-11-22). Replaces docs/schema-v0.2.sql.
 -- U17 (2026-11-26): adds kernel_state and commits.kind 'freeze' (kernel spec §3.13).
+-- U17 review: identity is the singleton entity row (ADR 0004/0008 amendment
+-- 2026-11-26). ledger_accounts and journal_postings do not carry entity_id.
 -- Fresh migration 1: no real database exists, so there is no data migration
 -- from v0.2. The SPEC "upgraded DB" acceptance runs start at v2.
 --
@@ -176,13 +178,13 @@ CREATE TABLE financial_accounts (
 ) STRICT;
 
 -- ADR 0008: exactly one account_type; engine sub-kind in `kind`; categories are
--- the income/expense accounts (kind 'category'), a per-entity tree via
--- parent_id (same entity, same type) where only leaves take postings (INV-003).
+-- the income/expense accounts (kind 'category'), a tree via parent_id (same
+-- type) where only leaves take postings (INV-003). No entity_id column: every
+-- row belongs to this database's entity (ADR 0004/0008 amendment 2026-11-26).
 -- No 'contra' type or role: contra amounts are opposite-side postings.
 -- Categories are currency-independent (SPEC §2.3), so there is no currency here.
 CREATE TABLE ledger_accounts (
     id                   TEXT PRIMARY KEY CHECK (length(id) = 26 AND id NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
-    entity_id            TEXT NOT NULL REFERENCES entity(id),
     financial_account_id TEXT REFERENCES financial_accounts(id),
     account_type         TEXT NOT NULL CHECK (account_type IN ('asset','liability','equity','income','expense')),
     kind                 TEXT NOT NULL CHECK (kind IN ('cash','card','loan','investment','fixed_asset','receivable','payable','clearing','opening_equity','equity','category')),
@@ -238,20 +240,20 @@ CREATE INDEX accounting_events_register ON accounting_events(effective_date) WHE
 CREATE INDEX accounting_events_commit ON accounting_events(commit_id);
 CREATE INDEX accounting_events_recipe_instance ON accounting_events(recipe_instance_id) WHERE recipe_instance_id IS NOT NULL;
 
--- INV-002: one entity, ledger account, currency, positive magnitude, explicit side.
+-- INV-002: one ledger account, currency, positive magnitude, explicit side. No
+-- entity_id: the database is the entity (ADR 0004 amendment 2026-11-26).
 -- ADR 0008: P&L lines are ordinary postings; INV-001 closes from this table alone.
 CREATE TABLE journal_postings (
     id                TEXT PRIMARY KEY CHECK (length(id) = 26 AND id NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
     event_id          TEXT NOT NULL REFERENCES accounting_events(id),
     ledger_account_id TEXT NOT NULL REFERENCES ledger_accounts(id),
-    entity_id         TEXT NOT NULL REFERENCES entity(id),
     currency          TEXT NOT NULL CHECK (length(currency) = 3 AND currency NOT GLOB '*[^A-Z]*'),
     side              TEXT NOT NULL CHECK (side IN ('debit','credit')),
     amount_minor      INTEGER NOT NULL CHECK (amount_minor > 0),
     party_id          TEXT REFERENCES parties(id),
     memo              TEXT NOT NULL DEFAULT ''
 ) STRICT;
-CREATE INDEX journal_postings_event ON journal_postings(event_id, entity_id, currency, side);
+CREATE INDEX journal_postings_event ON journal_postings(event_id, currency, side);
 CREATE INDEX journal_postings_account ON journal_postings(ledger_account_id, event_id);
 
 -- ADR 0008: tags attach to postings (replaces allocation_tags). Filter predicates only.
@@ -473,6 +475,9 @@ CREATE TABLE cross_entity_outbox (
     recorded_at          TEXT NOT NULL CHECK (recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z')
 ) STRICT;
 -- Idempotent apply: the PRIMARY KEY on idempotency_key makes a retry a no-op.
+-- No target-entity column. Whether one is added, with a CHECK against entity,
+-- and whether it matches entity.id or entity.party_id, is open. The kernel
+-- checks the apply argument against entity.id.
 CREATE TABLE cross_entity_inbox (
     idempotency_key    TEXT PRIMARY KEY CHECK (length(idempotency_key) > 0),
     recipe_instance_id TEXT NOT NULL CHECK (length(recipe_instance_id) = 26 AND recipe_instance_id NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
@@ -577,14 +582,13 @@ WHEN NOT EXISTS (
  UNION ALL SELECT 1 FROM feeds              WHERE NEW.target_kind = 'feed'              AND id = NEW.target_id)
 BEGIN SELECT RAISE(ABORT, 'PR 19 Q5: rename target does not exist'); END;
 
--- ADR 0008 / INV-003: a category's parent is a same-entity, same-type category
+-- ADR 0008 / INV-003: a category's parent is a same-type category
 -- that has no postings (postings only on leaves).
 CREATE TRIGGER ledger_accounts_parent_valid BEFORE INSERT ON ledger_accounts
 WHEN NEW.parent_id IS NOT NULL AND (
-       (SELECT entity_id FROM ledger_accounts WHERE id = NEW.parent_id) IS NOT NEW.entity_id
-    OR (SELECT account_type FROM ledger_accounts WHERE id = NEW.parent_id) IS NOT NEW.account_type
+       (SELECT account_type FROM ledger_accounts WHERE id = NEW.parent_id) IS NOT NEW.account_type
     OR EXISTS (SELECT 1 FROM journal_postings WHERE ledger_account_id = NEW.parent_id))
-BEGIN SELECT RAISE(ABORT, 'INV-003/ADR 0008: category parent must be a same-entity, same-type category with no postings'); END;
+BEGIN SELECT RAISE(ABORT, 'INV-003/ADR 0008: category parent must be a same-type category with no postings'); END;
 
 -- ADR 0008: a financial-account-backed ledger account matches the account's nature.
 CREATE TRIGGER ledger_accounts_financial_kind BEFORE INSERT ON ledger_accounts
@@ -729,10 +733,6 @@ CREATE TRIGGER accounting_events_insert_current BEFORE INSERT ON accounting_even
 WHEN NEW.superseded_by IS NOT NULL
 BEGIN SELECT RAISE(ABORT, 'ADR 0002 amendment: an event is inserted current; its reversal sets superseded_by'); END;
 
--- INV-003 / ADR 0004: a posting's entity is its ledger account's entity.
-CREATE TRIGGER journal_postings_entity_valid BEFORE INSERT ON journal_postings
-WHEN (SELECT entity_id FROM ledger_accounts WHERE id = NEW.ledger_account_id) IS NOT NEW.entity_id
-BEGIN SELECT RAISE(ABORT, 'INV-003/ADR 0004: posting entity must own the ledger account'); END;
 -- INV-003 / ADR 0008: income/expense postings use a leaf category.
 CREATE TRIGGER journal_postings_category_leaf BEFORE INSERT ON journal_postings
 WHEN (SELECT account_type FROM ledger_accounts WHERE id = NEW.ledger_account_id) IN ('income','expense')
@@ -830,11 +830,11 @@ BEGIN
     SELECT RAISE(ABORT, 'INV-002: every event needs at least two postings')
     WHERE EXISTS (SELECT 1 FROM accounting_events e WHERE e.commit_id = NEW.id
                   AND (SELECT count(*) FROM journal_postings p WHERE p.event_id = e.id) < 2);
-    -- INV-001 / ADR 0008: every event balances per (entity, currency) in journal_postings alone.
-    SELECT RAISE(ABORT, 'INV-001: event does not balance per entity and currency')
+    -- INV-001 / ADR 0008: every event balances per currency in journal_postings alone.
+    SELECT RAISE(ABORT, 'INV-001: event does not balance per currency')
     WHERE EXISTS (SELECT 1 FROM journal_postings p JOIN accounting_events e ON e.id = p.event_id
                   WHERE e.commit_id = NEW.id
-                  GROUP BY p.event_id, p.entity_id, p.currency
+                  GROUP BY p.event_id, p.currency
                   HAVING sum(CASE p.side WHEN 'debit' THEN p.amount_minor ELSE -p.amount_minor END) <> 0);
     -- ADR 0002: a reversal exactly cancels its target, account by account.
     SELECT RAISE(ABORT, 'ADR 0002: reversal does not exactly cancel its target')
@@ -854,14 +854,14 @@ BEGIN
     SELECT RAISE(ABORT, 'INV-008: a reconciled group must hold its postings')
     WHERE EXISTS (SELECT 1 FROM settlement_group_states s WHERE s.commit_id = NEW.id AND s.state = 'reconciled'
                   AND NOT EXISTS (SELECT 1 FROM settlement_postings sp WHERE sp.group_id = s.group_id));
-    -- INV-008 / INV-017 / AT-030: zero residual per group, entity, currency and clearing account.
+    -- INV-008 / INV-017 / AT-030: zero residual per group, currency and clearing account.
     SELECT RAISE(ABORT, 'INV-008: settlement group has a nonzero clearing residual')
     WHERE EXISTS (SELECT 1 FROM settlement_group_states s
                   JOIN settlement_postings sp ON sp.group_id = s.group_id
                   JOIN journal_postings p ON p.id = sp.posting_id
                   JOIN ledger_accounts a ON a.id = p.ledger_account_id
                   WHERE s.commit_id = NEW.id AND s.state = 'reconciled' AND a.kind = 'clearing'
-                  GROUP BY s.group_id, p.entity_id, p.currency, p.ledger_account_id
+                  GROUP BY s.group_id, p.currency, p.ledger_account_id
                   HAVING sum(CASE p.side WHEN 'debit' THEN p.amount_minor ELSE -p.amount_minor END) <> 0);
     -- ADR 0002 void: voiding releases links; every current event interpreting
     -- the observation must be reversed in the same commit.
@@ -910,13 +910,13 @@ SELECT a.id AS ledger_account_id, a.account_type, a.kind, p.currency,
 FROM journal_postings p JOIN ledger_accounts a ON a.id = p.ledger_account_id
 GROUP BY a.id, p.currency;
 
--- ADR 0008 / AT-034: trial balance from journal_postings alone. Per (entity,
--- currency) the net_debit_minor rows sum to zero: A = L + Eq + (I - X).
+-- ADR 0008 / AT-034: trial balance from journal_postings alone. Per currency
+-- the net_debit_minor rows sum to zero: A = L + Eq + (I - X).
 CREATE VIEW trial_balance AS
-SELECT p.entity_id, p.currency, a.account_type,
+SELECT p.currency, a.account_type,
        sum(CASE p.side WHEN 'debit' THEN p.amount_minor ELSE -p.amount_minor END) AS net_debit_minor
 FROM journal_postings p JOIN ledger_accounts a ON a.id = p.ledger_account_id
-GROUP BY p.entity_id, p.currency, a.account_type;
+GROUP BY p.currency, a.account_type;
 
 -- ADR 0002 amendment: the register hides superseded entries and their reversals
 -- (served by the accounting_events_register partial index); audit reads the table.
@@ -993,9 +993,9 @@ UNION ALL SELECT 'posting_observations', t.rowid, e.commit_id FROM posting_obser
 UNION ALL SELECT 'refund_links', t.rowid, e.commit_id FROM refund_links t LEFT JOIN journal_postings p ON p.id = t.refund_posting_id LEFT JOIN accounting_events e ON e.id = p.event_id WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = e.commit_id)
 UNION ALL SELECT 'obligation_postings', t.rowid, o.commit_id FROM obligation_postings t LEFT JOIN obligations o ON o.id = t.obligation_id WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = o.commit_id)
 UNION ALL SELECT 'settlement_draft_participants', t.rowid, s.commit_id FROM settlement_draft_participants t LEFT JOIN settlement_group_states s ON s.id = t.group_state_id WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = s.commit_id);
-CREATE VIEW doctor_unbalanced_events AS            -- INV-001
-SELECT event_id, entity_id, currency FROM journal_postings
-GROUP BY event_id, entity_id, currency
+CREATE VIEW doctor_unbalanced_events AS            -- INV-001, per currency
+SELECT event_id, currency FROM journal_postings
+GROUP BY event_id, currency
 HAVING sum(CASE side WHEN 'debit' THEN amount_minor ELSE -amount_minor END) <> 0;
 CREATE VIEW doctor_superseded_drift AS             -- ADR 0002 amendment: flag vs reverses_id
 SELECT e.id FROM accounting_events e LEFT JOIN accounting_events r ON r.reverses_id = e.id

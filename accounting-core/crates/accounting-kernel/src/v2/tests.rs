@@ -122,7 +122,6 @@ fn financial(
 
 fn ledger(
     id: &str,
-    entity: &str,
     financial_id: Option<&str>,
     account_type: AccountType,
     kind: LedgerKind,
@@ -131,7 +130,6 @@ fn ledger(
 ) -> NewLedgerAccount {
     NewLedgerAccount {
         id: Some(id.to_string()),
-        entity_id: entity.to_string(),
         financial_account_id: financial_id.map(str::to_string),
         account_type,
         kind,
@@ -140,18 +138,10 @@ fn ledger(
     }
 }
 
-fn posting(
-    id: &str,
-    account: &str,
-    entity: &str,
-    side: Side,
-    amount: i64,
-    currency: &str,
-) -> NewPosting {
+fn posting(id: &str, account: &str, side: Side, amount: i64, currency: &str) -> NewPosting {
     NewPosting {
         id: Some(uid(id)),
         ledger_account_id: account.to_string(),
-        entity_id: entity.to_string(),
         currency: currency.to_string(),
         side,
         amount_minor: amount,
@@ -180,22 +170,8 @@ fn purchase(
     event(
         "EV01",
         vec![
-            posting(
-                debit_id,
-                debit_acct,
-                &books.entity,
-                Side::Debit,
-                amount,
-                currency,
-            ),
-            posting(
-                credit_id,
-                &books.card,
-                &books.entity,
-                Side::Credit,
-                amount,
-                currency,
-            ),
+            posting(debit_id, debit_acct, Side::Debit, amount, currency),
+            posting(credit_id, &books.card, Side::Credit, amount, currency),
         ],
     )
 }
@@ -232,7 +208,6 @@ fn chart(kernel: &mut Kernel) -> Books {
     .expect("financial");
     tx.create_ledger_account(ledger(
         &books.card,
-        &books.entity,
         Some(&books.card_fin),
         AccountType::Liability,
         LedgerKind::Card,
@@ -242,7 +217,6 @@ fn chart(kernel: &mut Kernel) -> Books {
     .expect("card");
     tx.create_ledger_account(ledger(
         &books.food,
-        &books.entity,
         None,
         AccountType::Expense,
         LedgerKind::Category,
@@ -252,7 +226,6 @@ fn chart(kernel: &mut Kernel) -> Books {
     .expect("food");
     tx.create_ledger_account(ledger(
         &books.groceries,
-        &books.entity,
         None,
         AccountType::Expense,
         LedgerKind::Category,
@@ -283,6 +256,7 @@ fn inbox_apply(books: &Books, event_id: Option<String>, amount: i64, instance: &
         idempotency_key: "idem-party-001".to_string(),
         recipe_instance_id: uid(instance),
         source_party_id: books.employer.clone(),
+        counterpart_entity_id: books.entity.clone(),
         action: InboxAction::Leg,
         amount_minor: amount,
         currency: "USD".to_string(),
@@ -382,7 +356,10 @@ fn happy_path_typed_accounts_parties_and_one_clock_read() {
     assert!(ledger_cols.iter().any(|name| name == "parent_id"));
     assert!(ledger_cols
         .iter()
-        .all(|name| name != "visibility" && name != "contra"));
+        .all(|name| { name != "visibility" && name != "contra" && name != "entity_id" }));
+    let posting_cols = column_names(&kernel, "journal_postings");
+    assert!(posting_cols.iter().all(|name| name != "entity_id"));
+    assert!(party_cols.iter().all(|name| name != "entity_id"));
 }
 
 #[test]
@@ -841,6 +818,101 @@ fn inbox_idempotency_noop_and_conflict() {
 }
 
 #[test]
+fn inbox_target_must_equal_entity_id() {
+    let tmp = Tmp::new("target");
+    let mut kernel = open_at(&tmp.db());
+
+    let missing = {
+        let mut tx = kernel.begin_transaction(Some(0)).expect("begin");
+        tx.apply_inbox(InboxApply {
+            idempotency_key: "idem-party-001".to_string(),
+            recipe_instance_id: uid("R101"),
+            source_party_id: uid("ACME"),
+            counterpart_entity_id: uid("XENT"),
+            action: InboxAction::Leg,
+            amount_minor: MINOR,
+            currency: "USD".to_string(),
+            event_id: None,
+        })
+        .expect_err("no entity")
+    };
+    let missing = code_of(missing, Code::EntityMismatch);
+    assert_eq!(missing.refs, vec!["ADR 0004".to_string()]);
+    assert_eq!(missing.ids, vec![uid("XENT")]);
+    assert_eq!(kernel.revision().expect("rev"), 0);
+    assert_eq!(kernel.commit_count().expect("count"), 0);
+
+    let books = chart(&mut kernel);
+    let mismatch = {
+        let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
+        let event_id = tx
+            .stage_event(purchase(
+                &books,
+                "PS01",
+                "PS02",
+                &books.groceries,
+                MINOR,
+                "USD",
+            ))
+            .expect("stage");
+        let mut apply = inbox_apply(&books, Some(event_id), MINOR, "R101");
+        apply.counterpart_entity_id = uid("XENT");
+        tx.apply_inbox(apply).expect_err("mismatch")
+    };
+    let mismatch = code_of(mismatch, Code::EntityMismatch);
+    assert_eq!(mismatch.class, Class::User);
+    assert_eq!(mismatch.refs, vec!["ADR 0004".to_string()]);
+    assert_eq!(mismatch.ids, vec![uid("XENT")]);
+    assert!(
+        !mismatch.to_string().contains("Household"),
+        "entity mismatch leaked the entity name"
+    );
+    assert_eq!(kernel.inbox_count().expect("count"), 0);
+    assert_eq!(kernel.posting_count().expect("count"), 0);
+    assert_eq!(kernel.revision().expect("rev"), 1);
+    assert_eq!(kernel.commit_count().expect("count"), 1);
+
+    let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
+    let event_id = tx
+        .stage_event(purchase(
+            &books,
+            "PS01",
+            "PS02",
+            &books.groceries,
+            MINOR,
+            "USD",
+        ))
+        .expect("stage");
+    tx.apply_inbox(inbox_apply(&books, Some(event_id.clone()), MINOR, "R101"))
+        .expect("match");
+    let sealed = tx.commit().expect("commit");
+    assert_eq!(sealed.seq, 2);
+    let stored = kernel.inbox("idem-party-001").expect("read").expect("row");
+    assert_eq!(stored.event_id, event_id);
+    assert_eq!(stored.amount_minor, MINOR);
+
+    let wrong_retry = {
+        let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
+        let mut apply = inbox_apply(&books, None, MINOR, "R101");
+        apply.counterpart_entity_id = uid("XENT");
+        tx.apply_inbox(apply)
+            .expect_err("wrong target is not a noop")
+    };
+    let wrong_retry = code_of(wrong_retry, Code::EntityMismatch);
+    assert_eq!(wrong_retry.refs, vec!["ADR 0004".to_string()]);
+    assert_eq!(kernel.inbox_count().expect("count"), 1);
+    assert_eq!(kernel.revision().expect("rev"), 2);
+    assert_eq!(
+        kernel
+            .inbox("idem-party-001")
+            .expect("read")
+            .expect("row")
+            .amount_minor,
+        MINOR
+    );
+}
+
+#[test]
 fn posting_rejections_and_leaf_success() {
     let tmp = Tmp::new("post");
     let mut kernel = open_at(&tmp.db());
@@ -864,15 +936,6 @@ fn posting_rejections_and_leaf_success() {
     );
     assert_eq!(nonleaf.refs, vec!["INV-003".to_string()]);
     assert_eq!(nonleaf.ids, vec![books.food.clone()]);
-
-    let mut other = purchase(&books, "PS01", "PS02", &books.groceries, MINOR, "USD");
-    other.postings[0].entity_id = uid("XENT");
-    let mismatch = reject(&mut kernel, other, Code::EntityMismatch);
-    assert_eq!(mismatch.class, Class::User);
-    assert_eq!(
-        mismatch.refs,
-        vec!["INV-003".to_string(), "ADR 0004".to_string()]
-    );
 
     let currency = reject(
         &mut kernel,
@@ -904,14 +967,7 @@ fn posting_rejections_and_leaf_success() {
         &mut kernel,
         event(
             "EV01",
-            vec![posting(
-                "PS01",
-                &books.groceries,
-                &books.entity,
-                Side::Debit,
-                MINOR,
-                "USD",
-            )],
+            vec![posting("PS01", &books.groceries, Side::Debit, MINOR, "USD")],
         ),
         Code::InsufficientPostings,
     );
@@ -952,7 +1008,6 @@ fn posting_rejections_and_leaf_success() {
         let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
         tx.create_ledger_account(ledger(
             &uid("TAKE"),
-            &books.entity,
             None,
             AccountType::Expense,
             LedgerKind::Category,
@@ -976,7 +1031,6 @@ fn account_and_party_errors() {
         let mut tx = kernel.begin_transaction(Some(0)).expect("begin");
         tx.create_ledger_account(ledger(
             &uid("CSA1"),
-            &uid("ENT1"),
             None,
             AccountType::Asset,
             LedgerKind::Cash,
@@ -1142,7 +1196,6 @@ fn account_and_party_errors() {
             let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
             tx.create_ledger_account(ledger(
                 &uid("TAKE"),
-                &books.entity,
                 None,
                 AccountType::Expense,
                 LedgerKind::Category,
@@ -1160,7 +1213,6 @@ fn account_and_party_errors() {
             let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
             tx.create_ledger_account(ledger(
                 &uid("NC01"),
-                &books.entity,
                 None,
                 AccountType::Income,
                 LedgerKind::Category,
@@ -1170,7 +1222,6 @@ fn account_and_party_errors() {
             .expect("income");
             tx.create_ledger_account(ledger(
                 &uid("TAKE"),
-                &books.entity,
                 None,
                 AccountType::Expense,
                 LedgerKind::Category,
@@ -1186,42 +1237,6 @@ fn account_and_party_errors() {
         vec!["INV-003".to_string(), "ADR 0008".to_string()]
     );
 
-    let other_entity = code_of(
-        {
-            let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
-            tx.create_ledger_account(ledger(
-                &uid("TAKE"),
-                &uid("XENT"),
-                None,
-                AccountType::Expense,
-                LedgerKind::Category,
-                Some(&books.food),
-                "Takeout",
-            ))
-            .expect_err("entity")
-        },
-        Code::CategoryParentInvalid,
-    );
-    assert!(other_entity.refs.iter().any(|r| r == "ADR 0008"));
-
-    let unknown_entity = code_of(
-        {
-            let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
-            tx.create_ledger_account(ledger(
-                &uid("CSA1"),
-                &uid("XENT"),
-                None,
-                AccountType::Asset,
-                LedgerKind::Cash,
-                None,
-                "Cash",
-            ))
-            .expect_err("entity")
-        },
-        Code::UnknownTarget,
-    );
-    assert_eq!(unknown_entity.ids, vec![uid("XENT")]);
-
     let mismatch = code_of(
         {
             let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
@@ -1235,7 +1250,6 @@ fn account_and_party_errors() {
             .expect("checking");
             tx.create_ledger_account(ledger(
                 &uid("CRD1"),
-                &books.entity,
                 Some(&uid("CSH1")),
                 AccountType::Liability,
                 LedgerKind::Card,
@@ -1254,7 +1268,7 @@ fn account_and_party_errors() {
 fn legal_kind_pairs_commit_and_illegal_pairs_do_not() {
     let tmp = Tmp::new("kinds");
     let mut kernel = open_at(&tmp.db());
-    let books = chart(&mut kernel);
+    let _books = chart(&mut kernel);
     let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
     tx.create_financial_account(NewFinancialAccount {
         id: Some(uid("CSH1")),
@@ -1358,7 +1372,6 @@ fn legal_kind_pairs_commit_and_illegal_pairs_do_not() {
     for (id, financial_id, account_type, kind, name) in pairs {
         tx.create_ledger_account(ledger(
             &id,
-            &books.entity,
             financial_id.as_deref(),
             account_type,
             kind,
@@ -1396,7 +1409,6 @@ fn legal_kind_pairs_commit_and_illegal_pairs_do_not() {
                 &mut kernel,
                 ledger(
                     &uid("TAKE"),
-                    &books.entity,
                     Some(&uid("CSH1")),
                     AccountType::Expense,
                     LedgerKind::Category,
@@ -1415,7 +1427,6 @@ fn legal_kind_pairs_commit_and_illegal_pairs_do_not() {
                 &mut kernel,
                 ledger(
                     &uid("TAKE"),
-                    &books.entity,
                     None,
                     AccountType::Liability,
                     LedgerKind::Cash,
@@ -1434,7 +1445,6 @@ fn legal_kind_pairs_commit_and_illegal_pairs_do_not() {
                 &mut kernel,
                 ledger(
                     &uid("TAKE"),
-                    &books.entity,
                     None,
                     AccountType::Expense,
                     LedgerKind::Receivable,
@@ -1453,7 +1463,6 @@ fn legal_kind_pairs_commit_and_illegal_pairs_do_not() {
                 &mut kernel,
                 ledger(
                     &uid("TAKE"),
-                    &books.entity,
                     None,
                     AccountType::Expense,
                     LedgerKind::Clearing,

@@ -50,7 +50,7 @@ fn refs_for(code: Code) -> &'static [&'static str] {
         Code::StaleRevision => &["AT-032"],
         Code::NonLeafCategory | Code::CategoryParentInvalid => &["INV-003"],
         Code::CurrencyMismatch => &["INV-005"],
-        Code::EntityMismatch => &["INV-003", "ADR 0004"],
+        Code::EntityMismatch => &["ADR 0004"],
         Code::LedgerKindMismatch => &["ADR 0008"],
         Code::Unbalanced => &["INV-001"],
         Code::InsufficientPostings => &["INV-002"],
@@ -142,7 +142,6 @@ fn map_raise(msg: &str) -> Option<(Code, bool)> {
             Code::LedgerKindMismatch,
             false,
         ),
-        ("posting entity must own", Code::EntityMismatch, false),
         ("posting currency must match", Code::CurrencyMismatch, false),
         (
             "observation currency must match",

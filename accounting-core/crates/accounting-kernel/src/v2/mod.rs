@@ -2,7 +2,8 @@
 //!
 //! `stage_event` and `apply_inbox` are the minimum stubs INV-003 and the inbox
 //! idempotency rule need. U18 replaces `stage_event` with `append_event`.
-//! The inbox stub compares the §3.9 payload hash and does not build a counterpart leg.
+//! The inbox stub checks `counterpart_entity_id` against `entity.id`, then the
+//! §3.9 payload hash. It does not build a counterpart leg.
 //! `doctor` is not implemented (U21). `clear_write_freeze` runs the in-database
 //! bugcheck views plus integrity and foreign-key checks, which is the part of
 //! that precondition this unit can see.
