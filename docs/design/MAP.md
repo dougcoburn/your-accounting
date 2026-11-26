@@ -11,11 +11,11 @@ ADRs: docs/adr/0001-0008 (drafted 2026-11-19, revised after Eng Leads review 202
 
 - Baseline: Formal Spec v0.2 (+schema) adopted; add to repo as docs/SPEC.md. Grilling targets its 12 open decisions, prototype-exposed gaps, and repo drift (scenarios->recipes) (2026-11-19).
 
-- Month-1 entities: Doug, Household, Dragonfly (Entities with books); Esther and Numetric are Parties (see Party decision below); Monarch e-* tags map to entities/parties on import only (2026-11-19).
+- Month-1 entities: Doug, Household, Dragonfly (Entities with books); Esther and Acme Corp are Parties (see Party decision below); Monarch e-* tags map to entities/parties on import only (2026-11-19).
 
 - e-* tags: both cases occur. Tag matching account owner restates ownership; tag differing from account owner means cross-entity purchase -> inter-entity obligation (2026-11-19).
 
-- Inter-entity obligations: running balance per entity pair (Monarch e-* zero-balance pattern, modeled natively); e-* tags are import hints only, not a pattern in the new software (2026-11-19). Reimbursements (e.g. Numetric) are linked to the specific expense(s) via AR/AP receivable; unpaid ones can later be written off as a gift (2026-11-19). One pattern for all reimbursements (Numetric, Dragonfly, any entity): claims link to specific purchases; partial settlement allowed, remainder stays open until paid or written off (2026-11-19).
+- Inter-entity obligations: running balance per entity pair (Monarch e-* zero-balance pattern, modeled natively); e-* tags are import hints only, not a pattern in the new software (2026-11-19). Reimbursements (e.g. Acme Corp) are linked to the specific expense(s) via AR/AP receivable; unpaid ones can later be written off as a gift (2026-11-19). One pattern for all reimbursements (Acme Corp, Dragonfly, any entity): claims link to specific purchases; partial settlement allowed, remainder stays open until paid or written off (2026-11-19).
 
 - [SUPERSEDED 2026-11-20, see below] Expected movements (e.g. HSA receipt): post now through a clearing account; the expected movement appears in the register as an unreviewed item until a completing recipe is chosen. Completion options include manually creating the HSA account and receipt, or treating it as an outflow to a black-box category like 'investment contribution' (2026-11-19).
 

@@ -1,0 +1,5 @@
+# SHA-256 hex digests of lowercase denylisted word tokens.
+# The terms themselves are not stored in this repository.
+# To add a term, hash the lowercase word and append the digest:
+#   printf '%s' "$word" | sha256sum
+cdce27597d469571c6252a133841f321ff92a8bdc3a3c3d09638907f93e00437
