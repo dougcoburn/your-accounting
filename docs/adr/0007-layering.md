@@ -52,12 +52,12 @@ Where this amendment and the 2026-11-25 amendment or the 2026-11-26 clarificatio
   - recipe-idempotent event writes: a current event with the same `recipe_instance_id` and the same payload is a no-op that returns the existing event id and seals no commit; a different payload is `IdempotencyConflict`
   - `doctor` over that one database
 
-  The kernel stores `recipe_instance_id`, `counterpart_entity_id`, `counterpart_expected_amount_minor` and `counterpart_currency` on an event as facts. It never opens the counterpart database.
+  The kernel stores `recipe_instance_id` and `counterpart_entity_id` on an event, and the per-currency `event_counterpart_expectations` rows, as facts. It requires at least one expectation row on a recipe half and none on a reversal. It never opens the counterpart database.
 - **Entity identity** in the kernel is the singleton `entity` row. Rows carry no `entity_id`.
 - **The application (layer 3) owns cross-entity work:**
   - writing both halves of a cross-entity recipe, each through its own database's kernel
   - the per-user **registry** database (entity id and party id to database file, explicit registration only)
   - the registry check before each write (`RegistryMismatch`)
-  - the application-level recipe check across databases (missing half, duplicate, mismatched counterpart or amount, unverifiable)
+  - the application-level recipe check across databases (counterpart not visible, missing half, orphaned for 7 days with an offer to reverse, duplicate, mismatched counterpart, or a mismatched amount per currency on the intercompany account)
 - **Unchanged:** recipes (layer 2) still build each half's ChangeSet, and there is still no cross-database atomicity (ADR 0004).
 - **Invariants unchanged:** every kernel write goes through the commit protocol. Import is not matching (ADR 0006). The per-database `doctor` is read-only, apart from the separately committed `record_write_freeze` (clarification above).

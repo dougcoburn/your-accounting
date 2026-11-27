@@ -24,7 +24,7 @@ This file lists what v2 changes in the v0.2 spec and why. Where this delta and `
 | Settlement | Mutable `state`/`revision` | Append-only **`settlement_group_states`**, with draft participants and no postings in drafts. `settlement_postings.posting_id` is UNIQUE | ADR 0006, INV-006, INV-008 |
 | Voids | Not modelled | An **`observation_voids` tombstone**. The same commit must reverse every current event that interprets the observation | ADR 0002 |
 | Claims | `obligations` and `obligation_settlements` | The same, plus `obligation_postings`, which links a claim to its purchase postings. A settlement cap trigger is added | ADR 0001 |
-| Cross-entity | One entry spanning entities | **Two halves**, one event per entity database, written by the application and linked by `accounting_events.recipe_instance_id` with `counterpart_entity_id` and the expected counterpart amount. An identical retry is a no-op. An application recipe check reads both databases. No outbox or inbox | ADR 0004 (rewritten 2026-11-26) |
+| Cross-entity | One entry spanning entities | **Two halves**, one event per entity database, written by the application and linked by `accounting_events.recipe_instance_id` with `counterpart_entity_id`, and per-currency expected counterpart amounts in `event_counterpart_expectations`. An identical retry is a no-op. An application recipe check reads both databases. No cross-database message tables | ADR 0004 (rewritten 2026-11-26) |
 | Evidence | Shared store with a mutable `status` | Evidence is **per entity database**. Deleting it writes an `evidence_deletions` tombstone, and status is derived | ADR 0004, INV-020 |
 | Valuation | Not modelled | **`valuation_snapshots`** live outside the journal, on non-cash asset accounts only | ADR 0005 |
 | Audit | `audit_operations` and `audit_changes` (before/after JSON) | **Removed.** The append-only log is the audit: commits record actor and reason, and events record lineage | ADR 0002 |
@@ -94,9 +94,9 @@ This file lists what v2 changes in the v0.2 spec and why. Where this delta and `
 
 Removed: `entities.visibility`, `parties.opaque_entity_id`, `account_owner_valid`, `canonical_transactions`, `account_movements`, `movement_observations`, `event_transactions`, `scenarios` (renamed `recipes`), `transaction_tags`, `audit_operations`, `audit_changes`, `reporting_groups`, `reporting_group_members`, and the `mcp_*` tables. Also every mutable `state`/`revision`/`status` column.
 
-Dropped by the ADR 0004 rewrite (2026-11-26): `cross_entity_outbox` and `cross_entity_inbox`, which earlier drafts of v2 added. `accounting_events` gains `counterpart_entity_id`, `counterpart_expected_amount_minor` and `counterpart_currency` beside the existing `recipe_instance_id`.
+Dropped by the ADR 0004 rewrite (2026-11-26): the two cross-entity message tables that earlier drafts of v2 added. `accounting_events` gains `counterpart_entity_id` beside the existing `recipe_instance_id`. The new `event_counterpart_expectations` holds one expected amount per currency for each recipe half.
 
-Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`, `import_runs`, `observation_voids`, `posting_observations`, `settlement_group_states`, `settlement_draft_participants`, `obligation_postings`, `evidence_deletions`, `valuation_snapshots` and `reference_renames`.
+Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`, `import_runs`, `observation_voids`, `posting_observations`, `settlement_group_states`, `settlement_draft_participants`, `obligation_postings`, `event_counterpart_expectations`, `evidence_deletions`, `valuation_snapshots` and `reference_renames`.
 
 ### §11 Acceptance tests affected
 - **AT-001, AT-016:** two databases, with the halves paired by `recipe_instance_id` and checked by the application's recipe check (ADR 0004). "Business owes Household" is a payable to a party in one database and a receivable in the other.
@@ -125,7 +125,7 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
 **Write protocol (PR 19 fix 2).** `begin_transaction(expected_revision)` takes `expected_revision` from the **caller**. That is the revision the user or the planning step saw. The kernel MUST NOT recompute it inside the transaction.
 1. Run `BEGIN IMMEDIATE`, which takes the write lock before any read.
 2. Read `current = coalesce(max(commits.seq), 0)`. If `current != expected_revision`, fail with the AT-032 conflict and write nothing. The `commits_seal` trigger makes the same check against `commits.expected_revision` as a storage backstop. It can only catch a stale write if the kernel stores the caller's value there unchanged.
-3. Insert every row of the commit. Each row carries `commit_id`, and events carry the commit's `recorded_at`. To correct an event, insert the reversal, then run `UPDATE accounting_events SET superseded_by = <reversal id> WHERE id = <target>`. That is the only UPDATE the schema accepts.
+3. Insert every row of the commit. Each row carries `commit_id`, and events carry the commit's `recorded_at`. To correct an event, insert the reversal, then supersede the original (`UPDATE accounting_events SET superseded_by = <reversal id> WHERE id = <target>`), then insert the replacement, all in the same commit. That UPDATE is the only one the schema accepts. The order matters: a replacement that keeps a `recipe_instance_id` can be inserted only after the original is superseded (partial UNIQUE index).
 4. Insert the `commits` row **last**, with `expected_revision` set to the caller's value and `seq = expected_revision + 1` (a CHECK enforces this). The `commits_seal` trigger aborts the commit on any of these:
    - a stale revision (AT-032)
    - a recorded_at that differs from the commit's
@@ -137,14 +137,14 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
    - a void whose linked events are not reversed (ADR 0002)
    - a dissolved reconciled group whose legs are not all reversed, or whose observed legs are not reposted (§5 Q3)
 5. `COMMIT`. If the commits row was never written, the deferred foreign keys fail at COMMIT and nothing persists.
-6. Once sealed, a commit accepts no new rows. Open-commit triggers on all 23 commit-scoped tables enforce this, and the smoke script tries each table.
+6. Once sealed, a commit accepts no new rows. Open-commit triggers on all 23 commit-scoped tables enforce this (23 in PR 19; U17 adds `kernel_state`; the ADR 0004 rewrite drops the two cross-entity message tables and adds `event_counterpart_expectations`), and the smoke script tries each table.
 
 **doctor rules (U21; all must be clean, exit nonzero otherwise):**
 - `PRAGMA integrity_check` returns `ok`.
 - `PRAGMA foreign_key_check` returns no rows. This is a doctor rule, not just a smoke check.
 - `doctor_unsealed_rows` returns no rows. It lists rows in commit-scoped tables, and rows hanging off them, whose commit has no `commits` row.
 - `doctor_unbalanced_events`, `doctor_superseded_drift` and `doctor_observation_double_consumed` return no rows.
-- The ADR 0004 application recipe check (missing half, duplicate, mismatched counterpart or amount) and the evidence-hash check pass.
+- The ADR 0004 application recipe check (missing half, counterpart not visible, orphaned for 7 days, duplicate, mismatched counterpart or amount per currency) and the evidence-hash check pass.
 
 ## 4. Where each rule is enforced
 
@@ -153,7 +153,8 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
 | INV-001 balance per event, currency | `commits_seal` | `doctor_unbalanced_events` |
 | INV-002 posting shape | CHECKs, STRICT, `commits_seal` (at least 2 postings) | — |
 | INV-003 leaf category, same-type parent | `journal_postings_category_leaf`, `ledger_accounts_parent_valid` | — |
-| ADR 0004: recipe fields all-or-none, none on a reversal, counterpart is not this entity | CHECK on `accounting_events`; trigger on `counterpart_entity_id` vs `entity.id` | — |
+| ADR 0004: recipe fields both-or-neither, none on a reversal, counterpart is not this entity | CHECK on `accounting_events`; trigger on `counterpart_entity_id` vs `entity.id` | — |
+| ADR 0004: a recipe half has one or more expectations, at most one per currency, amount > 0; none on a reversal or plain event | `event_counterpart_expectations` primary key and CHECK; trigger `event_counterpart_expectations_recipe_half`; `commits_seal` (at least one row) | U19 rejects first |
 | ADR 0004: one current half per `recipe_instance_id` per database; identical retry is a no-op | partial UNIQUE index `WHERE superseded_by IS NULL`; kernel payload compare (`IdempotencyConflict`) | — |
 | ADR 0004: target database is the registered entity | application registry check (`RegistryMismatch`) before any write | — |
 | INV-004, INV-005 one owner, one currency | singleton entity, `journal_postings_currency_valid`, `observations_currency_valid` | — |

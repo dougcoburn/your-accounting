@@ -120,9 +120,9 @@ It is a different value from the same entity's `entity.party_id`. The entity id 
 _Example_: Household's database has `entity.id = 01J...EH` and `entity.party_id = 01J...PH`. Dragonfly's database never stores `01J...EH` as a party; it stores it only as a counterpart entity id on recipe halves.
 
 **Counterpart entity id** (`counterpart_entity_id`):
-On one half of a cross-entity recipe, the entity id (`entity.id`) of the *other* entity. It is stored on each half's `accounting_events` row, together with `counterpart_expected_amount_minor` and `counterpart_currency`. It is never this database's own `entity.id`.
+On one half of a cross-entity recipe, the entity id (`entity.id`) of the *other* entity. It is stored on each half's `accounting_events` row, together with `recipe_instance_id`; the two are both set or both NULL. It is never this database's own `entity.id`.
 
-_Example_: Household's half of "Household pays Dragonfly's $1,200.00 insurance" has `counterpart_entity_id = 01J...ED` (Dragonfly's `entity.id`), expecting 120000 USD. Dragonfly's half has `counterpart_entity_id = 01J...EH`.
+_Example_: Household's half of "Household pays Dragonfly's $1,200.00 insurance" has `counterpart_entity_id = 01J...ED` (Dragonfly's `entity.id`), with one counterpart expectation, USD 120000. Dragonfly's half has `counterpart_entity_id = 01J...EH`.
 
 **Recipe id** (two meanings; say which):
 - **Recipe code**, column `accounting_events.recipe_id`: the stable code of the recipe *type* that built an event, with `recipe_version`. Not a ULID. _Example_: `card_purchase` version `1.0.0` (AT-012).
@@ -130,17 +130,33 @@ _Example_: Household's half of "Household pays Dragonfly's $1,200.00 insurance" 
 
 _Example_: the insurance payment is instance `01J...R1` on both halves. Dragonfly's later repayment is a new instance `01J...R2`. Both halves of each use the same recipe code.
 
+**Counterpart expectation** (`event_counterpart_expectations`):
+One row per currency on a recipe half: the amount (`expected_amount_minor` > 0) that the *other* half must carry in that currency on its intercompany account for this entity. A recipe half has at least one row and at most one per currency. A reversal and a plain event have none. The rows are part of the retry payload, so changing one is a different write.
+
+_Example_: Household's half of a payment that also covers a fee in euros has two rows, USD 120000 and EUR 2500. Dragonfly's half must then show 1,200.00 USD and 25.00 EUR on AP / Household.
+
+**Intercompany account; half amount**:
+On a recipe half, the intercompany postings for the counterpart are the postings on a `receivable` or `payable` ledger account whose `party_id` is the counterpart's `entity.party_id`. A half's amount in a currency is the absolute net (debits minus credits) of those postings in that currency. Other postings on the same event, such as cash, an expense, an FX difference, or a fee account, do not count. The recipe check compares each half's amount per currency with the other half's expectation for that currency, and expects the two nets on opposite sides.
+
+_Example_: Household's half is Dr AR / Dragonfly 1,200.00, Cr checking 1,200.00. Its intercompany amount is USD 1,200.00 (net debit). Dragonfly's half, Dr insurance expense, Cr AP / Household 1,200.00, has USD 1,200.00 (net credit). They agree.
+
 **Registry**:
 The application's own database (layer 3), one per user login. It maps each entity the user may see, by entity id and party id, to the file location of that entity's database. Entities enter it only by explicit registration; there is no discovery. Before any write, the application opens the target database and checks that its `entity` row (`id`, `party_id`) matches the registry row, and it refuses on a mismatch (`RegistryMismatch`). Different logins can have different, overlapping registries.
 
-_Example_: Doug's registry lists Household (`01J...EH`, `01J...PH`, `household.sqlite`) and Dragonfly (`01J...ED`, `01J...PD`, `dragonfly.sqlite`). Another user's registry lists only Dragonfly, so that user's recipe check reports Household-side halves as unverifiable.
+_Example_: Doug's registry lists Household (`01J...EH`, `01J...PH`, `household.sqlite`) and Dragonfly (`01J...ED`, `01J...PD`, `dragonfly.sqlite`). Another user's registry lists only Dragonfly, so that user's recipe check reports Dragonfly's halves as "counterpart not visible", never as a missing half.
 
 **How these relate**: a cross-entity recipe instance (`recipe_instance_id`) has one half in each entity database. Each half names the other entity by its entity id (`counterpart_entity_id`) and names the other entity as a counterparty on its postings by party id (`entity.party_id` of the other entity). The registry turns either id into a database file, and the application checks that file's `entity` row before writing.
 
 **Health check**:
 Two levels.
 - The per-database `doctor` reads one entity database, read-only, and checks that database's own invariants (balance per currency, sealed commits, integrity, evidence hashes).
-- The application-level **recipe check** reads every entity database in the user's Registry and checks cross-entity recipes: a missing half, a duplicate, a mismatched counterpart, or a mismatched amount. A half whose counterpart database is not in the registry is reported as unverifiable.
+- The application-level **recipe check** reads every entity database in the user's Registry and checks cross-entity recipes:
+  - **counterpart not visible:** the counterpart's database isn't registered or can't be opened by this login. This is information, not a failure.
+  - **missing half:** the counterpart database is visible and lacks the half.
+  - **orphaned for 7 days:** a missing half older than 7 days is a warning, and the app offers to reverse it. A redo uses a new recipe-instance id.
+  - **duplicate**
+  - **mismatched counterpart**
+  - **mismatched amount**, per currency, on the intercompany account
 
 Both run at least on open. Neither repairs anything; findings surface as flagged open items. See ADR 0004.
 

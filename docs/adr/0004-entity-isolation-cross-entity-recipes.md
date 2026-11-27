@@ -1,6 +1,6 @@
 # ADR 0004: Entities are isolated databases; the application orchestrates cross-entity recipes
 
-Status: Proposed (revised 2026-11-20; amended 2026-11-26; rewritten 2026-11-26, Doug: "Yes, rewrite it")
+Status: Proposed (revised 2026-11-20; amended 2026-11-26; rewritten 2026-11-26, Doug: "Yes, rewrite it"; recipe-check and multi-currency answers 2026-11-26, Doug)
 
 The rewrite below is the current decision. The earlier decision text and the earlier amendment are kept under "History" so the reasoning stays traceable. Where the history and the rewrite differ, the rewrite wins.
 
@@ -19,36 +19,43 @@ The 2026-11-20 decision paired the legs with a kernel-level outbox row in the fi
 - **Layers 2 and 3 (recipes and application) can see every entity database the signed-in user may see**, through the registry below. The application, not the kernel, writes a cross-entity recipe.
 
 ### Cross-entity recipes
-- **A cross-entity recipe is two halves.** Each half is one accounting event, written by the application through that database's own kernel in that database's own commit. Each event balances on its own (INV-001).
-- **A shared recipe-instance ULID links the halves.** Every half carries:
-  - the recipe-instance id (`accounting_events.recipe_instance_id`)
+- **A cross-entity recipe is two halves.** Each half is one accounting event, written by the application through that database's own kernel in that database's own commit. Each event balances on its own, per currency (INV-001).
+- **A shared recipe-instance ULID links the halves.** Every half carries two nullable columns on `accounting_events`, both set or both NULL:
+  - the recipe-instance id (`recipe_instance_id`)
   - the other entity's `entity.id` (`counterpart_entity_id`)
-  - the amount the other half is expected to carry (`counterpart_expected_amount_minor`) and its currency (`counterpart_currency`)
-
-  These four columns are nullable and all-or-none.
-- **A half's amount** is the sum of its debit postings in `counterpart_currency`. The two halves agree when each half's `counterpart_expected_amount_minor` equals the other half's amount.
+- **Counterpart expectations, per currency.** Every half also has one or more rows in `event_counterpart_expectations(event_id, currency, expected_amount_minor)`, at most one per currency, each amount > 0. A row says: "the other half must carry this amount, in this currency, on its intercompany account for me."
+  - The kernel requires at least one row on a recipe half (`commits_seal`) and refuses rows on a reversal or a plain event.
+  - **Multi-currency halves are allowed in v1** (Doug, 2026-11-26). A half can hold postings in several currencies. Balancing stays per currency (INV-001).
+- **The intercompany account.** A half's intercompany postings for the counterpart are its postings on a `receivable` or `payable` ledger account whose posting `party_id` is the counterpart's `entity.party_id`, for example AR / Dragonfly in Household or AP / Household in Dragonfly. The application resolves that party id through the registry from `counterpart_entity_id`.
+- **A half's amount in a currency** is the absolute value of the net (debits minus credits) of its intercompany postings for the counterpart in that currency. Postings on other accounts (cash, an expense, an FX difference, a fee) do not count, in any currency.
+  - The halves **agree** when, for every currency that either half names, each half's expectation equals the other half's amount in that currency.
+  - Their nets must also be on opposite sides: one half's receivable against the other's payable.
+- **An intercompany obligation that itself spans two currencies** can be one recipe instance with one expectation row per currency. Use two recipe instances, one per obligation currency, when the two obligations are created, settled or corrected on their own schedules. Then each instance can be retried, corrected or reversed alone. That is the preferred split whenever the two currencies are not one business event.
 - **The halves are idempotent per database.** At most one current event per recipe-instance id per database (partial unique index `WHERE superseded_by IS NULL`).
-  - A retry whose payload matches the current half returns the existing event id and seals no commit.
+  - A retry whose payload, expectation rows included, matches the current half returns the existing event id and seals no commit.
   - A retry with a different payload is `IdempotencyConflict`, and nothing is written.
 - **Corrections** follow ADR 0002:
-  - A reversal does not carry a recipe-instance id.
-  - A corrected replacement keeps the id and the counterpart fields of the half it replaces. The replacement may change `counterpart_expected_amount_minor` only together with a matching correction of the other half.
-  - A half that is reversed without a replacement retires its recipe-instance id in that database. A later write with that id is `IdempotencyConflict`, not a fresh half.
+  - A reversal carries no recipe fields and no expectation rows.
+  - A corrected replacement keeps `recipe_instance_id` and `counterpart_entity_id`, and may carry different expectation rows.
+  - **The application always corrects both halves, one after the other** (Doug, 2026-11-26). The recipe check reports a mismatched amount in the brief window between the two corrections, and that window is acceptable.
+  - A half that is reversed without a replacement retires its recipe-instance id in that database. A later write with that id is `IdempotencyConflict`, not a fresh half. A redone recipe uses a new recipe-instance id.
 - **Partial settlements, forgiveness and repayments** are their own cross-entity recipes, each with its own recipe-instance id.
 
 ### No cross-database atomicity
 **There is no atomic commit across two entity databases.** The application commits one half, then the other. A crash, a lost file, a restore from an older backup, or a refused write can leave one half without the other. That window is expected and visible. **The application-level recipe check is the detection mechanism.** Nothing else guarantees that both halves exist.
 
 ### The application-level recipe check
-- **What it is.** The recipe check runs in the application (layer 3). It reads every entity database the user's registry lists. Each per-database `doctor` stays read-only and single-database (ADR 0007).
-- **What it flags,** for each recipe-instance id it can see:
-  - **Missing half:** a current half exists in one database, and the counterpart database has no current event with that id. This includes a half that was reversed while the other is still current.
-  - **Duplicate:** the id is current in more than two databases.
+- **What it is.** The recipe check runs in the application (layer 3). It reads every entity database the signed-in user's registry lists. Each per-database `doctor` stays read-only and single-database (ADR 0007).
+- **It needs no all-seeing login.** No owner login is required to see every database (Doug, 2026-11-26). The check works for a login that sees only one half.
+- **What it reports,** for each current recipe half it can see:
+  - **Counterpart not visible:** the counterpart entity (`counterpart_entity_id`) is not in this user's registry, or its registered database cannot be opened by this user. This is an information status, not a failure, and it is distinct from a missing half. The check says nothing about the other half.
+  - **Missing half:** the counterpart database **is** registered and visible, and it has no current event with that recipe-instance id. This includes a half that was reversed while the other is still current. A missing half is reported only in this case.
+  - **Orphaned for 7 days:** a missing half that has stayed missing for 7 days or more, counted from the visible half's `recorded_at`, is raised to a warning. The application offers to reverse the orphaned half (ADR 0002). If the recipe is redone later, it gets a new recipe-instance id, because the reversed one is retired.
+  - **Duplicate:** the id is current in more than two visible databases.
   - **Mismatched counterpart:** half A's `counterpart_entity_id` is not the `entity.id` of the database that holds half B, or the reverse.
-  - **Mismatched amount:** either half's `counterpart_expected_amount_minor` or `counterpart_currency` disagrees with the other half's amount.
-- **Unverifiable recipes.** A half whose counterpart database is not in this user's registry is reported as **unverifiable**, not as missing. The check is only as complete as the registry of the user who runs it.
-- **When it runs:** on app open, after every cross-entity write, and before a backup. It exits non-zero for CI.
-- **What it does not do:** it never writes or repairs. A fix is a new recipe write or a correction, made by a person through the application.
+  - **Mismatched amount:** for some currency, one half's expectation differs from the other half's intercompany amount, or a currency is expected on one side and absent on the other, or the two nets are on the same side.
+- **When it runs:** on app open, after every cross-entity write, and before a backup. Missing, duplicate, mismatched and orphaned findings exit non-zero for CI. "Counterpart not visible" alone does not.
+- **What it does not do:** it never writes or repairs. A fix is a new recipe write, a correction, or the offered reversal, made by a person through the application.
 
 ### The registry (layer 3)
 - **Its own database.** The application keeps a registry database, separate from every entity database. It is scoped **per user login**.
@@ -64,12 +71,12 @@ The 2026-11-20 decision paired the legs with a kernel-level outbox row in the fi
 ### Worked example (synthetic)
 Household pays Dragonfly's $1,200.00 insurance (120000 minor units, USD) from household checking. Dragonfly repays later. Each row is one event in one database. Recipe instances `R1` and `R2` are invented ULIDs. Household's `entity.id` is `H`, and Dragonfly's is `D`.
 
-| Step | Database | Event (recipe instance, counterpart, expected) | Debit | Credit |
+| Step | Database | Event (recipe instance, counterpart, expectation rows) | Debit | Credit |
 |---|---|---|---|---|
-| 1. Payment, Household half | Household | `R1`, counterpart `D`, expects 120000 USD | AR / Dragonfly 1,200.00 | Checking 1,200.00 |
-| 1. Payment, Dragonfly half | Dragonfly | `R1`, counterpart `H`, expects 120000 USD | Insurance expense 1,200.00 | AP / Household 1,200.00 |
-| 2. Repayment, Dragonfly half | Dragonfly | `R2`, counterpart `H`, expects 120000 USD | AP / Household 1,200.00 | Checking 1,200.00 |
-| 2. Repayment, Household half | Household | `R2`, counterpart `D`, expects 120000 USD | Checking 1,200.00 | AR / Dragonfly 1,200.00 |
+| 1. Payment, Household half | Household | `R1`, counterpart `D`, expectation USD 120000 | AR / Dragonfly 1,200.00 | Checking 1,200.00 |
+| 1. Payment, Dragonfly half | Dragonfly | `R1`, counterpart `H`, expectation USD 120000 | Insurance expense 1,200.00 | AP / Household 1,200.00 |
+| 2. Repayment, Dragonfly half | Dragonfly | `R2`, counterpart `H`, expectation USD 120000 | AP / Household 1,200.00 | Checking 1,200.00 |
+| 2. Repayment, Household half | Household | `R2`, counterpart `D`, expectation USD 120000 | Checking 1,200.00 | AR / Dragonfly 1,200.00 |
 
 Household records no expense in step 1: the payment becomes a claim on Dragonfly (ADR 0001).
 
@@ -85,7 +92,7 @@ Household records no expense in step 1: the payment becomes a claim on Dragonfly
 
 AR and AP net to zero. Household's equity is unchanged, and Dragonfly's equity is down by the insurance expense.
 
-A crash between the two writes of step 1 leaves Household's `R1` half current with no Dragonfly `R1` half. The recipe check reports a missing half. Retrying the Dragonfly write with the same `R1` and the same payload completes the recipe. Retrying the Household write is a no-op that returns the existing event id.
+Each half's intercompany amount is its AR / Dragonfly or AP / Household line, 1,200.00 USD, and each half expects that amount from the other. A crash between the two writes of step 1 leaves Household's `R1` half current with no Dragonfly `R1` half. For a login that has both databases registered, the recipe check reports a missing half, and after 7 days an orphan warning with an offer to reverse. A login that sees only Household reports "counterpart not visible" instead. Retrying the Dragonfly write with the same `R1` and the same payload completes the recipe. Retrying the Household write is a no-op that returns the existing event id.
 
 ## Consequences
 - Brief inconsistency windows between entities are possible and visible.
@@ -95,11 +102,13 @@ A crash between the two writes of step 1 leaves Household's `R1` half current wi
   - a crash between halves, detected as a missing half
   - a retry with no duplicate (identical payload, no new commit)
   - a retry with a changed payload (`IdempotencyConflict`)
-  - a mismatched counterpart amount
+  - a mismatched counterpart amount, per currency
+  - a two-currency half (for example USD intercompany plus an EUR fee) that agrees only on its intercompany postings
+  - a half orphaned for 7 days (warning, and the offered reversal)
   - a half reversed while the other is current
   - one database restored from an older backup
   - a registry row whose file now holds a different `entity` (`RegistryMismatch`, nothing written)
-  - a counterpart database missing from the registry (reported as unverifiable)
+  - a counterpart database missing from the registry (reported as "counterpart not visible", not as a missing half)
 
 ## History
 
