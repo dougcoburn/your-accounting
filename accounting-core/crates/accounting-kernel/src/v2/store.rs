@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
+use crate::v2::doctor::{exit_status, DoctorCheck, DoctorRunner, Finding, Scope, Severity};
 use crate::v2::error::{persists_freeze, Class, Code, Error};
 use crate::v2::sqlmap::{map_sql, SqlSite};
 use crate::v2::types::{
@@ -242,6 +243,20 @@ struct StoredPosting {
     memo: String,
 }
 
+/// Doctor result. `exit_status` is 0 only when every finding is a warning or
+/// info, or there are no findings. Checks do not repair rows or clear a freeze.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DoctorReport {
+    pub findings: Vec<Finding>,
+    /// 0 when clean (warnings and info allowed). 1 when a bugcheck or import finding is present.
+    pub exit_status: i32,
+    /// Set when this call sealed a new freeze commit.
+    pub freeze: Option<FreezeOutcome>,
+    /// Set when a new bugcheck should have frozen the database and the persist did not.
+    /// The findings are still returned.
+    pub persist_error: Option<Error>,
+}
+
 /// One entity database. Reads stay available when writes are refused.
 pub struct Kernel {
     conn: Connection,
@@ -251,6 +266,7 @@ pub struct Kernel {
     writable: bool,
     write_open: bool,
     freezing: bool,
+    doctor_checks: Vec<Box<dyn DoctorCheck>>,
 }
 
 /// Open write transaction. Dropping it rolls the attempt back.
@@ -327,6 +343,7 @@ impl Kernel {
             writable: flag == 1,
             write_open: false,
             freezing: false,
+            doctor_checks: Vec::new(),
         })
     }
 
@@ -482,6 +499,44 @@ impl Kernel {
 
     pub fn kernel_state_count(&self) -> Result<i64, Error> {
         self.scalar("SELECT count(*) FROM kernel_state")
+    }
+
+    /// A context adds its own check. The runner does not import that context.
+    /// Registry-scoped checks are stored and skipped; the application runner runs those.
+    pub fn register_doctor_check(&mut self, check: Box<dyn DoctorCheck>) {
+        self.doctor_checks.push(check);
+    }
+
+    /// Read the ledger-core checks and any registered single-database checks.
+    /// Does not repair rows and does not clear a freeze. When a bugcheck finding
+    /// other than an already-active freeze is present, persists that freeze in
+    /// its own commit. A missing or stale `expected_revision` leaves the findings
+    /// in the report and writes no freeze row.
+    pub fn doctor(&mut self, expected_revision: Option<i64>) -> Result<DoctorReport, Error> {
+        let findings = self.doctor_findings()?;
+        let exit_status = exit_status(&findings);
+        let mut report = DoctorReport {
+            findings,
+            exit_status,
+            freeze: None,
+            persist_error: None,
+        };
+        let Some(code) = report
+            .findings
+            .iter()
+            .find(|finding| finding.severity == Severity::Bugcheck && persists_freeze(finding.code))
+            .map(|finding| finding.code)
+        else {
+            return Ok(report);
+        };
+        if self.latest_freeze()?.is_some_and(|row| row.active == 1) {
+            return Ok(report);
+        }
+        match self.record_write_freeze(expected_revision, code.as_str()) {
+            Ok(outcome) => report.freeze = Some(outcome),
+            Err(err) => report.persist_error = Some(err),
+        }
+        Ok(report)
     }
 
     /// `None` is `MissingExpectedRevision`. The kernel does not read `max(seq)` to fill it in.
@@ -690,44 +745,35 @@ impl Kernel {
         Ok(())
     }
 
-    fn blocking_bugcheck(&self) -> Result<(), Error> {
-        // U21 owns doctor, including evidence bytes and cross-entity pairing.
-        // Clear refuses when the checks this database can answer are dirty.
-        let integrity: String = self
-            .conn
-            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
-            .map_err(|e| map_sql(e, SqlSite::Read))?;
-        if integrity != "ok" {
-            return Err(Error::new(Code::IntegrityFailed, &[], vec![]));
-        }
-        let fk: i64 = self
-            .conn
-            .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
-                row.get(0)
-            })
-            .map_err(|e| map_sql(e, SqlSite::Read))?;
-        if fk > 0 {
-            return Err(Error::new(Code::ForeignKeyCheckFailed, &["PR-19"], vec![]));
-        }
-        let views: &[(&str, Code, &[&str])] = &[
-            ("doctor_unsealed_rows", Code::UnsealedRows, &["PR-19"]),
-            ("doctor_unbalanced_events", Code::DoctorDrift, &["INV-001"]),
-            ("doctor_superseded_drift", Code::DoctorDrift, &["ADR 0002"]),
-            (
-                "doctor_observation_double_consumed",
-                Code::DoctorDrift,
-                &["INV-007"],
-            ),
-        ];
-        for (view, code, refs) in views {
-            let sql = format!("SELECT count(*) FROM {view}");
-            let n: i64 = self
-                .conn
-                .query_row(&sql, [], |row| row.get(0))
-                .map_err(|e| map_sql(e, SqlSite::Read))?;
-            if n > 0 {
-                return Err(Error::new(*code, refs, vec![]));
+    fn doctor_findings(&self) -> Result<Vec<Finding>, Error> {
+        let mut findings = DoctorRunner::ledger_core().run(&self.conn)?;
+        for check in &self.doctor_checks {
+            if check.scope() != Scope::SingleDb {
+                continue;
             }
+            findings.extend(check.run(&self.conn)?);
+        }
+        Ok(findings)
+    }
+
+    fn blocking_bugcheck(&self) -> Result<(), Error> {
+        // Clear refuses when a ledger-core bugcheck other than the active freeze
+        // is present. Context checks registered on this handle are included.
+        // Observation, evidence, recipe, and FX checks are not, until they register.
+        for finding in self.doctor_findings()? {
+            if finding.check_id == crate::v2::CHECK_FREEZE {
+                continue;
+            }
+            if finding.severity != Severity::Bugcheck {
+                continue;
+            }
+            return Err(Error {
+                code: finding.code,
+                class: finding.class,
+                refs: finding.refs,
+                ids: finding.ids,
+                token: None,
+            });
         }
         Ok(())
     }
