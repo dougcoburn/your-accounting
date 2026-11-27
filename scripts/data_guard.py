@@ -39,6 +39,32 @@ from pathlib import Path
 
 FIXTURES_DIR = "fixtures"
 
+# Account-number scans follow the same file scope as the U14 privacy guard:
+# text data files, markdown, anything under docs/, and prototypes/.
+ACCOUNT_TEXT_DATA_EXTENSIONS = {
+    ".csv",
+    ".tsv",
+    ".json",
+    ".ofx",
+    ".qfx",
+    ".qif",
+    ".qbo",
+    ".ofc",
+    ".iif",
+}
+
+
+def account_scan_target(path: str) -> bool:
+    posix = _posix(path)
+    suffix = Path(posix).suffix.lower()
+    if suffix in ACCOUNT_TEXT_DATA_EXTENSIONS or suffix in {".md", ".rst"}:
+        return True
+    parts = Path(posix).parts
+    if "docs" in parts[:-1]:
+        return True
+    return bool(parts) and parts[0] == "prototypes"
+
+
 # Consecutive 5+ digit runs. Underscore is treated as part of a token so
 # identifiers such as je_00000016 and Rust literals like 10000_00 are
 # ignored, as are lockfile hashes and other alphanumeric tokens.
@@ -233,7 +259,7 @@ def inspect_file(path: str, data: bytes) -> list[str]:
     if is_csv(path) or is_json(path):
         if not has_synthetic_marker(path, text):
             findings.append(f"{path}: missing synthetic marker")
-    if b"\0" not in data:
+    if account_scan_target(path):
         lines = text.splitlines()
         findings.extend(scan_lines(path, enumerate(lines, start=1)))
     return findings

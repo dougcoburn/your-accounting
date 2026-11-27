@@ -198,7 +198,24 @@ class InspectFileTests(unittest.TestCase):
         self.assertEqual(guard.inspect_file("docs/ok.json", data), [])
 
 
+class AccountScanScopeTests(unittest.TestCase):
+    def test_python_source_is_not_an_account_scan_target(self) -> None:
+        self.assertFalse(guard.account_scan_target("scripts/privacy_guard.py"))
+        self.assertFalse(guard.account_scan_target("accounting-core/crates/foo/src/lib.rs"))
+
+    def test_docs_and_data_are_account_scan_targets(self) -> None:
+        self.assertTrue(guard.account_scan_target("CONTRIBUTING.md"))
+        self.assertTrue(guard.account_scan_target("docs/schema-v2-smoke.sh"))
+        self.assertTrue(guard.account_scan_target("fixtures/monarch/october-2025-synthetic.csv"))
+        self.assertTrue(guard.account_scan_target("prototypes/demo/app.ts"))
+
+    def test_python_source_with_digit_run_is_not_flagged(self) -> None:
+        data = f"repo.write('fixtures/x.csv', 'account,{LONG_ACCT}')\n".encode()
+        self.assertEqual(guard.inspect_file("scripts/privacy_guard.py", data), [])
+
+
 class GitIntegrationTests(unittest.TestCase):
+
     def _init_repo(self, tmp: Path) -> Path:
         repo = tmp / "r"
         repo.mkdir()
