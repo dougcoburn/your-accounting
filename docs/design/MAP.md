@@ -4,7 +4,7 @@
 Take one real month (October 2025 sample) from imported observations to a posted, balanced ledger. Every observation is either reconciled, voided (e.g. a duplicate from an extraction bug), or still open on the worklist (unreviewed or interpreted). Open is not an end state; it is work still to do. Revised 2026-11-20: dropped "open with a named reason" as a terminal state.
 
 ## Decisions so far
-ADRs: docs/adr/0001-0008 (drafted 2026-11-19, revised after Eng Leads review 2026-11-20; 0008 and 0002 amendment 2026-11-22).
+ADRs: docs/adr/0001-0009 (drafted 2026-11-19, revised after Eng Leads review 2026-11-20; 0008 and 0002 amendment 2026-11-22; 0009 FX Clearing 2026-11-26, post-month-1).
 
 - Destination set (2026-11-19).
 - Observation source for month 1: Monarch CSV rows; Monarch category is a suggestion, not truth. Missing accounts (e.g. HSA) supplied by Doug's offline extraction (2026-11-19).
@@ -90,12 +90,13 @@ ADRs: docs/adr/0001-0008 (drafted 2026-11-19, revised after Eng Leads review 202
 - Statement cutoff (2026-11-22): the occurred date assigns a transaction to a period for everything, including reconciliation. Feed rows also keep the posted date, used only to explain the gap to the statement: occurred-date balance at the cutoff, minus items that occurred on or before it but posted after, plus items that posted on or before it but occurred after, must equal the statement ending balance.
 - Settlement groups (2026-11-22): no participation limits for month 1.
 - Agent approval / MCP auth (2026-11-22): deferred past month 1.
+- Single-currency ledger accounts and FX Clearing (2026-11-26, Doug, ADR 0009 with PR 33 answers; post-month-1 unit, not in the month-1 plan): logical categories are currency-independent, ledger accounts are (category, currency), and every line matches its account's currency, except one multi-currency FX Clearing account per entity. Each event touching FX Clearing has exactly one debit currency and one different credit currency there; the derived rate is credit total / debit total, never stored, shown to 7 decimals half-even, so FX Clearing's effective balance is zero by construction. INV-001 stays per event per currency. Month-end reports are per currency and isolated, even within one entity; no revaluation, no single reporting currency; realized exchange gain/loss is a later application report. A USD card abroad posts in USD only. Fees go to expense. A rate plausibility check behind a rate-source port raises information-only to-dos (exit 0). FX across recipe halves (decided 2026-11-26): the converting side, as its bank statement shows, does the exchange inside its own half with one obligation currency for the recipe instance; the wire fee books on the converting side's expense account; splitting the exchange across halves is rejected.
 
 ## Not yet specified (fog)
 - Party-to-entity conversion wizard (when Esther joins).
 - Investment accounts, later: taxable brokerage dividends/realized gains detail (quarter map or later).
 - Mode-switch wizard: exact reclassification mechanics (opening balance vs. re-pointing past postings, per-period vs. whole-history).
-- v0.2 section 13 open decisions still open: 2 FX journal model, 6 multi-currency reporting, 7 account ownership transfer, 8 settlement participation constraints (no limits in month 1), 10 approval/MCP auth (deferred), 11 budgets, 12 data retention. Settled: 1 money, 3 statement cutoff, 4 refunds, 5 payroll, 9 corrections.
+- v0.2 section 13 open decisions still open: 2 FX journal model (decided for post-month-1 by ADR 0009), 6 multi-currency reporting (native-currency part decided by ADR 0009; retained earnings per currency still open), 7 account ownership transfer, 8 settlement participation constraints (no limits in month 1), 10 approval/MCP auth (deferred), 11 budgets, 12 data retention. Settled: 1 money, 3 statement cutoff, 4 refunds, 5 payroll, 9 corrections.
 - Balance checkpoints (deferred past month 1): rebuildable per-account balances at cutoffs to bound the cost of closed-month checks and as-of-recorded replay as corrections accumulate. Caches only, verified by `doctor`, never authoritative.
 - Prototype gaps remaining: evidence strength (strong vs weak) as an input to match suggestions; editable registries UI; paired in/out transfer expected slots (brokerage).
 

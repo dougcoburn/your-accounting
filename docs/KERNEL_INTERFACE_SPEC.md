@@ -248,15 +248,15 @@ The kernel does not orchestrate cross-entity work. The application writes each h
 - `recipe_instance_id` (ULID). This is the shared recipe id that links the two halves. It is not `recipe_id`, which stays the recipe code (`card_purchase`) used with `recipe_version` (AT-012).
 - `counterpart_entity_id` (ULID): the other entity's `entity.id`.
 
-**Counterpart expectations.** One or more rows in `event_counterpart_expectations(event_id, currency, expected_amount_minor)`, primary key `(event_id, currency)`. Each row is the amount the other half must carry in that currency on its intercompany receivable/payable for this entity. A half may expect several currencies, and INV-001 still balances each event per currency. The rows are commit-scoped through their event and append-only. The kernel stores them as facts and never computes a half's amount. The application computes it per currency, as the absolute net of the half's postings on `receivable`/`payable` accounts whose `party_id` is the counterpart's `entity.party_id` (ADR 0004). Because `journal_postings.party_id` is optional, a half whose intercompany posting has no party shows an amount of zero, and the check reports a mismatched amount.
+**Counterpart expectations.** One or more rows in `event_counterpart_expectations(event_id, currency, expected_amount_minor)`, primary key `(event_id, currency)`. Each row is the amount the other half must carry in that currency on its intercompany receivable/payable for this entity. A half may expect several currencies, and INV-001 still balances each event per currency. The rows are commit-scoped through their event and append-only. The kernel stores them as facts and never computes a half's amount. The application computes it per currency, as the absolute net of the half's postings on `receivable`/`payable` accounts whose `party_id` is the counterpart's `entity.party_id` (ADR 0004). `journal_postings.party_id` is optional on ordinary events, but **on a recipe half every posting on a `receivable` or `payable` ledger account MUST carry a `party_id`**. The kernel rejects a half that breaks this with `InvalidShape` token `recipe_party` (§4.3), refs `ADR 0004`, ids the ledger account, and stages nothing. The kernel checks only that a party is present; whether it is the counterpart's `entity.party_id` is the application's recipe check, which reports a wrong party as a mismatched amount.
 
 | | |
 |---|---|
 | Preconditions | Inside `begin_transaction`. `recipe_instance_id` and `counterpart_entity_id` are both present or both absent, and both are ULIDs. When present, the half stages at least one expectation row, with at most one row per currency, each `expected_amount_minor > 0`. When absent, it stages none. `counterpart_entity_id` is not this database's `entity.id`. The kernel does not check that it names a real entity, because the counterpart is another database; the registry and the recipe check do that. The event is not a reversal: a reversal carries no recipe fields and no expectation rows. |
 | Postconditions | **No current event with this `recipe_instance_id`:** if no event at all carries the id, the event is staged like any `append_event`. If only superseded events carry it, outside the replacement step of `correct`, the result is `IdempotencyConflict` and nothing is staged: the half was reversed, so the recipe instance is retired. **A current event with the same recipe payload** (below): nothing is staged for it. The result names the existing event id, and when nothing else was staged it is the §2.2 no-op (no `commits` row, no `seq` bump). **A current event with a different payload:** `IdempotencyConflict`. The whole transaction rolls back, and the stored event is unchanged. |
 | Invariants | ADR 0004 (rewritten 2026-11-26). ADR 0002 (append-only; corrections). At most one current event per `recipe_instance_id` in a database. §2.2. INV-001 for the half itself. |
-| Typed error | `IdempotencyConflict` (class user), `InvalidShape` tokens `recipe_fields`, `counterpart_self`, and `counterpart_expectations`, `InvalidId`, `InvalidMoney`, `InvalidCurrency`, plus every `append_event` error. |
-| Enforced by | Storage: the both-or-neither CHECK; the no-recipe-fields-on-a-reversal CHECK; `event_counterpart_expectations` (primary key per currency, amount CHECK, a trigger that rows belong only to a recipe half, append-only and open-commit triggers, and a `doctor_unsealed_rows` branch through the parent event); the `commits_seal` rule that a recipe half has at least one expectation row; the partial UNIQUE index on `recipe_instance_id WHERE superseded_by IS NULL`; and a trigger that `counterpart_entity_id` is not `entity.id`. The kernel compares the payload before insert, so an identical retry never reaches the UNIQUE failure. |
+| Typed error | `IdempotencyConflict` (class user), `InvalidShape` tokens `recipe_fields`, `counterpart_self`, `counterpart_expectations`, and `recipe_party`, `InvalidId`, `InvalidMoney`, `InvalidCurrency`, plus every `append_event` error. |
+| Enforced by | Storage: the both-or-neither CHECK; the no-recipe-fields-on-a-reversal CHECK; `event_counterpart_expectations` (primary key per currency, amount CHECK, a trigger that rows belong only to a recipe half, append-only and open-commit triggers, and a `doctor_unsealed_rows` branch through the parent event); the `commits_seal` rule that a recipe half has at least one expectation row; the partial UNIQUE index on `recipe_instance_id WHERE superseded_by IS NULL`; and a trigger that `counterpart_entity_id` is not `entity.id`. Kernel write path (no storage backstop): a receivable/payable posting on a half carries a `party_id` (`recipe_party`). The kernel compares the payload before insert, so an identical retry never reaches the UNIQUE failure. |
 
 **Recipe payload.** The payload is compared field by field against the current event and its postings. A hash is not needed, because both sides are in this database:
 - `recipe_id` and `recipe_version`
@@ -535,7 +535,9 @@ SQLite constraint text that is not a RAISE. The first matching row wins. A ULID 
 | any other `CHECK constraint failed` whose expression is one of the tokens below | `InvalidShape` |
 | any other `CHECK constraint failed`, or any other SQLite error string | `UnmappedStorageError` (bugcheck) |
 
-`InvalidShape` tokens, and only these: `commit_kind`, `grant_role`, `void_reason`, `observation_direction`, `settlement_state`, `obligation_direction`, `settlement_kind`, `recipe_fields`, `counterpart_self`, `counterpart_expectations`, `assertion_source`, `valuation_source`, `feed_kind`, `account_type`, `ledger_kind`, `financial_kind`, `tracking_mode`, `party_label`, `posting_side`, `evidence_link_target`, `draft_participant`, `grant_revoke_pair`, `period_order`, `last4`, `hash`, `unique_other`.
+`InvalidShape` tokens, and only these: `commit_kind`, `grant_role`, `void_reason`, `observation_direction`, `settlement_state`, `obligation_direction`, `settlement_kind`, `recipe_fields`, `counterpart_self`, `counterpart_expectations`, `recipe_party`, `assertion_source`, `valuation_source`, `feed_kind`, `account_type`, `ledger_kind`, `financial_kind`, `tracking_mode`, `party_label`, `posting_side`, `evidence_link_target`, `draft_participant`, `grant_revoke_pair`, `period_order`, `last4`, `hash`, `unique_other`.
+
+`recipe_party` has no RAISE or CHECK behind it. The kernel write path raises it directly (§3.9): a posting on a `receivable` or `payable` ledger account in a recipe half has no `party_id`. It is listed here so the token list stays the one closed list.
 
 A new CHECK or RAISE lands only by extending this section in the same change (§7).
 
@@ -698,9 +700,19 @@ Choice (Doug, 2026-11-26; ADR 0004 and ADR 0008):
 - **No `target_entity_id`.** The ADR 0004 rewrite removed the cross-database apply, so this field and its target check are gone.
 - **`EntityMismatch` is retired** from the kernel taxonomy. Its posting meaning went with row-level `entity_id`, and its apply-target meaning went with the cross-database apply. Writing to the wrong database is now prevented before the kernel is called: the application opens the target, compares `entity.id` and `entity.party_id` with its registry, and refuses with the application code `RegistryMismatch`. That code is not in §4, because it is not a kernel error.
 
-`docs/schema-v2.sql` on PR 31 drops row-level `entity_id` and adds the recipe columns. Until it also carries `event_counterpart_expectations` (§3.9), this section and §3.9 are the contract (§0 item 1: the ADR wins).
+`docs/schema-v2.sql` (PR 31, merged) has no row-level `entity_id`. It carries the recipe columns on `accounting_events` and the `event_counterpart_expectations` table (§3.9), so the schema and this section agree.
 
 ## 9. Changelog
+
+### 2026-11-26 — ADR 0009 accepted, not yet in this contract
+
+Docs only. ADR 0009 (single-currency accounts and one FX Clearing account, Doug 2026-11-26) is a post-month-1 unit. Until it is scheduled, this contract, `docs/schema-v2.sql` and the smoke checks are unchanged, and §0 item 1 does not pull its rules in early. When it lands, §3.3, §4.1 and §4.3 gain its rules in the same change (§7): `CurrencyMismatch` widens to every ledger account except FX Clearing, and `InvalidShape` gains `account_currency` and `fx_clearing`. The proposed schema delta is `docs/SPEC-v2-delta.md` section 6.
+
+### 2026-11-26 — post-merge fixes to the PR 32 text
+
+Spec only. Flagged by Backend after PR 31 and PR 32 merged.
+- **§8.15** no longer says `event_counterpart_expectations` is missing from the schema. PR 31 added it to `docs/schema-v2.sql`.
+- **§3.9 and §4.3:** the rule that a recipe half's receivable/payable postings carry a `party_id` is now stated in §3.9, and its rejection gets its own `InvalidShape` token, `recipe_party`. The kernel already rejects this case as `InvalidShape` with refs `ADR 0004` and no token. The code change to attach the token, and the test that today asserts no token, are a Backend follow-up.
 
 ### 2026-11-26 — multi-currency recipe halves; Doug's PR 32 answers
 
