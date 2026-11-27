@@ -58,3 +58,25 @@ jobs:
         run: python3 scripts/data_guard.py --all
       - name: Test data guard
         run: python3 -m unittest tests/test_data_guard.py
+
+  privacy:
+    name: privacy
+    runs-on: ubuntu-latest
+    env:
+      YA_DENYLIST: ${{ secrets.YA_DENYLIST }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check privacy
+        run: |
+          if [ ! -f scripts/check-privacy.sh ]; then
+            echo "::notice::scripts/check-privacy.sh is not in this branch yet (it lands with PR #80); skipping"
+            exit 0
+          fi
+          bash scripts/check-privacy.sh
+      - name: Test privacy
+        run: |
+          if [ ! -f scripts/test-privacy.sh ]; then
+            echo "::notice::scripts/test-privacy.sh is not in this branch yet (it lands with PR #80); skipping"
+            exit 0
+          fi
+          bash scripts/test-privacy.sh

@@ -146,7 +146,7 @@ runs on pull requests and on pushes to `main`. It has five jobs:
 - **privacy** runs `scripts/check-privacy.sh` and then
   `scripts/test-privacy.sh`, with `YA_DENYLIST` taken from the
   `YA_DENYLIST` repository secret (it may be empty). If a script is
-  not in the tree yet, that step prints a notice and is skipped.
+  not in the tree, that step prints a notice and is skipped.
 
 Clippy runs with `-D warnings` on the whole workspace. Two existing
 lints are allowed in `accounting-core/Cargo.toml` (option (b): allow
