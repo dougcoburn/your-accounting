@@ -192,15 +192,17 @@ One transaction. The kernel stages, in this order: the reversal event and its ca
 
 ### 3.5 `void_observation(observation_id, reason)`
 
-**Owner moved (ADR 0011):** this is an observation import context operation. It reverses linked events through the kernel's `correct` (§3.4). The rules below stand, enforced by that context through its `ContextTx` and `validate` (§3.14), in the same transaction as the reversals.
+**Owner (ADR 0011, amended Doug 2026-11-27):** this is an observation import context operation. It tombstones the observation and ends that observation's live links. It does **not** reverse or correct kernel events, and it does not call `correct` (§3.4). The kernel event and its lines stay as they are. A line's origin (`posting_origin`) is `observed` while any live observation link points at it, and `expected` otherwise. A link is live while its observation has no `observation_voids` row. `posting_observations` rows stay (append-only); the void ends them by the tombstone, not by deleting them. There is no review state `voided`. A voided observation leaves `observation_review_state`.
+
+A void writes only import-context rows. `observation_voids.commit_id` needs a `commits` row, so the transaction seals one. That row's `kind` is the kernel's non-reversal kind for a context-only write: `import` (context rows, no events). There is no commit kind `void`.
 
 | | |
 |---|---|
-| Preconditions | Inside `begin_transaction`. The observation exists and has no `observation_voids` row. `reason` is `duplicate`, `extraction_error`, or `other`. Every current event that interprets the observation (a `posting_observations` link on an event with `superseded_by` null and `reverses_id` null) is reversed in this same transaction, under the `correct` reversal rules, including the target's effective date and the set-once flag. The observation row itself is not deleted. |
-| Postconditions | After `commit`, `observation_review_state` is `voided`. A later `posting_observations` insert for this observation fails. Linked current interpretations are reversed. Source facts stay in `observations` (INV-014). |
-| Invariants | ADR 0002 void rule. INV-014. |
-| Typed error | `VoidWithoutReversal`, `ObservationAlreadyVoided`, `InvalidShape` token `void_reason`, plus reversal errors from §3.4. |
-| Enforced by | Storage seal rejects a void whose current linked events are not reversed. U19 **MUST** reject that first (`ValidatorMissed` if the seal raises it). Storage `posting_observations_not_voided` and UNIQUE `observation_voids.observation_id`. There is no DELETE path; DELETE on `observations` is `AppendOnlyViolation`. |
+| Preconditions | Inside `begin_transaction`. The observation exists and has no `observation_voids` row. `reason` is `duplicate`, `extraction_error`, or `other`. The observation row itself is not deleted. No kernel event is staged. |
+| Postconditions | After `commit`, an `observation_voids` row exists and the commit `kind` is `import`. The linked kernel event and its lines are unchanged: no new event, no reversal, `superseded_by` unchanged. The voided observation's links are not live. A line that lost its only live link is `expected`. A line that still has another live link, such as a duplicate observation, stays `observed`. A later `posting_observations` insert for this observation fails. Source facts stay in `observations` (INV-014). |
+| Invariants | INV-014. Origin is derived from live links. |
+| Typed error | `ObservationAlreadyVoided`, `InvalidShape` token `void_reason`, `UnknownTarget`, `InvalidId`. |
+| Enforced by | Storage `posting_observations_not_voided` and UNIQUE `observation_voids.observation_id`. There is no DELETE path; DELETE on `observations` is `AppendOnlyViolation`. The seal does not require a reversal. |
 
 ### 3.6 `import_observations`
 
@@ -300,7 +302,7 @@ The public error for a conflict carries the recipe-instance id and the existing 
 
 | | |
 |---|---|
-| Preconditions | Inside `begin_transaction`. The pragma still reads 1. No active write freeze (§3.13), unless this commit is `clear_write_freeze`. U19 has accepted the staged changeset, including every seal condition, the closed-month rule, INV-013, recipe completeness, and regrouping. `expected_revision` stored on the new row is the caller's integer. `seq = expected_revision + 1`. `recorded_at` equals the timestamp fixed at `begin_transaction`, and every staged event carries that same timestamp. `kind` is one of `setup`, `import`, `interpret`, `settle`, `correct`, `void`, `assert`, `cross_entity`, `grant`, `freeze`. `kind` labels the commit; the seal checks invariants, not kind. `freeze` is the kind of a `kernel_state` commit (§3.13, §8.13). `docs/schema-v2.sql` lists `freeze` in the `commits.kind` CHECK (U17). |
+| Preconditions | Inside `begin_transaction`. The pragma still reads 1. No active write freeze (§3.13), unless this commit is `clear_write_freeze`. U19 has accepted the staged changeset, including every seal condition, the closed-month rule, INV-013, recipe completeness, and regrouping. `expected_revision` stored on the new row is the caller's integer. `seq = expected_revision + 1`. `recorded_at` equals the timestamp fixed at `begin_transaction`, and every staged event carries that same timestamp. `kind` is one of `setup`, `import`, `interpret`, `settle`, `correct`, `assert`, `cross_entity`, `grant`, `freeze`. There is no `void` kind: voiding an observation seals as `import` (§3.5). `kind` labels the commit; the seal checks invariants, not kind. `freeze` is the kind of a `kernel_state` commit (§3.13, §8.13). `docs/schema-v2.sql` lists `freeze` in the `commits.kind` CHECK (U17). |
 | Postconditions | If the transaction staged no row because every subject was an identical re-import or an identical recipe retry, `commit` does not insert a `commits` row. The result is `IdempotentNoop` (§2.2). Otherwise either the `commits` row and every staged row are durable, or none of them are. `seq` is the new entity revision. A later insert that names this `commit_id` fails with `CommitSealed`. Dropping the transaction without `commit` leaves nothing. |
 | Invariants | AT-013, AT-032. ADR 0002. INV-001. |
 | Typed error | Any staging error, rolled back. `RevisionMismatch` if `seq` is not `expected_revision + 1`. `RecordedAtMismatch`. `PartialCommit` (bugcheck) if `commit` had staged rows and returns without a `commits` row, or the deferred foreign key fails because the kernel omitted the seal. The §2.2 no-op is not `PartialCommit`: it returns success and writes no `commits` row on purpose. `ValidatorMissed` (bugcheck) if the seal raises a condition U19 was required to reject. `ForeignKeysDisabled`. |
@@ -410,7 +412,7 @@ CommitStagedSet   every event, line, reversal and superseded target staged in th
 
 **Context-only operations.** `import_observations`, `void_observation`, `put_evidence`, `link_evidence`, and a later tag write use the same `ContextTx`. They get it from an open `begin_transaction` through the participant's own operation. They are not callbacks.
 
-- Such an operation **MAY** call kernel operations on the same transaction. For example, `void_observation` calls `correct` (§3.4).
+- Such an operation **MAY** call kernel operations on the same transaction. `void_observation` does not: it only inserts `observation_voids` (§3.5).
 - `stage` and `validate` **MUST NOT** call kernel operations. There is no re-entry.
 
 **When `validate` runs.** It runs once per participant at `commit` (§3.11):
@@ -420,7 +422,7 @@ CommitStagedSet   every event, line, reversal and superseded target staged in th
 
 It is read-only. It checks the participant's rules over the whole staged set. Examples:
 
-- observation import: INV-007 match, not voided, the void rule, observed legs reposted (ADR 0006);
+- observation import: INV-007 match on live links, not voided, observed legs reposted on dissolve (ADR 0006). A void does not reverse kernel events;
 - recipes: INV-015 cap, refund shape, and INV-013 for refund links on a correction.
 
 **`ContextTx` scope.**
@@ -486,7 +488,7 @@ The SQL text in this section is the mapping key for the adapter. It **MUST NOT**
 | `SupersedeInvalid` | user | `superseded_by` changed a fact, was cleared, was set twice, or was set outside the reversal's open commit. |
 | `SupersedeMissing` | user | A reversal commit did not flag its target. |
 | `EventInsertedSuperseded` | user | An insert carried `superseded_by`. |
-| `VoidWithoutReversal` | user | A void left a current interpreting event. |
+| `VoidWithoutReversal` | user | Retained in the closed list. `void_observation` does not reverse kernel events, so a void does not produce this code. |
 | `VoidedObservation` | user | A posting link targeted a voided observation. |
 | `ObservationAlreadyVoided` | user | A second tombstone for the same observation. |
 | `ObservationMismatch` | user | INV-007. Link does not match account, amount, currency, and direction. |
@@ -560,7 +562,6 @@ RAISE text is matched as a substring. The adapter maps it and then discards it.
 | `INV-006: draft groups never hold postings` | `DraftHasPostings` | `ValidatorMissed` |
 | `INV-008: a reconciled group must hold` | `ReconciledGroupEmpty` | `ValidatorMissed` |
 | `nonzero clearing residual` | `NonzeroClearingResidual` | `ValidatorMissed` |
-| `a void must reverse every current event` | `VoidWithoutReversal` | `ValidatorMissed` |
 | `dissolving a reconciled group must reverse` | `DissolveWithoutReversal` | `ValidatorMissed` |
 | `observed legs must be reposted` | `DissolveWithoutRepost` | `ValidatorMissed` |
 | `only superseded_by may be set` | `SupersedeInvalid` | user error (not a seal check) |
@@ -622,7 +623,7 @@ SQLite constraint text that is not a RAISE. The first matching row wins. A ULID 
 
 `recipe_party` has no RAISE or CHECK behind it. The kernel write path raises it directly (§3.9): a posting on a `receivable` or `payable` ledger account in a recipe half has no `party_id`. It is listed here so the token list stays the one closed list.
 
-**Moved (ADR 0011).** These rows and tokens stay in this closed table, but their RAISE/CHECK sources are context-owned: tokens `void_reason`, `observation_direction`, `feed_kind`, `evidence_link_target`, `hash` (observation import); `unique_other` from `tags.name` (application), from the `refund_links` pair (recipes), and from `evidence_deletions.sha256` (observation import); the RAISE rows `observation currency must match`, `corroborating row must be`, `posting must match its observation`, `voided observation cannot be interpreted`, `a void must reverse every current event`, `observed legs must be reposted` (observation import), and `opposite-side posting to the purchase`, `INV-015: refund links exceed` (recipes).
+**Moved (ADR 0011).** These rows and tokens stay in this closed table, but their RAISE/CHECK sources are context-owned: tokens `void_reason`, `observation_direction`, `feed_kind`, `evidence_link_target`, `hash` (observation import); `unique_other` from `tags.name` (application), from the `refund_links` pair (recipes), and from `evidence_deletions.sha256` (observation import); the RAISE rows `observation currency must match`, `corroborating row must be`, `posting must match its observation`, `voided observation cannot be interpreted`, `observed legs must be reposted` (observation import), and `opposite-side posting to the purchase`, `INV-015: refund links exceed` (recipes).
 
 A new CHECK or RAISE lands only by extending this section in the same change (§7).
 
@@ -679,7 +680,7 @@ A new recipe or a new kernel operation is not ready to land until every line bel
 5. **Foreign keys.** `open` still asserts `PRAGMA foreign_keys = 1` and still refuses writes otherwise. The new operation does not use a second connection that skips the assert.
 6. **Synthetic fixtures only.** Invented ULIDs and invented amounts. No real statements, no copied feed payloads, no private data directory, no attachments folder.
 7. **Quiet failures.** Tests assert on `code`, `class`, `refs`, and ids. They do not snapshot amounts, memos, names, or payloads into logs.
-8. **Corrections, voids, dissolves.** If the operation reverses, voids, or dissolves a reconciled group, the tests cover set-once `superseded_by`, a reversal that keeps the target's effective date, correction-of-a-correction reversing the replacement, and a dissolve that reverses, reposts, and regroups in the same commit.
+8. **Corrections and dissolves.** If the operation corrects or dissolves a reconciled group, the tests cover set-once `superseded_by`, a reversal that keeps the target's effective date, correction-of-a-correction reversing the replacement, and a dissolve that reverses, reposts, and regroups in the same commit. A void test covers a tombstone that leaves kernel events and lines unchanged, and origin derived from live links (§3.5).
 9. **Doctor.** The success fixture leaves every §3.12 check clean, including no active freeze row. An injected bugcheck-class fault exits non-zero, leaves no partial journal rows, persists the freeze with `record_write_freeze` in its own commit when `expected_revision` is current, and does not print a row. A later clean doctor reports the freeze and does not clear it. `clear_write_freeze` is what removes the freeze, and only when the checks are clean.
 
 Recipes compile to these operations. A recipe that needs a journal shape this contract cannot express does not get a private write path. It fails admission until the contract grows.

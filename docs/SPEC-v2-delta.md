@@ -66,7 +66,7 @@ This file lists what v2 changes in the v0.2 spec and why. Where this delta and `
 - Obligations are always against a party. They link to their purchase postings (ADR 0001), and the remaining amount is derived.
 
 ### §3 Lifecycle and state machines
-- No lifecycle state is stored as a mutable column. Review state (unreviewed, interpreted, reconciled, voided) is derived per observation by the `observation_review_state` view (ADR 0006, GLOSSARY "Review state"). Settlement state is the latest state row. Evidence present/deleted comes from tombstones. Statement state is derived from assertions and reconciliation (U32).
+- No lifecycle state is stored as a mutable column. Review state (unreviewed, interpreted, reconciled) is derived per live observation by the `observation_review_state` view (ADR 0006, GLOSSARY "Review state"). A voided observation is absent from that view. Origin (observed or expected) is derived from live links by `posting_origin`. Settlement state is the latest state row. Evidence present/deleted comes from tombstones. Statement state is derived from assertions and reconciliation (U32).
 - The movement `unverified → verified` state is dropped from the schema. Corroboration, through `corroborates_id`, or statement coverage replaces it.
 
 ### §3.4 Dates (replaced)
@@ -76,7 +76,7 @@ This file lists what v2 changes in the v0.2 spec and why. Where this delta and `
 - **INV-001** now applies per event and per currency within `journal_postings` alone (ADR 0008 and its 2026-11-26 amendment). Each database holds one entity, so there is no entity partition: postings and ledger accounts carry no `entity_id` (ADR 0004 amendment 2026-11-26). The singleton `entity` row is the database's identity.
 - **INV-012 and INV-013**: "atomically replacing current state" becomes "atomically appending reversals and replacements" (ADR 0002).
 - **New, from the ADR 0002 amendment:** `superseded_by` is NULL or the id of the single event whose `reverses_id` points at this event. It is set in that reversal's commit and never changed. A reversal targets a current, non-reversal event, cancels it account by account, and keeps its effective date.
-- **New, from the ADR 0002 void rule:** a void commit reverses every current event that interprets the voided observation.
+- **Amended 2026-11-27:** voiding an observation tombstones it and ends its live links. It does not reverse kernel events or their lines. A line is observed while a live observation link remains, otherwise expected.
 - Where each invariant is enforced is listed in §4 below.
 
 ### §6 Balance assertions and reconciliation arithmetic

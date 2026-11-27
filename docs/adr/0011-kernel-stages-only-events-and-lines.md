@@ -45,12 +45,12 @@ Whether settlement and obligations follow the same pattern is a later, reversibl
 - **Operations.**
   - `import_observations` and `void_observation` become observation-import operations.
   - Observation, evidence, refund and tag links are staged by their owning context, not by `append_event`.
-  - `void_observation` still reverses linked events through the kernel's `correct`.
+  - `void_observation` tombstones the observation and ends its live links. It does not call `correct` (amended 2026-11-27).
 - **Rules, kept in SQL as storage backstops and owned by the context:**
   - observation context: `posting_observations_valid` (INV-007), `posting_observations_not_voided`, `observations_currency_valid`, `observations_corroborate_valid`;
   - recipes: `refund_links_valid`, `refund_links_cap` (INV-015);
   - each context: the open-commit and append-only triggers on its own tables.
-- **Two `commits_seal` clauses read `posting_observations`.** They are "a void must reverse every current event linked" and "a dissolved group's observed legs must be reposted". Both become observation-context validation, run before the seal. The SQL clauses stay as the backstop.
+- **One `commits_seal` clause reads `posting_observations`.** "A dissolved group's observed legs must be reposted" is observation-context validation, run before the seal. The SQL clause stays as the backstop. The void-must-reverse clause was removed on 2026-11-27.
 - **Codes.** They stay in the one closed list (KIS §4), which is the shared error envelope. Each code now names its owner:
   - observation import: `ImportConflict`, `CorroborationMismatch`, `ObservationMismatch`, `ObservationDoubleConsumed`, `VoidedObservation`, `ObservationAlreadyVoided`, `VoidWithoutReversal`, `OrphanEvidence`, `EvidenceHashMismatch`;
   - recipes: `RefundShapeInvalid`, `RefundCapExceeded`.
@@ -98,6 +98,10 @@ This keeps today's atomicity, the commit seal on link rows, every foreign key an
 ### Rejected alternatives
 - **(ii) A separate transaction after commit, made safe by idempotency.** Writes would be keyed by the observation id, a repeated interpretation would return the existing event, and the link would then be repaired. A U22 doctor check would find interpreted events with no link. Rejected: the double-booking window is real, it needs a new idempotency column on the kernel's `accounting_events`, and every context would need retry and repair code.
 - **(iii) A separate application database file.** Rejected: it loses foreign keys and atomicity.
+
+## Amendment (Doug, 2026-11-27)
+
+Voiding an observation tombstones it and ends its live links in the import context. It does not reverse or correct the kernel event or its lines. A line is observed while any live observation link remains, and expected otherwise. `commits.kind` has no `void` value. When the tombstone needs a `commits` row, the kind is `import`. `VoidWithoutReversal` stays in the closed list and is not produced by `void_observation`.
 
 ## Consequences
 

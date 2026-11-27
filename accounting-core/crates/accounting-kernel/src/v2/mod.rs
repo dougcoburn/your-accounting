@@ -18,6 +18,11 @@ mod sqlmap;
 mod store;
 mod types;
 
+pub use contexts::{
+    observation_links, EvidenceRecord, EvidenceTarget, ImportBatch, ImportOutcome, NewEvidence,
+    NewFeed, ObservationImport, ObservationInput, ObservationLink, CHECK_DOUBLE_CONSUMED,
+    CHECK_EVIDENCE_HASH, CHECK_ORPHAN_EVIDENCE, CHECK_UNSEALED as CHECK_IMPORT_UNSEALED,
+};
 pub use doctor::{
     exit_status, DoctorCheck, DoctorRunner, Finding, Scope, Severity, CHECK_FOREIGN_KEYS,
     CHECK_FREEZE, CHECK_INTEGRITY, CHECK_SUPERSEDED_DRIFT, CHECK_UNBALANCED, CHECK_UNSEALED,
