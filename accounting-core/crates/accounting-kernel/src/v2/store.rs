@@ -156,11 +156,17 @@ pub struct NewEvent {
     pub recipe_version: String,
     pub effective_date: String,
     pub postings: Vec<NewPosting>,
-    /// Shared ULID of a cross-entity recipe half. All four recipe fields are set, or none are.
+    /// Shared ULID of a cross-entity recipe half. Set together with `counterpart_entity_id`, or both absent.
     pub recipe_instance_id: Option<String>,
     pub counterpart_entity_id: Option<String>,
-    pub counterpart_expected_amount_minor: Option<i64>,
-    pub counterpart_currency: Option<String>,
+    /// One row per currency. Required when the two recipe fields are set, and empty otherwise.
+    pub expectations: Vec<CounterpartExpectation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CounterpartExpectation {
+    pub currency: String,
+    pub expected_amount_minor: i64,
 }
 
 struct FreezeRow {
@@ -193,14 +199,14 @@ impl Staged {
 
 struct AccountSnap {
     account_type: String,
+    kind: String,
     financial_account_id: Option<String>,
 }
 
 struct RecipeHalf {
     recipe_instance_id: String,
     counterpart_entity_id: String,
-    counterpart_expected_amount_minor: i64,
-    counterpart_currency: String,
+    expectations: Vec<(String, i64)>,
 }
 
 struct StoredHalf {
@@ -212,8 +218,6 @@ struct StoredHalf {
     description: String,
     recipe_instance_id: String,
     counterpart_entity_id: String,
-    counterpart_expected_amount_minor: i64,
-    counterpart_currency: String,
 }
 
 struct StoredPosting {
@@ -1105,7 +1109,7 @@ impl Transaction<'_> {
         Ok(())
     }
 
-    /// Minimum event insert for INV-003 and the inbox stub. Not `append_event`.
+    /// Minimum event insert for INV-003 and recipe-half idempotency. Not `append_event`.
     pub fn stage_event(&mut self, new: NewEvent) -> Result<String, Error> {
         self.ensure_open()?;
         if new.recipe_id.is_empty() || new.recipe_version.is_empty() {
@@ -1132,6 +1136,7 @@ impl Transaction<'_> {
         if new.postings.len() < 2 {
             return Err(self.fail(Error::new(Code::InsufficientPostings, &["INV-002"], vec![])));
         }
+        let half = self.recipe_half(&new)?;
         let mut prepared = Vec::with_capacity(new.postings.len());
         let mut sums: BTreeMap<String, i64> = BTreeMap::new();
         for posting in &new.postings {
@@ -1145,6 +1150,18 @@ impl Transaction<'_> {
                     vec![posting.ledger_account_id.clone()],
                 )));
             };
+            // ADR 0004: a recipe half's receivable or payable postings name a party.
+            // U19 owns the full validator; this is the cheap write-path check.
+            if half.is_some()
+                && matches!(account.kind.as_str(), "receivable" | "payable")
+                && posting.party_id.is_none()
+            {
+                return Err(self.fail(Error::new(
+                    Code::InvalidShape,
+                    &["ADR 0004"],
+                    vec![posting.ledger_account_id.clone()],
+                )));
+            }
             if matches!(account.account_type.as_str(), "income" | "expense")
                 && self.count(
                     "SELECT count(*) FROM ledger_accounts WHERE parent_id = ?1",
@@ -1201,7 +1218,6 @@ impl Transaction<'_> {
         if sums.values().any(|net| *net != 0) {
             return Err(self.fail(Error::new(Code::Unbalanced, &["INV-001"], vec![])));
         }
-        let half = self.recipe_half(&new)?;
         if let Some(half) = &half {
             if let Some(existing) = self.current_half(&half.recipe_instance_id)? {
                 if self.same_recipe_payload(&new, half, &existing)? {
@@ -1338,6 +1354,15 @@ impl Transaction<'_> {
                     vec![posting.ledger_account_id.clone()],
                 )));
             };
+            if matches!(account.kind.as_str(), "receivable" | "payable")
+                && posting.party_id.is_none()
+            {
+                return Err(self.fail(Error::new(
+                    Code::InvalidShape,
+                    &["ADR 0004"],
+                    vec![posting.ledger_account_id.clone()],
+                )));
+            }
             if matches!(account.account_type.as_str(), "income" | "expense")
                 && self.count(
                     "SELECT count(*) FROM ledger_accounts WHERE parent_id = ?1",
@@ -1382,21 +1407,18 @@ impl Transaction<'_> {
         }
         let recorded_at = self.recorded_at.clone();
         let commit_id = self.commit_id.clone();
-        let (instance, counterpart, expected, currency) = match half {
+        let (instance, counterpart) = match half {
             Some(half) => (
                 Some(half.recipe_instance_id.as_str()),
                 Some(half.counterpart_entity_id.as_str()),
-                Some(half.counterpart_expected_amount_minor),
-                Some(half.counterpart_currency.as_str()),
             ),
-            None => (None, None, None, None),
+            None => (None, None),
         };
         self.exec(
             "INSERT INTO accounting_events(
                 id, commit_id, recipe_id, recipe_version, effective_date, description, recorded_at,
-                recipe_instance_id, counterpart_entity_id, counterpart_expected_amount_minor,
-                counterpart_currency
-             ) VALUES (?1, ?2, ?3, ?4, ?5, '', ?6, ?7, ?8, ?9, ?10)",
+                recipe_instance_id, counterpart_entity_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, '', ?6, ?7, ?8)",
             params![
                 event_id,
                 commit_id,
@@ -1405,12 +1427,22 @@ impl Transaction<'_> {
                 new.effective_date,
                 recorded_at,
                 instance,
-                counterpart,
-                expected,
-                currency
+                counterpart
             ],
         )?;
         self.staged.new_rows += 1;
+        if let Some(half) = half {
+            for (currency, amount) in &half.expectations {
+                self.exec(
+                    "INSERT INTO event_counterpart_expectations(
+                        event_id, currency, expected_amount_minor
+                     ) VALUES (?1, ?2, ?3)",
+                    params![event_id, currency, amount],
+                )?;
+                self.staged.new_rows += 1;
+            }
+            self.staged.cross_entity = true;
+        }
         for posting in prepared {
             let posting_id = self.allocate(posting.id.clone())?;
             self.exec(
@@ -1428,9 +1460,6 @@ impl Transaction<'_> {
                 ],
             )?;
             self.staged.new_rows += 1;
-        }
-        if half.is_some() {
-            self.staged.cross_entity = true;
         }
         self.staged.event_ids.push(event_id.clone());
         Ok(event_id)
@@ -1560,12 +1589,13 @@ impl Transaction<'_> {
             .kernel
             .conn
             .query_row(
-                "SELECT account_type, financial_account_id FROM ledger_accounts WHERE id = ?1",
+                "SELECT account_type, kind, financial_account_id FROM ledger_accounts WHERE id = ?1",
                 [id],
                 |row| {
                     Ok(AccountSnap {
                         account_type: row.get(0)?,
-                        financial_account_id: row.get(1)?,
+                        kind: row.get(1)?,
+                        financial_account_id: row.get(2)?,
                     })
                 },
             )
@@ -1610,23 +1640,40 @@ impl Transaction<'_> {
         let present = [
             new.recipe_instance_id.is_some(),
             new.counterpart_entity_id.is_some(),
-            new.counterpart_expected_amount_minor.is_some(),
-            new.counterpart_currency.is_some(),
         ];
-        if present.iter().all(|flag| !flag) {
+        let fields = present.iter().filter(|flag| **flag).count();
+        if fields == 0 {
+            if !new.expectations.is_empty() {
+                return Err(self.fail(shape("counterpart_expectations")));
+            }
             return Ok(None);
         }
-        if present.iter().any(|flag| !flag) {
+        if fields == 1 {
             return Err(self.fail(shape("recipe_fields")));
+        }
+        if new.expectations.is_empty() {
+            return Err(self.fail(shape("counterpart_expectations")));
         }
         let recipe_instance_id = new.recipe_instance_id.clone().expect("present");
         let counterpart_entity_id = new.counterpart_entity_id.clone().expect("present");
-        let amount = new.counterpart_expected_amount_minor.expect("present");
-        let currency = new.counterpart_currency.clone().expect("present");
         require_ulid(&recipe_instance_id).map_err(|e| self.fail(e))?;
         require_ulid(&counterpart_entity_id).map_err(|e| self.fail(e))?;
-        require_positive(amount).map_err(|e| self.fail(e))?;
-        require_currency(&currency).map_err(|e| self.fail(e))?;
+        let mut expectations = Vec::with_capacity(new.expectations.len());
+        for row in &new.expectations {
+            let bytes = row.currency.as_bytes();
+            if bytes.len() != 3 || bytes.iter().any(|b| !b.is_ascii_uppercase()) {
+                return Err(self.fail(shape("counterpart_expectations")));
+            }
+            require_positive(row.expected_amount_minor).map_err(|e| self.fail(e))?;
+            if expectations
+                .iter()
+                .any(|(currency, _)| currency == &row.currency)
+            {
+                return Err(self.fail(shape("counterpart_expectations")));
+            }
+            expectations.push((row.currency.clone(), row.expected_amount_minor));
+        }
+        expectations.sort();
         let Some(entity_id) = self.singleton_entity()? else {
             return Err(self.fail(Error::new(
                 Code::DatabaseUninitialized,
@@ -1640,16 +1687,14 @@ impl Transaction<'_> {
         Ok(Some(RecipeHalf {
             recipe_instance_id,
             counterpart_entity_id,
-            counterpart_expected_amount_minor: amount,
-            counterpart_currency: currency,
+            expectations,
         }))
     }
 
     fn current_half(&mut self, instance: &str) -> Result<Option<StoredHalf>, Error> {
         self.load_half(
             "SELECT id, commit_id, recipe_id, recipe_version, effective_date, description,
-                    recipe_instance_id, counterpart_entity_id, counterpart_expected_amount_minor,
-                    counterpart_currency
+                    recipe_instance_id, counterpart_entity_id
              FROM accounting_events
              WHERE recipe_instance_id = ?1 AND superseded_by IS NULL",
             instance,
@@ -1659,8 +1704,7 @@ impl Transaction<'_> {
     fn current_half_by_id(&mut self, id: &str) -> Result<Option<StoredHalf>, Error> {
         self.load_half(
             "SELECT id, commit_id, recipe_id, recipe_version, effective_date, description,
-                    recipe_instance_id, counterpart_entity_id, counterpart_expected_amount_minor,
-                    counterpart_currency
+                    recipe_instance_id, counterpart_entity_id
              FROM accounting_events
              WHERE id = ?1 AND superseded_by IS NULL AND reverses_id IS NULL
                AND recipe_instance_id IS NOT NULL",
@@ -1679,8 +1723,6 @@ impl Transaction<'_> {
                 description: row.get(5)?,
                 recipe_instance_id: row.get(6)?,
                 counterpart_entity_id: row.get(7)?,
-                counterpart_expected_amount_minor: row.get(8)?,
-                counterpart_currency: row.get(9)?,
             })
         }) {
             Ok(row) => Ok(Some(row)),
@@ -1699,6 +1741,22 @@ impl Transaction<'_> {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(err) => Err(self.fail(map_sql(err, SqlSite::Read))),
         }
+    }
+
+    fn expectations_of(&mut self, event_id: &str) -> Result<Vec<(String, i64)>, Error> {
+        let outcome = (|| {
+            let mut stmt = self.kernel.conn.prepare(
+                "SELECT currency, expected_amount_minor
+                 FROM event_counterpart_expectations WHERE event_id = ?1 ORDER BY currency",
+            )?;
+            let rows = stmt.query_map([event_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })();
+        outcome.map_err(|err| self.fail(map_sql(err, SqlSite::Read)))
     }
 
     fn event_postings(&mut self, event_id: &str) -> Result<Vec<StoredPosting>, Error> {
@@ -1738,9 +1796,11 @@ impl Transaction<'_> {
             || !existing.description.is_empty()
             || half.recipe_instance_id != existing.recipe_instance_id
             || half.counterpart_entity_id != existing.counterpart_entity_id
-            || half.counterpart_expected_amount_minor != existing.counterpart_expected_amount_minor
-            || half.counterpart_currency != existing.counterpart_currency
         {
+            return Ok(false);
+        }
+        let stored_expectations = self.expectations_of(&existing.id)?;
+        if stored_expectations != half.expectations {
             return Ok(false);
         }
         let stored = self.event_postings(&existing.id)?;

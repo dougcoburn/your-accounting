@@ -40,6 +40,17 @@ pub(crate) fn map_message(msg: &str, site: SqlSite) -> Error {
         return Error::new(Code::InvalidShape, &["ADR 0004"], vec![])
             .with_token("counterpart_self");
     }
+    if msg.contains("counterpart expectations belong to a recipe half") {
+        return Error::new(Code::InvalidShape, &["ADR 0004"], vec![])
+            .with_token("counterpart_expectations");
+    }
+    if msg.contains("needs at least one counterpart expectation") {
+        if matches!(site, SqlSite::Seal) {
+            return Error::new(Code::ValidatorMissed, &["ADR 0004"], vec![]);
+        }
+        return Error::new(Code::InvalidShape, &["ADR 0004"], vec![])
+            .with_token("counterpart_expectations");
+    }
     if let Some((code, seal_is_miss)) = map_raise(msg) {
         if matches!(site, SqlSite::Seal) && seal_is_miss {
             return Error::new(Code::ValidatorMissed, &[code.as_str()], vec![]);
@@ -236,6 +247,10 @@ fn map_constraint(msg: &str, site: SqlSite) -> Error {
     }
     if msg.contains("UNIQUE constraint failed: accounting_events.recipe_instance_id") {
         return Error::new(Code::IdempotencyConflict, &["ADR 0004"], vec![]);
+    }
+    if msg.contains("UNIQUE constraint failed: event_counterpart_expectations.event_id") {
+        return Error::new(Code::InvalidShape, &["ADR 0004"], vec![])
+            .with_token("counterpart_expectations");
     }
     if msg.contains("UNIQUE constraint failed: commits.seq") {
         return Error::new(Code::RevisionMismatch, &[], vec![]);

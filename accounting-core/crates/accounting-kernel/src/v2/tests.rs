@@ -158,8 +158,7 @@ fn event(id: &str, postings: Vec<NewPosting>) -> NewEvent {
         postings,
         recipe_instance_id: None,
         counterpart_entity_id: None,
-        counterpart_expected_amount_minor: None,
-        counterpart_currency: None,
+        expectations: Vec::new(),
     }
 }
 
@@ -180,8 +179,10 @@ fn recipe_half(
     );
     new.recipe_instance_id = Some(uid("RR01"));
     new.counterpart_entity_id = Some(uid("XENT"));
-    new.counterpart_expected_amount_minor = Some(expected);
-    new.counterpart_currency = Some("USD".to_string());
+    new.expectations = vec![CounterpartExpectation {
+        currency: "USD".to_string(),
+        expected_amount_minor: expected,
+    }];
     new
 }
 
@@ -275,6 +276,20 @@ fn column_names(kernel: &Kernel, table: &str) -> Vec<String> {
         .query_map([], |row| row.get::<_, String>(1))
         .expect("rows");
     rows.map(|row| row.expect("column")).collect()
+}
+
+fn expectation_rows(kernel: &Kernel, event_id: &str) -> Vec<(String, i64)> {
+    let mut stmt = kernel
+        .connection()
+        .prepare(
+            "SELECT currency, expected_amount_minor
+             FROM event_counterpart_expectations WHERE event_id = ?1 ORDER BY currency",
+        )
+        .expect("expectations");
+    let rows = stmt
+        .query_map([event_id], |row| Ok((row.get(0)?, row.get(1)?)))
+        .expect("rows");
+    rows.map(|row| row.expect("expectation")).collect()
 }
 
 fn event_field(kernel: &Kernel, column: &str, id: &str) -> Option<String> {
@@ -840,7 +855,7 @@ fn recipe_fields_are_all_or_none_and_the_counterpart_is_not_self() {
     let partial = {
         let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
         let mut new = recipe_half(&books, "EV20", "PS20", "PS21", MINOR, MINOR);
-        new.counterpart_currency = None;
+        new.counterpart_entity_id = None;
         tx.stage_event(new).expect_err("partial")
     };
     assert_eq!(
@@ -863,6 +878,227 @@ fn recipe_fields_are_all_or_none_and_the_counterpart_is_not_self() {
     );
     assert_eq!(kernel.revision().expect("rev"), 1);
     assert_eq!(kernel.commit_count().expect("count"), 1);
+}
+
+#[test]
+fn recipe_expectations_are_a_set_and_intercompany_postings_name_a_party() {
+    let tmp = Tmp::new("multi");
+    let mut kernel = open_at(&tmp.db());
+    let books = chart(&mut kernel);
+    let equity = uid("EQ01");
+    let receivable = uid("AR01");
+    let payable = uid("AP01");
+    {
+        let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
+        tx.create_ledger_account(ledger(
+            &equity,
+            None,
+            AccountType::Equity,
+            LedgerKind::Equity,
+            None,
+            "Opening",
+        ))
+        .expect("equity");
+        tx.create_ledger_account(ledger(
+            &receivable,
+            None,
+            AccountType::Asset,
+            LedgerKind::Receivable,
+            None,
+            "Due from counterpart",
+        ))
+        .expect("receivable");
+        tx.create_ledger_account(ledger(
+            &payable,
+            None,
+            AccountType::Liability,
+            LedgerKind::Payable,
+            None,
+            "Due to counterpart",
+        ))
+        .expect("payable");
+        tx.commit().expect("accounts");
+    }
+
+    let half = |event_id: &str,
+                usd_debit: &str,
+                usd_credit: &str,
+                eur_debit: &str,
+                eur_credit: &str,
+                rows: Vec<(&str, i64)>| {
+        let mut new = event(
+            event_id,
+            vec![
+                posting(usd_debit, &books.groceries, Side::Debit, 500, "USD"),
+                posting(usd_credit, &equity, Side::Credit, 500, "USD"),
+                posting(eur_debit, &books.groceries, Side::Debit, 300, "EUR"),
+                posting(eur_credit, &equity, Side::Credit, 300, "EUR"),
+            ],
+        );
+        new.recipe_instance_id = Some(uid("RR02"));
+        new.counterpart_entity_id = Some(uid("XENT"));
+        new.expectations = rows
+            .into_iter()
+            .map(|(currency, amount)| CounterpartExpectation {
+                currency: currency.to_string(),
+                expected_amount_minor: amount,
+            })
+            .collect();
+        new
+    };
+
+    let event_id = {
+        let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
+        let id = tx
+            .stage_event(half(
+                "EV40",
+                "PS40",
+                "PS41",
+                "PS4M",
+                "PS4N",
+                vec![("EUR", 300), ("USD", 500)],
+            ))
+            .expect("two currencies");
+        let sealed = tx.commit().expect("commit");
+        assert_eq!(sealed.seq, 3);
+        assert_eq!(
+            kernel.commit_at_seq(3).expect("read").expect("row").kind,
+            "cross_entity"
+        );
+        id
+    };
+    assert_eq!(
+        expectation_rows(&kernel, &event_id),
+        vec![("EUR".to_string(), 300), ("USD".to_string(), 500)]
+    );
+
+    let retry = {
+        let mut tx = kernel.begin_transaction(Some(3)).expect("begin");
+        let returned = tx
+            .stage_event(half(
+                "EV41",
+                "PS42",
+                "PS43",
+                "PS4P",
+                "PS4Q",
+                vec![("USD", 500), ("EUR", 300)],
+            ))
+            .expect("order does not matter");
+        assert_eq!(returned, event_id);
+        tx.commit().expect("noop")
+    };
+    assert!(retry.noop);
+    assert_eq!(current_halves(&kernel, &uid("RR02")), 1);
+
+    let changed = {
+        let mut tx = kernel.begin_transaction(Some(3)).expect("begin");
+        tx.stage_event(half(
+            "EV42",
+            "PS44",
+            "PS45",
+            "PS4R",
+            "PS4S",
+            vec![("USD", 500), ("EUR", 301)],
+        ))
+        .expect_err("different rows")
+    };
+    let changed = code_of(changed, Code::IdempotencyConflict);
+    assert_eq!(changed.ids, vec![uid("RR02"), event_id.clone()]);
+    assert!(
+        !changed.to_string().contains("301"),
+        "conflict leaked an expected amount"
+    );
+    assert_eq!(
+        expectation_rows(&kernel, &event_id),
+        vec![("EUR".to_string(), 300), ("USD".to_string(), 500)]
+    );
+
+    let mut reject = |new: NewEvent, code: Code| {
+        let err = {
+            let mut tx = kernel.begin_transaction(Some(3)).expect("begin");
+            tx.stage_event(new).expect_err("shape")
+        };
+        assert_eq!(kernel.revision().expect("rev"), 3);
+        code_of(err, code)
+    };
+
+    let mut duplicate = half(
+        "EV43",
+        "PS46",
+        "PS47",
+        "PS4T",
+        "PS4V",
+        vec![("USD", 500), ("USD", 200)],
+    );
+    duplicate.postings.truncate(2);
+    assert_eq!(
+        reject(duplicate, Code::InvalidShape).token,
+        Some("counterpart_expectations")
+    );
+
+    let mut empty = half("EV44", "PS48", "PS49", "PS4W", "PS4X", vec![]);
+    empty.postings.truncate(2);
+    assert_eq!(
+        reject(empty, Code::InvalidShape).token,
+        Some("counterpart_expectations")
+    );
+
+    let mut bad_currency = half("EV45", "PS4A", "PS4B", "PS4Y", "PS4Z", vec![("usd", 500)]);
+    bad_currency.postings.truncate(2);
+    assert_eq!(
+        reject(bad_currency, Code::InvalidShape).token,
+        Some("counterpart_expectations")
+    );
+
+    let mut non_positive = half("EV46", "PS4C", "PS4D", "PS50", "PS51", vec![("USD", 0)]);
+    non_positive.postings.truncate(2);
+    assert_eq!(
+        reject(non_positive, Code::InvalidMoney).code,
+        Code::InvalidMoney
+    );
+
+    let mut plain = event(
+        "EV47",
+        vec![
+            posting("PS4E", &books.groceries, Side::Debit, MINOR, "USD"),
+            posting("PS4F", &books.card, Side::Credit, MINOR, "USD"),
+        ],
+    );
+    plain.expectations = vec![CounterpartExpectation {
+        currency: "USD".to_string(),
+        expected_amount_minor: MINOR,
+    }];
+    assert_eq!(
+        reject(plain, Code::InvalidShape).token,
+        Some("counterpart_expectations")
+    );
+
+    let mut missing_party = recipe_half(&books, "EV48", "PS4G", "PS4H", MINOR, MINOR);
+    missing_party.recipe_instance_id = Some(uid("RR06"));
+    missing_party.postings[0].ledger_account_id = receivable.clone();
+    let missing_party = reject(missing_party, Code::InvalidShape);
+    assert_eq!(missing_party.refs, vec!["ADR 0004".to_string()]);
+    assert_eq!(missing_party.ids, vec![receivable.clone()]);
+    assert!(missing_party.token.is_none());
+
+    let mut missing_payable = recipe_half(&books, "EV4A", "PS4H", "PS4J", MINOR, MINOR);
+    missing_payable.recipe_instance_id = Some(uid("RR07"));
+    missing_payable.postings[1].ledger_account_id = payable;
+    assert_eq!(
+        reject(missing_payable, Code::InvalidShape).refs,
+        vec!["ADR 0004".to_string()]
+    );
+
+    let mut named = recipe_half(&books, "EV49", "PS4K", "PS52", MINOR, MINOR);
+    named.recipe_instance_id = Some(uid("RR06"));
+    named.postings[0].ledger_account_id = receivable.clone();
+    named.postings[0].party_id = Some(books.employer.clone());
+    {
+        let mut tx = kernel.begin_transaction(Some(3)).expect("begin");
+        tx.stage_event(named).expect("party set");
+        let sealed = tx.commit().expect("commit");
+        assert_eq!(sealed.seq, 4);
+    }
 }
 
 #[test]
@@ -910,6 +1146,11 @@ fn correction_supersedes_before_the_replacement_and_a_retired_instance_conflicts
         Some(uid("XENT"))
     );
     assert_eq!(current_halves(&kernel, &uid("RR01")), 1);
+    assert!(expectation_rows(&kernel, &reversal).is_empty());
+    assert_eq!(
+        expectation_rows(&kernel, &replacement_id),
+        vec![("USD".to_string(), MINOR - 100)]
+    );
 
     let retired = {
         let tmp = Tmp::new("retired");
@@ -1568,10 +1809,25 @@ fn storage_message_map() {
     assert_eq!(itself.code, Code::InvalidShape);
     assert_eq!(itself.token, Some("counterpart_self"));
     let fields = map_message(
-        "CHECK constraint failed: (recipe_instance_id IS NULL) = (counterpart_currency IS NULL)",
+        "CHECK constraint failed: (recipe_instance_id IS NULL) = (counterpart_entity_id IS NULL)",
         SqlSite::Staging,
     );
     assert_eq!(fields.token, Some("recipe_fields"));
+    let duplicate = map_message(
+        "UNIQUE constraint failed: event_counterpart_expectations.event_id, event_counterpart_expectations.currency",
+        SqlSite::Staging,
+    );
+    assert_eq!(duplicate.token, Some("counterpart_expectations"));
+    let missing = map_message(
+        "ADR 0004: a recipe half needs at least one counterpart expectation",
+        SqlSite::Seal,
+    );
+    assert_eq!(missing.code, Code::ValidatorMissed);
+    let amount = map_message(
+        "CHECK constraint failed: expected_amount_minor > 0",
+        SqlSite::Staging,
+    );
+    assert_eq!(amount.code, Code::InvalidMoney);
 
     let revision = map_message(
         "CHECK constraint failed: seq = expected_revision + 1",

@@ -10,7 +10,7 @@
 
 Where two documents disagree, use this order, then the choices in §8:
 
-1. An ADR, unless §8 records a later decision that changes it. The change may tighten a rule or widen the kernel. Widening is what §8.2 did, and it is the scope this file uses: importing already-keyed observations, recipe-idempotent event writes, and single-database `doctor` are kernel operations. ADR 0007 was amended on 2026-11-25 so it states that same wider scope, and on 2026-11-26 it removed the outbox and inbox (ADR 0004 rewrite). §0 does not treat the wider scope as a conflict with the ADR. A later §8 decision that widens the kernel is resolved the same way: amend the ADR until the two documents name the same operations.
+1. An ADR, unless §8 records a later decision that changes it. The change may tighten a rule or widen the kernel. Widening is what §8.2 did, and it is the scope this file uses: importing already-keyed observations, recipe-idempotent event writes, and single-database `doctor` are kernel operations. ADR 0007 was amended on 2026-11-25 so it states that same wider scope, and on 2026-11-26 it removed the cross-database message protocol (ADR 0004 rewrite). §0 does not treat the wider scope as a conflict with the ADR. A later §8 decision that widens the kernel is resolved the same way: amend the ADR until the two documents name the same operations.
 2. `docs/SPEC-v2-delta.md` over `docs/SPEC.md`. The delta already says: where the delta and an ADR disagree, the ADR wins and the delta has a bug.
 3. `docs/schema-v2.sql` for any rule that is actually a trigger, CHECK, UNIQUE, foreign key, or STRICT table. If this spec describes a trigger the schema does not have, this spec has a bug.
 4. This file over `accounting-core/docs/KERNEL_INTERFACE_SPEC.md` for the v2 kernel. That other file is the v1 `LedgerStore` contract of the `accounting-core` crate. It is not updated here, and it is not this interface. See §8.1.
@@ -33,7 +33,7 @@ The kernel is the only writer of journal, observation, settlement, obligation, a
 | One half of a cross-entity recipe as an ordinary event carrying `recipe_instance_id` and the counterpart fields; an identical retry is a no-op (§3.9) | Writing both halves, the per-user registry, the registry check before a write, the cross-database recipe check, and any UI around a gap (ADR 0004) |
 | `doctor` over this one entity database | Viewer-relative presentation (ADR 0003) |
 
-That scope is the same one §8.2 and ADR 0007 (amended 2026-11-25, clarified 2026-11-26, amended again 2026-11-26) record. Match hints, suggestion ranking, feed file formats, how an adapter derives an external id, and viewer-relative presentation stay outside. The earlier narrow kernel (journal, invariants, and the commit validator only; no import, no outbox or inbox, no `doctor`) is not the contract.
+That scope is the same one §8.2 and ADR 0007 (amended 2026-11-25, clarified 2026-11-26, amended again 2026-11-26) record. Match hints, suggestion ranking, feed file formats, how an adapter derives an external id, and viewer-relative presentation stay outside. The earlier narrow kernel (journal, invariants, and the commit validator only; no import, no cross-entity writes, no `doctor`) is not the contract.
 
 **Single writer.** Each entity database has one write transaction at a time. `begin_transaction` takes it with `BEGIN IMMEDIATE`. A second `begin_transaction` on that database returns `WriteLocked` and does not wait. The kernel does not interleave two changesets.
 
@@ -55,7 +55,7 @@ The caller supplies `expected_revision`. That is the revision the user or the pl
    - Every other operation rolls back and returns `WriteFrozen`. Write nothing.
 2. `current = coalesce(max(commits.seq), 0)`. If `current != expected_revision`, roll back and return `StaleRevision` (AT-032). Write nothing.
 3. Stage the changeset. Each commit-scoped row carries the new `commit_id`. Events carry the transaction's `recorded_at`, captured once from the injected clock at `begin_transaction` and not read again.
-4. `commit` runs the commit validator (U19), then inserts the `commits` row **last**, with `expected_revision` equal to the caller's integer and `seq = expected_revision + 1`. A CHECK enforces that equality. The kernel stores the caller's integer unchanged. It does not substitute `current`. §2.2 is the exception: an identical re-import or an equal-payload inbox retry that staged no row inserts no `commits` row and does not take the next `seq`.
+4. `commit` runs the commit validator (U19), then inserts the `commits` row **last**, with `expected_revision` equal to the caller's integer and `seq = expected_revision + 1`. A CHECK enforces that equality. The kernel stores the caller's integer unchanged. It does not substitute `current`. §2.2 is the exception: an identical re-import or an identical recipe retry that staged no row inserts no `commits` row and does not take the next `seq`.
 5. `COMMIT`. If the `commits` row was never written, the deferred `commit_id` foreign keys fail and nothing persists.
 6. A sealed commit accepts no further rows.
 
@@ -234,7 +234,7 @@ A claim is always against a party (ADR 0003), in a receivable or payable ledger 
 
 | | |
 |---|---|
-| Preconditions | Inside `begin_transaction`. `original_minor > 0`. Opening event is staged in this transaction or is an existing current event. Settlement `kind` is `payment` or `forgiveness`, `amount_minor > 0`, and the new total of current settlements does not exceed `original_minor`. The opening event is not superseded (a voided claim cannot be settled, and an already-settled claim cannot be forgiven further). Forgiveness is a new event (INV-012). The kernel does not choose the category; the caller does. Across two entities, each database holds its own claim, and a partial settlement or forgiveness is mirrored with the outbox (ADR 0001, ADR 0004). |
+| Preconditions | Inside `begin_transaction`. `original_minor > 0`. Opening event is staged in this transaction or is an existing current event. Settlement `kind` is `payment` or `forgiveness`, `amount_minor > 0`, and the new total of current settlements does not exceed `original_minor`. The opening event is not superseded (a voided claim cannot be settled, and an already-settled claim cannot be forgiven further). Forgiveness is a new event (INV-012). The kernel does not choose the category; the caller does. Across two entities, each database holds its own claim, and a partial settlement or forgiveness is mirrored as its own cross-entity recipe, two halves written by the application (ADR 0001, ADR 0004). |
 | Postconditions | After `commit`, `obligation_balances.remaining_minor` matches that derivation. The claim row is never updated. A further settlement stages another row. |
 | Invariants | ADR 0001. INV-012. INV-013 when a correction touches the claim. |
 | Typed error | `ClaimAccountMismatch`, `ClaimSettlementExceedsOpen`, `UnknownTarget`, `AppendOnlyViolation`, `CommitSealed`. |
@@ -242,37 +242,39 @@ A claim is always against a party (ADR 0003), in a receivable or payable ledger 
 
 ### 3.9 Recipe-idempotent event writes (one half of a cross-entity recipe, ADR 0004)
 
-The kernel does not orchestrate cross-entity work. The application writes each half of a cross-entity recipe into its own database through `append_event` (§3.3) in that database's own transaction. There is no outbox, no inbox, and no atomicity across databases (ADR 0004). This operation is the kernel's part: storing the half, and making a retry safe.
+The kernel does not orchestrate cross-entity work. The application writes each half of a cross-entity recipe into its own database through `append_event` (§3.3) in that database's own transaction. There is no cross-database message table and no atomicity across databases (ADR 0004). This operation is the kernel's part: storing the half, and making a retry safe.
 
-**Recipe fields** on `accounting_events` (all nullable, all-or-none):
+**Recipe fields.** Two nullable columns on `accounting_events`, both set or both NULL:
 - `recipe_instance_id` (ULID). This is the shared recipe id that links the two halves. It is not `recipe_id`, which stays the recipe code (`card_purchase`) used with `recipe_version` (AT-012).
 - `counterpart_entity_id` (ULID): the other entity's `entity.id`.
-- `counterpart_expected_amount_minor` (INTEGER > 0)
-- `counterpart_currency` (three uppercase letters)
+
+**Counterpart expectations.** One or more rows in `event_counterpart_expectations(event_id, currency, expected_amount_minor)`, primary key `(event_id, currency)`. Each row is the amount the other half must carry in that currency on its intercompany receivable/payable for this entity. A half may expect several currencies, and INV-001 still balances each event per currency. The rows are commit-scoped through their event and append-only. The kernel stores them as facts and never computes a half's amount. The application computes it per currency, as the absolute net of the half's postings on `receivable`/`payable` accounts whose `party_id` is the counterpart's `entity.party_id` (ADR 0004). Because `journal_postings.party_id` is optional, a half whose intercompany posting has no party shows an amount of zero, and the check reports a mismatched amount.
 
 | | |
 |---|---|
-| Preconditions | Inside `begin_transaction`. All four recipe fields are present or all are absent. `recipe_instance_id` and `counterpart_entity_id` are ULIDs. `counterpart_entity_id` is not this database's `entity.id`. The kernel does not check that it names a real entity, because the counterpart is another database; the registry and the recipe check do that. `counterpart_expected_amount_minor > 0`. The event is not a reversal: a reversal carries no recipe fields. |
+| Preconditions | Inside `begin_transaction`. `recipe_instance_id` and `counterpart_entity_id` are both present or both absent, and both are ULIDs. When present, the half stages at least one expectation row, with at most one row per currency, each `expected_amount_minor > 0`. When absent, it stages none. `counterpart_entity_id` is not this database's `entity.id`. The kernel does not check that it names a real entity, because the counterpart is another database; the registry and the recipe check do that. The event is not a reversal: a reversal carries no recipe fields and no expectation rows. |
 | Postconditions | **No current event with this `recipe_instance_id`:** if no event at all carries the id, the event is staged like any `append_event`. If only superseded events carry it, outside the replacement step of `correct`, the result is `IdempotencyConflict` and nothing is staged: the half was reversed, so the recipe instance is retired. **A current event with the same recipe payload** (below): nothing is staged for it. The result names the existing event id, and when nothing else was staged it is the §2.2 no-op (no `commits` row, no `seq` bump). **A current event with a different payload:** `IdempotencyConflict`. The whole transaction rolls back, and the stored event is unchanged. |
 | Invariants | ADR 0004 (rewritten 2026-11-26). ADR 0002 (append-only; corrections). At most one current event per `recipe_instance_id` in a database. §2.2. INV-001 for the half itself. |
-| Typed error | `IdempotencyConflict` (class user), `InvalidShape` tokens `recipe_fields` and `counterpart_self`, `InvalidId`, `InvalidMoney`, `InvalidCurrency`, plus every `append_event` error. |
-| Enforced by | Storage: the all-or-none CHECK; the no-recipe-fields-on-a-reversal CHECK; the partial UNIQUE index on `recipe_instance_id WHERE superseded_by IS NULL`; and a trigger that `counterpart_entity_id` is not `entity.id`. The kernel compares the payload before insert, so an identical retry never reaches the UNIQUE failure. |
+| Typed error | `IdempotencyConflict` (class user), `InvalidShape` tokens `recipe_fields`, `counterpart_self`, and `counterpart_expectations`, `InvalidId`, `InvalidMoney`, `InvalidCurrency`, plus every `append_event` error. |
+| Enforced by | Storage: the both-or-neither CHECK; the no-recipe-fields-on-a-reversal CHECK; `event_counterpart_expectations` (primary key per currency, amount CHECK, a trigger that rows belong only to a recipe half, append-only and open-commit triggers, and a `doctor_unsealed_rows` branch through the parent event); the `commits_seal` rule that a recipe half has at least one expectation row; the partial UNIQUE index on `recipe_instance_id WHERE superseded_by IS NULL`; and a trigger that `counterpart_entity_id` is not `entity.id`. The kernel compares the payload before insert, so an identical retry never reaches the UNIQUE failure. |
 
 **Recipe payload.** The payload is compared field by field against the current event and its postings. A hash is not needed, because both sides are in this database:
 - `recipe_id` and `recipe_version`
 - `effective_date` and `description`
-- the four recipe fields
+- `recipe_instance_id` and `counterpart_entity_id`
+- the set of expectation rows `(currency, expected_amount_minor)`
 - the multiset of postings `(ledger_account_id, currency, side, amount_minor, party_id, memo)`
 
 The caller's event id and posting ids, `commit_id`, and `recorded_at` are not part of the payload. A retry may carry fresh ids, and a match returns the stored ids. Tags, observation links, groups, and claim rows staged with the half are compared by the operations that own them, not by this rule.
 
-**Corrections.** `correct` (§3.4) on a half stages, in its existing order: the reversal (no recipe fields), the `superseded_by` update on the target, then the replacement. The replacement **MUST** carry the same `recipe_instance_id` and `counterpart_entity_id` as the target. Because the update runs before the replacement insert, the partial UNIQUE index never sees two current events. A changed `counterpart_expected_amount_minor` is allowed. The application corrects the other half to match, and the recipe check reports a mismatched amount until it does.
+**Corrections.** `correct` (§3.4) on a half stages, in its existing order: the reversal (no recipe fields), the `superseded_by` update on the target, then the replacement. The replacement **MUST** carry the same `recipe_instance_id` and `counterpart_entity_id` as the target. Because the update runs before the replacement insert, the partial UNIQUE index never sees two current events. The replacement may carry different expectation rows, including a different set of currencies. The application always corrects both halves, one after the other (Doug, 2026-11-26). The recipe check reports a mismatched amount during the brief window between them, and that is acceptable.
 
 ```text
-synthetic: Household half R1 (counterpart D, expects 120000 USD) is current
+synthetic: Household half R1 (counterpart D, expectation USD 120000) is current
 retry R1, same payload, fresh event id   → no new row; returns existing event id;
                                            if nothing else staged, §2.2 no-op
 retry R1, debit 120001                   → IdempotencyConflict, ROLLBACK
+retry R1, extra expectation EUR 5000     → IdempotencyConflict, ROLLBACK
 R1 reversed with no replacement, retry R1 → IdempotencyConflict (instance retired)
 ```
 
@@ -511,7 +513,11 @@ SQLite constraint text that is not a RAISE. The first matching row wins. A ULID 
 | `UNIQUE constraint failed: observation_voids.observation_id` | `ObservationAlreadyVoided` |
 | `UNIQUE constraint failed: accounting_events.recipe_instance_id` | `IdempotencyConflict`. The kernel compares the payload before insert, so an identical retry never reaches this failure. |
 | `ADR 0004: counterpart_entity_id must be another entity` | `InvalidShape` token `counterpart_self` |
-| `CHECK constraint failed` on the recipe all-or-none or reversal rule | `InvalidShape` token `recipe_fields` |
+| `CHECK constraint failed` on the recipe both-or-neither or reversal rule | `InvalidShape` token `recipe_fields` |
+| `counterpart expectations belong to a recipe half` | `InvalidShape` token `counterpart_expectations` |
+| `a recipe half needs at least one counterpart expectation` | `InvalidShape` token `counterpart_expectations` (U19 rejects first; from the seal it is `ValidatorMissed`) |
+| `UNIQUE constraint failed: event_counterpart_expectations.event_id, event_counterpart_expectations.currency` | `InvalidShape` token `counterpart_expectations` |
+| `CHECK constraint failed` on `expected_amount_minor > 0` | `InvalidMoney` |
 | `UNIQUE constraint failed: commits.seq` | `RevisionMismatch` |
 | `UNIQUE constraint failed: accounting_events.reverses_id` | `ReversalTargetInvalid` |
 | `UNIQUE constraint failed: settlement_group_states.group_id, settlement_group_states.seq` | `InvalidGroupTransition` |
@@ -529,7 +535,7 @@ SQLite constraint text that is not a RAISE. The first matching row wins. A ULID 
 | any other `CHECK constraint failed` whose expression is one of the tokens below | `InvalidShape` |
 | any other `CHECK constraint failed`, or any other SQLite error string | `UnmappedStorageError` (bugcheck) |
 
-`InvalidShape` tokens, and only these: `commit_kind`, `grant_role`, `void_reason`, `observation_direction`, `settlement_state`, `obligation_direction`, `settlement_kind`, `recipe_fields`, `counterpart_self`, `assertion_source`, `valuation_source`, `feed_kind`, `account_type`, `ledger_kind`, `financial_kind`, `tracking_mode`, `party_label`, `posting_side`, `evidence_link_target`, `draft_participant`, `grant_revoke_pair`, `period_order`, `last4`, `hash`, `unique_other`.
+`InvalidShape` tokens, and only these: `commit_kind`, `grant_role`, `void_reason`, `observation_direction`, `settlement_state`, `obligation_direction`, `settlement_kind`, `recipe_fields`, `counterpart_self`, `counterpart_expectations`, `assertion_source`, `valuation_source`, `feed_kind`, `account_type`, `ledger_kind`, `financial_kind`, `tracking_mode`, `party_label`, `posting_side`, `evidence_link_target`, `draft_participant`, `grant_revoke_pair`, `period_order`, `last4`, `hash`, `unique_other`.
 
 A new CHECK or RAISE lands only by extending this section in the same change (§7).
 
@@ -562,7 +568,7 @@ Classify from the returned `code` and `class`. Do not re-derive the class from t
 | What you see | Class | Owner | What to capture |
 |---|---|---|---|
 | `class=user` from §4.1, including `CurrencyMismatch` from `import_observations`, `assert_balance`, or a posting | User error. A validation rejection. The changeset or the revision the caller sent is illegal. `CurrencyMismatch` means the currency is not the account's. The class does not become `import` and does not become a bugcheck because the operation was an import. | The recipe or the UI that built the changeset. On `import_observations` the adapter built a row whose currency is not the account's; the class is still `user`. `RecipeIncomplete` is the recipe author (U26) together with U19. `IdempotencyConflict` is the application that retried a recipe half with a different payload or a retired `recipe_instance_id` (§3.9). | `code`, `refs`, operation name, caller-supplied `expected_revision`, commit id if one was allocated, target event or group or observation ids, idempotency key. Not the amount and not the payload hash. |
-| `ImportConflict`, `CorroborationMismatch`, `OrphanEvidence` | Data or import issue. The books are unchanged (`ImportConflict`). `CurrencyMismatch` is not in this class. | The adapter that minted the natural key. Not the kernel. Recipe-check findings (missing half, duplicate, mismatched counterpart or amount, unverifiable) and `RegistryMismatch` are application findings (ADR 0004), not kernel codes. | Feed id, external id, observation id, recipe-instance id, counterpart entity id. |
+| `ImportConflict`, `CorroborationMismatch`, `OrphanEvidence` | Data or import issue. The books are unchanged (`ImportConflict`). `CurrencyMismatch` is not in this class. | The adapter that minted the natural key. Not the kernel. Recipe-check findings (missing half, counterpart not visible, orphaned for 7 days, duplicate, mismatched counterpart or amount) and `RegistryMismatch` are application findings (ADR 0004), not kernel codes. | Feed id, external id, observation id, recipe-instance id, counterpart entity id. |
 | `class=bugcheck`, including `WriteFrozen` | Kernel bug, or a write refused because that bug is already stored as the freeze row. A guard that should have made the original finding unreachable did not. | Kernel. `ValidatorMissed` and the revision test are U19. `doctor` findings of drift, unsealed rows, integrity, and foreign keys are U21. `ForeignKeysDisabled` is the kernel `open` path. `WriteFrozen` means the `kernel_state` freeze row is active (§3.13); capture the stored code from `refs`. | `code`, `refs`, the doctor view or pragma name, commit id, event ids, the freeze row id, and the test name when this came from CI. |
 
 Evidence rules for every class:
@@ -603,9 +609,9 @@ This v2 interface is `docs/KERNEL_INTERFACE_SPEC.md`, next to schema v2. v1's bu
 
 ### 8.2 How wide the kernel is
 
-ADR 0007 says the kernel knows nothing about tags, match hints, visibility, or feeds, and that the application owns the outbox and `doctor`. Schema v2 stores feeds, observations, tags, grants, outbox, and inbox in the entity database and defines the doctor views. The U16 assignment lists import, outbox/inbox, and `doctor` as kernel operations.
+ADR 0007 says the kernel knows nothing about tags, match hints, visibility, or feeds, and that the application owns cross-entity orchestration and `doctor`. Schema v2 stores feeds, observations, tags, and grants in the entity database and defines the doctor views. The U16 assignment listed import, the cross-entity protocol of that time, and `doctor` as kernel operations.
 
-Choice: match hints, feed formats, and viewer-relative display stay outside the kernel. Import of already-keyed observations and `doctor` are kernel operations because the schema and this assignment put their rules here. Superseded 2026-11-26 for the outbox and inbox: the ADR 0004 rewrite drops them. The kernel's cross-entity part is now only the recipe-idempotent event write (§3.9). Orchestration, the registry, and the cross-database recipe check belong to the application, and `doctor` reads one database. The kernel stores tag rows and does not interpret them. ADR 0007 now records this choice (amended 2026-11-25). §0 and §1 use this same widened scope. §8 may widen a kernel, not only tighten one; when it does, the ADR is amended so the documents agree.
+Choice: match hints, feed formats, and viewer-relative display stay outside the kernel. Import of already-keyed observations and `doctor` are kernel operations because the schema and this assignment put their rules here. Superseded 2026-11-26 for the cross-entity protocol: the ADR 0004 rewrite drops it. The kernel's cross-entity part is now only the recipe-idempotent event write (§3.9). Orchestration, the registry, and the cross-database recipe check belong to the application, and `doctor` reads one database. The kernel stores tag rows and does not interpret them. ADR 0007 now records this choice (amended 2026-11-25). §0 and §1 use this same widened scope. §8 may widen a kernel, not only tighten one; when it does, the ADR is amended so the documents agree.
 
 ### 8.3 Settlement exclusivity is forever
 
@@ -675,11 +681,11 @@ Choice: one location. The freeze is the latest `kernel_state` row with `state_ke
 
 `docs/schema-v2.sql` contains `kernel_state`, and `commits.kind` includes `freeze` (U17). Append-only and open-commit triggers on `kernel_state` reuse the RAISE substrings `are never updated`, `are never deleted`, and `commit already sealed`, so §4.3 needs no new code. `doctor_unsealed_rows` includes the table. `commits_seal` permits a commit that contains no events; a freeze commit relies on that, and on the deferred `commit_id` foreign key, the same rule as every other commit-scoped row.
 
-### 8.14 Recipe retry payload (was: inbox retry payload)
+### 8.14 Recipe retry payload
 
-The inbox and its payload hash are gone (ADR 0004 rewrite). The rule they carried is unchanged in spirit: a retry is a no-op only when it is the same write, and any difference is a conflict that writes nothing.
+The earlier cross-database apply and its payload hash are gone (ADR 0004 rewrite). The rule it carried is unchanged in spirit: a retry is a no-op only when it is the same write, and any difference is a conflict that writes nothing.
 
-Choice: §3.9 compares the recipe payload field by field against the current event with that `recipe_instance_id`. Equal: write nothing, return the existing event id, and, when nothing else was staged, take the §2.2 no-op with no empty commit. Different, or only superseded events carry the id: `IdempotencyConflict`, roll back, write nothing.
+Choice: §3.9 compares the recipe payload field by field against the current event with that `recipe_instance_id`. Equal: write nothing, return the existing event id, and, when nothing else was staged, take the §2.2 no-op with no empty commit. Different, or only superseded events carry the id: `IdempotencyConflict`, roll back, write nothing. The expectation rows are part of the payload. A retry that adds, drops, or changes one currency's expected amount is a different payload.
 
 ### 8.15 Entity identity is the database, not a column
 
@@ -689,35 +695,53 @@ Choice (Doug, 2026-11-26; ADR 0004 and ADR 0008):
 - **No per-row `entity_id`.** INV-001 is per event and per currency. INV-003 is leaf-only, and the same-type parent rule stays.
 - **The singleton `entity` row** (`id`, `name`, `party_id`, `singleton = 1`) is the database's one identity record. It is what another entity's `counterpart_entity_id` names, and what the application's registry check compares.
 - **Cross-entity identity on an event** is `counterpart_entity_id` (§3.9). The kernel checks only that it is not this database's own `entity.id`.
-- **No `target_entity_id`.** The ADR 0004 rewrite removed the inbox, so this field and the kernel's inbox-target check are gone.
-- **`EntityMismatch` is retired** from the kernel taxonomy. Its posting meaning went with row-level `entity_id`, and its inbox meaning went with the inbox. Writing to the wrong database is now prevented before the kernel is called: the application opens the target, compares `entity.id` and `entity.party_id` with its registry, and refuses with the application code `RegistryMismatch`. That code is not in §4, because it is not a kernel error.
+- **No `target_entity_id`.** The ADR 0004 rewrite removed the cross-database apply, so this field and its target check are gone.
+- **`EntityMismatch` is retired** from the kernel taxonomy. Its posting meaning went with row-level `entity_id`, and its apply-target meaning went with the cross-database apply. Writing to the wrong database is now prevented before the kernel is called: the application opens the target, compares `entity.id` and `entity.party_id` with its registry, and refuses with the application code `RegistryMismatch`. That code is not in §4, because it is not a kernel error.
 
-Until `docs/schema-v2.sql` carries these changes, this section and §3.9 are the contract (§0 item 1: the ADR wins).
+`docs/schema-v2.sql` on PR 31 drops row-level `entity_id` and adds the recipe columns. Until it also carries `event_counterpart_expectations` (§3.9), this section and §3.9 are the contract (§0 item 1: the ADR wins).
 
 ## 9. Changelog
+
+### 2026-11-26 — multi-currency recipe halves; Doug's PR 32 answers
+
+Spec only. The schema change is the PR 32 patch for PR 31.
+- **Columns dropped.** `counterpart_expected_amount_minor` and `counterpart_currency` come off `accounting_events`. `recipe_instance_id` and `counterpart_entity_id` stay, both set or both NULL.
+- **New table** `event_counterpart_expectations`, one row per currency, primary key `(event_id, currency)`, amount > 0.
+  - Commit-scoped through its event and append-only. `doctor_unsealed_rows` covers it, which makes 23 open-commit tables.
+  - Rows are only allowed on a recipe half, so a reversal has none.
+  - `commits_seal` requires at least one row per recipe half.
+  - The rows are part of the §3.9 payload.
+- **The recipe check** (application) compares per currency. On each half, the postings on the intercompany receivable/payable for the counterpart are checked against the other half's expectation for that currency (ADR 0004). INV-001 stays per currency. `InvalidShape` gains `counterpart_expectations`.
+- **The U17 entry below** says 22 open-commit tables and "recipe-half columns". Both describe PR 31 before this change.
 
 ### 2026-11-26 — ADR 0004 rewrite and row-level entity_id removed (Doug)
 
 Spec only. `docs/schema-v2.sql` is unchanged here; the schema change is carried separately.
 
 - **Row-level `entity_id` removed.** INV-001 is per currency, and the same-entity rule is leaf-only (§3.3, §4.1, §4.3, §8.15).
-- **Outbox and inbox removed.** §3.9 is now recipe-idempotent event writes: the four nullable recipe fields on `accounting_events`, a partial UNIQUE index on current `recipe_instance_id`, and identical retry as a no-op, with a different payload or a retired instance as `IdempotencyConflict`. A reversal carries no recipe fields, and a replacement keeps them.
+- **Cross-database message tables removed.** §3.9 is now recipe-idempotent event writes:
+  - two nullable recipe columns on `accounting_events` (`recipe_instance_id`, `counterpart_entity_id`)
+  - per-currency rows in `event_counterpart_expectations`
+  - a partial UNIQUE index on current `recipe_instance_id`
+  - an identical retry, expectation rows included, is a no-op; a different payload or a retired instance is `IdempotencyConflict`
+
+  A reversal carries no recipe fields or expectation rows, and a replacement keeps the recipe fields.
 - **Doctor is single-database.** `doctor` lost its cross-database pairing row. `CrossEntityGap` left the kernel taxonomy; recipe-check findings are application findings.
 - **`EntityMismatch` and `target_entity_id` retired.** The application registry check returns `RegistryMismatch`.
-- **Other updates:** `InvalidShape` loses `outbox_action` and gains `recipe_fields` and `counterpart_self`. §1, §2.2, §6, §8.2, §8.9, and §8.14 follow.
+- **Other updates:** `InvalidShape` loses the old cross-entity action token and gains `recipe_fields`, `counterpart_self`, and `counterpart_expectations`. §1, §2.2, §6, §8.2, §8.9, and §8.14 follow.
 
 ### 2026-11-26 — six inconsistencies flagged on PR 26
 
 Spec only. `docs/schema-v2.sql` is unchanged. Schema v2 invariants are unchanged: append-only journal, `commits` row written last, deferred foreign keys, `commits_seal`, and caller-supplied `expected_revision` checked inside `BEGIN IMMEDIATE`.
 
-1. **§0 matches §8.2.** Authority item 1 no longer says §8 may only tighten an ADR. Import, outbox/inbox, and `doctor` are named as kernel operations, and the amended ADR 0007 is the same scope.
+1. **§0 matches §8.2.** Authority item 1 no longer says §8 may only tighten an ADR. Import, the cross-entity protocol of that time, and `doctor` are named as kernel operations, and the amended ADR 0007 is the same scope.
 2. **§1 is the widened kernel.** The boundary prose lists those operations and retires the narrow reading (journal, invariants, and the commit validator only).
-3. **No empty commit on a pure retry.** §2.2: an identical re-import or an equal-payload inbox retry that stages nothing rolls back, inserts no `commits` row, does not bump `seq`, and returns `IdempotentNoop` with the original `commit_id` and `seq`.
+3. **No empty commit on a pure retry.** §2.2: an identical re-import or an equal-payload cross-entity retry that stages nothing rolls back, inserts no `commits` row, does not bump `seq`, and returns `IdempotentNoop` with the original `commit_id` and `seq`.
 4. **One freeze location.** §3.13 and §8.13: the active `kernel_state` / `freeze` row in the entity database, written in its own commit, checked under `BEGIN IMMEDIATE` before any write. Doctor reports it. `clear_write_freeze` clears it.
 5. **`CurrencyMismatch` is class `user` everywhere.** §4.1, §4.3, §6, and §8.11. It is a validation rejection, including on `import_observations`. It is not class `import` and not a bugcheck.
-6. **Inbox payload conflict.** §3.9 and §8.14: the same idempotency key with a different payload hash, including a different amount, is `IdempotencyConflict`. The kernel rejects, writes nothing, and does not overwrite. The hash is SHA-256 over the five canonical payload fields.
+6. **Retry payload conflict.** §3.9 and §8.14: a retry with a different payload, including a different amount, is `IdempotencyConflict`. The kernel rejects, writes nothing, and does not overwrite. (The hashed apply this item described was later removed by the ADR 0004 rewrite; §3.9 now compares the recipe payload.)
 
-`docs/adr/0007-layering.md` has a 2026-11-26 clarification so it does not keep the withdrawn "writes resume at the next clean doctor" sentence or treat every import and inbox apply as a commit that always seals. No other document was edited.
+`docs/adr/0007-layering.md` has a 2026-11-26 clarification so it does not keep the withdrawn "writes resume at the next clean doctor" sentence or treat every import and cross-entity apply as a commit that always seals. No other document was edited.
 
 ### 2026-11-26 — U17 schema is in this branch
 

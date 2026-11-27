@@ -226,11 +226,11 @@ CREATE TABLE accounting_events (
     recipe_version     TEXT NOT NULL,
     -- ADR 0004 (rewritten 2026-11-26): one half of a cross-entity recipe. The
     -- application writes both halves; recipe_instance_id links them. recipe_id
-    -- above stays the recipe code. All four are NULL or all four are set.
+    -- above stays the recipe code. Both are NULL or both are set. The amounts the
+    -- other half must carry are rows in event_counterpart_expectations, one per
+    -- currency (multi-currency halves are allowed; INV-001 stays per currency).
     recipe_instance_id TEXT CHECK (recipe_instance_id IS NULL OR (length(recipe_instance_id) = 26 AND recipe_instance_id NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*')),
     counterpart_entity_id TEXT CHECK (counterpart_entity_id IS NULL OR (length(counterpart_entity_id) = 26 AND counterpart_entity_id NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*')),
-    counterpart_expected_amount_minor INTEGER CHECK (counterpart_expected_amount_minor IS NULL OR counterpart_expected_amount_minor > 0),
-    counterpart_currency TEXT CHECK (counterpart_currency IS NULL OR (length(counterpart_currency) = 3 AND counterpart_currency NOT GLOB '*[^A-Z]*')),
     effective_date     TEXT NOT NULL CHECK (date(effective_date) IS effective_date),
     description        TEXT NOT NULL DEFAULT '',
     recorded_at        TEXT NOT NULL CHECK (recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z' AND julianday(recorded_at) IS NOT NULL),
@@ -239,9 +239,7 @@ CREATE TABLE accounting_events (
     FOREIGN KEY (recipe_id, recipe_version) REFERENCES recipes(id, version),
     CHECK (reverses_id IS NULL OR reverses_id <> id),
     CHECK (superseded_by IS NULL OR superseded_by <> id),
-    CHECK ((recipe_instance_id IS NULL) = (counterpart_entity_id IS NULL)
-       AND (recipe_instance_id IS NULL) = (counterpart_expected_amount_minor IS NULL)
-       AND (recipe_instance_id IS NULL) = (counterpart_currency IS NULL)),   -- ADR 0004: all-or-none
+    CHECK ((recipe_instance_id IS NULL) = (counterpart_entity_id IS NULL)),  -- ADR 0004: both or neither
     CHECK (reverses_id IS NULL OR recipe_instance_id IS NULL)               -- ADR 0004: a reversal carries no recipe fields
 ) STRICT;
 -- ADR 0002: an event is reversed at most once.
@@ -254,6 +252,17 @@ CREATE INDEX accounting_events_recipe_instance ON accounting_events(recipe_insta
 -- correction sets superseded_by on the target before inserting the replacement
 -- that keeps the id, so the two are never current together.
 CREATE UNIQUE INDEX accounting_events_recipe_instance_current ON accounting_events(recipe_instance_id) WHERE recipe_instance_id IS NOT NULL AND superseded_by IS NULL;
+
+-- ADR 0004: what a recipe half expects the counterpart half to carry, per
+-- currency, on the intercompany receivable/payable for this entity. Written
+-- with its event (commit-scoped through the parent). A recipe half needs at
+-- least one row (commits_seal); a reversal or a plain event has none.
+CREATE TABLE event_counterpart_expectations (
+    event_id              TEXT NOT NULL REFERENCES accounting_events(id),
+    currency              TEXT NOT NULL CHECK (length(currency) = 3 AND currency NOT GLOB '*[^A-Z]*'),
+    expected_amount_minor INTEGER NOT NULL CHECK (expected_amount_minor > 0),
+    PRIMARY KEY (event_id, currency)
+) STRICT;
 
 -- INV-002: one ledger account, currency, positive magnitude, explicit side. No
 -- entity_id: the database is the entity (ADR 0004 amendment 2026-11-26).
@@ -621,6 +630,8 @@ CREATE TRIGGER observations_no_update BEFORE UPDATE ON observations BEGIN SELECT
 CREATE TRIGGER observations_no_delete BEFORE DELETE ON observations BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: observations rows are never deleted; void an observation with observation_voids'); END;
 CREATE TRIGGER observation_voids_no_update BEFORE UPDATE ON observation_voids BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: observation_voids rows are never updated'); END;
 CREATE TRIGGER observation_voids_no_delete BEFORE DELETE ON observation_voids BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: observation_voids rows are never deleted'); END;
+CREATE TRIGGER event_counterpart_expectations_no_update BEFORE UPDATE ON event_counterpart_expectations BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: event_counterpart_expectations rows are never updated'); END;
+CREATE TRIGGER event_counterpart_expectations_no_delete BEFORE DELETE ON event_counterpart_expectations BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: event_counterpart_expectations rows are never deleted'); END;
 CREATE TRIGGER posting_observations_no_update BEFORE UPDATE ON posting_observations BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: posting_observations rows are never updated'); END;
 CREATE TRIGGER posting_observations_no_delete BEFORE DELETE ON posting_observations BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: posting_observations rows are never deleted'); END;
 CREATE TRIGGER settlement_groups_no_update BEFORE UPDATE ON settlement_groups BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: settlement_groups rows are never updated'); END;
@@ -669,6 +680,9 @@ BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed (postings may only be
 CREATE TRIGGER posting_tags_open_commit BEFORE INSERT ON posting_tags
 WHEN EXISTS (SELECT 1 FROM journal_postings p JOIN accounting_events e ON e.id = p.event_id JOIN commits c ON c.id = e.commit_id WHERE p.id = NEW.posting_id)
 BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed (tags are written with their posting; retagging is a correction)'); END;
+CREATE TRIGGER event_counterpart_expectations_open_commit BEFORE INSERT ON event_counterpart_expectations
+WHEN EXISTS (SELECT 1 FROM accounting_events e JOIN commits c ON c.id = e.commit_id WHERE e.id = NEW.event_id)
+BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed (counterpart expectations are written with their event)'); END;
 CREATE TRIGGER posting_observations_open_commit BEFORE INSERT ON posting_observations
 WHEN EXISTS (SELECT 1 FROM journal_postings p JOIN accounting_events e ON e.id = p.event_id JOIN commits c ON c.id = e.commit_id WHERE p.id = NEW.posting_id)
 BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed (an interpretation link is written with its posting)'); END;
@@ -689,7 +703,8 @@ BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed (draft participants a
 CREATE TRIGGER accounting_events_only_supersede BEFORE UPDATE ON accounting_events
 WHEN NEW.id IS NOT OLD.id OR NEW.commit_id IS NOT OLD.commit_id
   OR NEW.recipe_id IS NOT OLD.recipe_id OR NEW.recipe_version IS NOT OLD.recipe_version
-  OR NEW.recipe_instance_id IS NOT OLD.recipe_instance_id OR NEW.effective_date IS NOT OLD.effective_date
+  OR NEW.recipe_instance_id IS NOT OLD.recipe_instance_id OR NEW.counterpart_entity_id IS NOT OLD.counterpart_entity_id
+  OR NEW.effective_date IS NOT OLD.effective_date
   OR NEW.description IS NOT OLD.description OR NEW.recorded_at IS NOT OLD.recorded_at
   OR NEW.reverses_id IS NOT OLD.reverses_id
   OR OLD.superseded_by IS NOT NULL
@@ -710,6 +725,10 @@ BEGIN SELECT RAISE(ABORT, 'ADR 0002: a reversal targets a current non-reversal e
 CREATE TRIGGER accounting_events_insert_current BEFORE INSERT ON accounting_events
 WHEN NEW.superseded_by IS NOT NULL
 BEGIN SELECT RAISE(ABORT, 'ADR 0002 amendment: an event is inserted current; its reversal sets superseded_by'); END;
+-- ADR 0004: expectations belong only to a recipe half (so never to a reversal).
+CREATE TRIGGER event_counterpart_expectations_recipe_half BEFORE INSERT ON event_counterpart_expectations
+WHEN (SELECT recipe_instance_id FROM accounting_events WHERE id = NEW.event_id) IS NULL
+BEGIN SELECT RAISE(ABORT, 'ADR 0004: counterpart expectations belong to a recipe half, not a reversal or a plain event'); END;
 -- ADR 0004: a recipe half's counterpart is another entity, never this database's.
 CREATE TRIGGER accounting_events_counterpart_not_self BEFORE INSERT ON accounting_events
 WHEN NEW.counterpart_entity_id IS NOT NULL AND NEW.counterpart_entity_id = (SELECT id FROM entity)
@@ -808,6 +827,10 @@ BEGIN
     -- ADR 0002: every event in a commit shares the commit's recorded_at.
     SELECT RAISE(ABORT, 'ADR 0002: event recorded_at must equal its commit recorded_at')
     WHERE EXISTS (SELECT 1 FROM accounting_events WHERE commit_id = NEW.id AND recorded_at IS NOT NEW.recorded_at);
+    -- ADR 0004: a recipe half carries at least one counterpart expectation.
+    SELECT RAISE(ABORT, 'ADR 0004: a recipe half needs at least one counterpart expectation')
+    WHERE EXISTS (SELECT 1 FROM accounting_events e WHERE e.commit_id = NEW.id AND e.recipe_instance_id IS NOT NULL
+                  AND NOT EXISTS (SELECT 1 FROM event_counterpart_expectations x WHERE x.event_id = e.id));
     -- INV-002: an event has at least two postings.
     SELECT RAISE(ABORT, 'INV-002: every event needs at least two postings')
     WHERE EXISTS (SELECT 1 FROM accounting_events e WHERE e.commit_id = NEW.id
@@ -969,6 +992,7 @@ UNION ALL SELECT 'valuation_snapshots' AS table_name, t.rowid AS row_id, t.commi
 UNION ALL SELECT 'kernel_state' AS table_name, t.rowid AS row_id, t.commit_id FROM kernel_state t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
 UNION ALL SELECT 'journal_postings', t.rowid, e.commit_id FROM journal_postings t LEFT JOIN accounting_events e ON e.id = t.event_id WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = e.commit_id)
 UNION ALL SELECT 'posting_tags', t.rowid, e.commit_id FROM posting_tags t LEFT JOIN journal_postings p ON p.id = t.posting_id LEFT JOIN accounting_events e ON e.id = p.event_id WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = e.commit_id)
+UNION ALL SELECT 'event_counterpart_expectations', t.rowid, e.commit_id FROM event_counterpart_expectations t LEFT JOIN accounting_events e ON e.id = t.event_id WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = e.commit_id)
 UNION ALL SELECT 'posting_observations', t.rowid, e.commit_id FROM posting_observations t LEFT JOIN journal_postings p ON p.id = t.posting_id LEFT JOIN accounting_events e ON e.id = p.event_id WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = e.commit_id)
 UNION ALL SELECT 'refund_links', t.rowid, e.commit_id FROM refund_links t LEFT JOIN journal_postings p ON p.id = t.refund_posting_id LEFT JOIN accounting_events e ON e.id = p.event_id WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = e.commit_id)
 UNION ALL SELECT 'obligation_postings', t.rowid, o.commit_id FROM obligation_postings t LEFT JOIN obligations o ON o.id = t.obligation_id WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = o.commit_id)

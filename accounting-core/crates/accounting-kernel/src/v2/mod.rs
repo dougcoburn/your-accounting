@@ -15,9 +15,9 @@ mod types;
 
 pub use error::{Class, Code, Error};
 pub use store::{
-    CommitInfo, CommitResult, EntityRow, FinancialAccountRow, FreezeOutcome, Kernel,
-    LedgerAccountRow, NewEntity, NewEvent, NewFinancialAccount, NewLedgerAccount, NewParty,
-    NewPosting, PartyRow, Subject, Transaction,
+    CommitInfo, CommitResult, CounterpartExpectation, EntityRow, FinancialAccountRow,
+    FreezeOutcome, Kernel, LedgerAccountRow, NewEntity, NewEvent, NewFinancialAccount,
+    NewLedgerAccount, NewParty, NewPosting, PartyRow, Subject, Transaction,
 };
 pub use types::{
     AccountType, Clock, FinancialKind, FixedClock, IdSource, LedgerKind, PartyLabel, ReferenceKind,
