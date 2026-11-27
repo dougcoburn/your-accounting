@@ -1,6 +1,6 @@
 # Unit brief template
 
-Use this template for every unit brief and every subagent brief (proposed with [ADR 0010](../adr/0010-bounded-contexts-small-agent-context.md)). Keep the filled brief to one screen. Cite § anchors instead of pasting their text.
+Use this template for every unit brief and every subagent brief (accepted with [ADR 0010](../adr/0010-bounded-contexts-small-agent-context.md)). Keep the filled brief to one screen. Cite § anchors instead of pasting their text.
 
 ```markdown
 ## Unit <Uxx>: <one-line change>

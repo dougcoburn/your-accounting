@@ -1,6 +1,6 @@
-# Bounded contexts and context map (proposed)
+# Bounded contexts and context map
 
-**Status:** Proposed with [ADR 0010](../adr/0010-bounded-contexts-small-agent-context.md), 2026-11-26. Docs only. The normative sources are unchanged: [`KERNEL_INTERFACE_SPEC.md`](../KERNEL_INTERFACE_SPEC.md) ("KIS"), [`SPEC-v2-delta.md`](../SPEC-v2-delta.md) ("delta"), [`schema-v2.sql`](../schema-v2.sql), the ADRs, and [`GLOSSARY.md`](../../GLOSSARY.md). This page proposes how to cut them. It does not restate their rules.
+**Status:** Accepted with [ADR 0010](../adr/0010-bounded-contexts-small-agent-context.md) (Doug, 2026-11-26). Docs only. The normative sources are unchanged: [`KERNEL_INTERFACE_SPEC.md`](../KERNEL_INTERFACE_SPEC.md) ("KIS"), [`SPEC-v2-delta.md`](../SPEC-v2-delta.md) ("delta"), [`schema-v2.sql`](../schema-v2.sql), the ADRs, and [`GLOSSARY.md`](../../GLOSSARY.md). This page proposes how to cut them. It does not restate their rules.
 
 **Principle (Doug, 2026-11-26):** smaller context = smarter agent work. When the glossary terms and independent concepts needed for a change get numerous, split the design with DDD into bounded contexts with small interfaces. An interface should be understandable without its implementation.
 
@@ -8,7 +8,7 @@
 
 - §2 measures what a contributor loads today for each upcoming unit.
 - §3 proposes the contexts, with each one's interface and load list.
-- §4 is the context map. §5 covers split now versus later. §6 covers doctor. §7 is the first step. §8 lists Doug's decisions.
+- §4 is the context map. §5 covers split now versus later. §6 covers doctor. §7 is the first step. §8 lists what Doug decided.
 
 Word counts come from `wc -w` on `main` at `24dee26`. Token figures are **estimates**. They use a rough rule of about 1.3 tokens per English word, and more for SQL. They were not measured.
 
@@ -185,7 +185,7 @@ See §6. The kernel owns the runner and the finding shape. Contexts contribute c
 
 ## 5. Split now or later
 
-The recommendation: **split the docs now and the code later**, as the architect lean proposes, with two adjustments.
+**Decided (Doug, 2026-11-26): split the docs now and the code later, as kernel modules, not crates.** Two points from the analysis carry into that decision.
 
 1. **The doctor seam is defined now, not after FX.** U21 is the next natural place to establish the runner and finding shape (§6). Waiting until after FX means U21 bakes the full §3.12 list into one function, and FX and recipes later edit it.
 2. **Use module boundaries as U18 to U22 land, not crates.** New kernel code goes into `ledger`, `observations`, `settlement` and `doctor` modules from the start. Modules cost nothing and prevent a later refactor. Crate splits wait until the doctor and FX units have landed. One SQLite database per entity, with deferred cross-table foreign keys, means crates would mostly add friction now.
@@ -200,7 +200,7 @@ Evidence against splitting the KIS file itself now: U18 to U22 are about to cite
 
 ## 6. Doctor: per-context checks under a kernel-owned runner
 
-**Recommendation: yes, make doctor checks per-context modules.** U21 builds the runner plus the ledger-core checks only. It does not build the full §3.12 list in one unit.
+**Decided (Doug, 2026-11-26): doctor checks are per-context modules.** U21 builds the runner plus the six ledger-core checks only. It does not build the full §3.12 list in one unit. Warning and info findings never fail doctor.
 
 ### 6.1 Runner interface (kernel-owned)
 
@@ -245,11 +245,11 @@ U21's acceptance ("planted drift detected") applies unchanged to the six ledger-
 2. **Commit to stable anchors.** Add one rule to KIS §0: "§ numbers are stable. Never renumber. New sections take the next free number."
 3. **Use the unit brief template** ([`docs/process/unit-brief-template.md`](../process/unit-brief-template.md)) for U18 onward. The brief lists the interface page plus the exact §s, and says what not to load.
 4. **Add a context column to the plan's unit table.** Fix the U31 wording (§2.2 notes).
-5. **Later (after U22):** move each context's glossary entries into its page, if Doug agrees (§8). Then decide whether to split the KIS file.
+5. **After U22:** move each context's glossary entries into its page, leaving a shared core plus an index in `GLOSSARY.md` (decided, §8). Then decide whether to split the KIS file.
 
-## 8. Decisions for Doug
+## 8. Decided (Doug, 2026-11-26)
 
-1. **Doc split now, code split later.** Do you approve the per-context interface pages and context map now, with kernel modules (not crates) as U18 to U22 land? Recommended: yes.
-2. **U21 scope.** Should U21 build the doctor runner plus the ledger-core checks only, with each other context adding its checks in its own unit? This changes Backend's plan to cover all of §3.12 in U21. Recommended: yes.
-3. **Glossary home.** Should context-owned terms move into their context page, leaving a shared core of about 10 terms plus an index in `GLOSSARY.md`? The alternative is one glossary with a context tag on each entry. Recommended: move them after U22. Keep one definition per term either way.
-4. **Fewer questions per PR.** May Architect pick defaults for reversible choices, and ask you only one-way-door questions, in one batch per PR? Recommended: yes.
+1. **Split the docs now and the code later.** The per-context interface pages and the context map start now. Kernel code goes into modules, not crates, as U18 to U22 land.
+2. **U21 scope.** U21 builds the doctor check runner and registry interface, plus the six ledger-core checks in §6.2. Every other context adds its checks in its own unit, as in the "Lands in" column of §6.2. Warning and info findings never fail doctor.
+3. **Glossary home.** After U22, context-owned terms move into their context pages. `GLOSSARY.md` keeps a small shared core plus an index.
+4. **Delegation.** Architect defaults reversible choices and states them. Only one-way-door questions go to Doug, batched once per PR.

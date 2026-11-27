@@ -1,6 +1,6 @@
 # Token and effort review, 2026-11 (first pass)
 
-**Status:** Proposed with [ADR 0010](../adr/0010-bounded-contexts-small-agent-context.md), 2026-11-26. Captain runs a weekly Friday retro on this. Each retro updates §5 and §6.
+**Status:** Accepted with [ADR 0010](../adr/0010-bounded-contexts-small-agent-context.md), 2026-11-26. Captain runs a weekly Friday retro on this. Each retro updates §5 and §6.
 
 **Principle (Doug, 2026-11-26):** smaller context = smarter agent work.
 
@@ -52,7 +52,7 @@ Ordered by expected saving per unit of effort. The savings are estimates.
 ### 5.1 Doc layout
 
 - **One page per context.** `docs/contexts/<context>/INTERFACE.md` is 1,000 words or less. It holds operations, types, error codes, owned terms, a load list of § anchors, and a do-not-load list (design doc §3 and §7).
-- **Split the glossary by context.** Keep a shared core of about 10 terms. Each other term lives in exactly one context page, and `GLOSSARY.md` becomes an index. This is a decision for Doug.
+- **Split the glossary by context.** Keep a shared core of about 10 terms. Each other term lives in exactly one context page, and `GLOSSARY.md` becomes an index. Decided (Doug, 2026-11-26): this happens after U22.
 - **Stable § anchors.** Never renumber a section. Briefs and reviews then cite §s instead of pasting text.
 - **Present-tense normative text.** History moves to a changelog or an ADR "History" section that readers skip. ADR 0007 is then rewritten once as current text, with its amendments in History.
 - **ADR size budget.** Context, decision and consequences together stay at 1,500 words or less. Worked examples and rejection tables go in an appendix file that implementers load only when needed. Applying this to ADR 0009 would cut its default load by about half (estimate).
@@ -76,7 +76,7 @@ A new subagent reads the brief, not a transcript.
 ### 5.3 Fewer review rounds
 
 - **One batch of questions per PR.** Ask all of Doug's questions in the PR body, at once. Before asking, list the follow-ups each answer could raise, so a design request like cross-half FX is anticipated in round one.
-- **Defaults for reversible choices.** Architect decides two-way-door questions, states the default, and asks Doug only about one-way doors. These include schema shape, invariants, and anything that changes stored data. This needs Doug's agreement (decision 4).
+- **Defaults for reversible choices.** Architect decides two-way-door questions, states the default, and asks Doug only about one-way doors. These include schema shape, invariants, and anything that changes stored data. Decided (Doug, 2026-11-26): ADR 0010, decided item 4.
 - **Principal reviews the interface and the diff.** The review covers the context page and the changed §s, not the whole KIS. A cross-cutting ADR gets one full review.
 - **Short PR bodies.** About 400 words: what changed, the load list, decisions needed. The long drafts (#32's 35 KB and 33 KB bodies) were mostly restated spec.
 
