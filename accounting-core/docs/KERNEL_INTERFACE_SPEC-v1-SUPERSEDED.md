@@ -1,3 +1,5 @@
+> **Superseded (historical v1 `LedgerStore` contract).** The current kernel interface is [`docs/KERNEL_INTERFACE_SPEC.md`](../../docs/KERNEL_INTERFACE_SPEC.md). Do not load this file for v2 work.
+
 # Accounting Core Kernel — Interface Specification & Domain Guide
 
 **Version:** 1.0.0-draft

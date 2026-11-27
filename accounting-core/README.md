@@ -1,6 +1,6 @@
 # Accounting Core — Rust DDD Workspace
 
-This Cargo workspace provides a clean, decoupled Domain-Driven Design (DDD) architecture based on the [Kernel Interface Specification](docs/KERNEL_INTERFACE_SPEC.md).
+This Cargo workspace provides a clean, decoupled Domain-Driven Design (DDD) architecture based on the [v2 Kernel Interface Specification](../docs/KERNEL_INTERFACE_SPEC.md). The original v1 `LedgerStore` contract is kept for history as [`docs/KERNEL_INTERFACE_SPEC-v1-SUPERSEDED.md`](docs/KERNEL_INTERFACE_SPEC-v1-SUPERSEDED.md).
 
 ## Features
 
@@ -11,7 +11,7 @@ This Cargo workspace provides a clean, decoupled Domain-Driven Design (DDD) arch
 
 ## Documentation
 
-See [`docs/KERNEL_INTERFACE_SPEC.md`](docs/KERNEL_INTERFACE_SPEC.md) for full terminology definitions and architectural rules.
+See the v2 kernel interface spec, [`docs/KERNEL_INTERFACE_SPEC.md`](../docs/KERNEL_INTERFACE_SPEC.md) at the repository root, for the current contract. The v1 file [`docs/KERNEL_INTERFACE_SPEC-v1-SUPERSEDED.md`](docs/KERNEL_INTERFACE_SPEC-v1-SUPERSEDED.md) describes the v1 `LedgerStore` API below and is historical.
 
 ## Design docs
 
