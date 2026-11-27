@@ -105,8 +105,44 @@ Transaction date (the Occurred date) is when the purchase happened. It is the ef
 **Party**:
 Anyone outside the transparent books: merchants, employers, people (e.g. Esther, Acme Corp, Costco). Can hold obligations. UI may label as vendor/person/organization. _Avoid_: "opaque entity" as a separate concept; an entity a viewer cannot see simply appears as a party to that viewer.
 
+**Party id**:
+The ULID of a `parties` row: the identity of a counterparty (a merchant, a person, an employer, or another entity) inside one entity database. Postings and obligations name counterparties by party id.
+
+An entity also has a party id of its own, `entity.party_id`, fixed when the entity is created. It is the **same value in every database** where that entity appears as a party: the party row that stands for that entity in another database has `parties.id = entity.party_id` (ADR 0003).
+
+_Example_: Dragonfly's `entity.party_id` is `01J...PD` (invented). In Household's database, the party row "Dragonfly" has id `01J...PD`, and Household's AR / Dragonfly posting has `party_id = 01J...PD`. Acme Corp, which is not an entity, has a party id only in the databases that know it. _Avoid_: using a party id to locate a database; that is the Registry's job.
+
+**Entity id**:
+The ULID `entity.id` of the singleton `entity` row in an entity database. It identifies that set of books. Each database has exactly one, and rows carry no `entity_id` column, because the database *is* the entity (ADR 0004).
+
+It is a different value from the same entity's `entity.party_id`. The entity id answers "which books is this?", and the party id answers "who is this counterparty?".
+
+_Example_: Household's database has `entity.id = 01J...EH` and `entity.party_id = 01J...PH`. Dragonfly's database never stores `01J...EH` as a party; it stores it only as a counterpart entity id on recipe halves.
+
+**Counterpart entity id** (`counterpart_entity_id`):
+On one half of a cross-entity recipe, the entity id (`entity.id`) of the *other* entity. It is stored on each half's `accounting_events` row, together with `counterpart_expected_amount_minor` and `counterpart_currency`. It is never this database's own `entity.id`.
+
+_Example_: Household's half of "Household pays Dragonfly's $1,200.00 insurance" has `counterpart_entity_id = 01J...ED` (Dragonfly's `entity.id`), expecting 120000 USD. Dragonfly's half has `counterpart_entity_id = 01J...EH`.
+
+**Recipe id** (two meanings; say which):
+- **Recipe code**, column `accounting_events.recipe_id`: the stable code of the recipe *type* that built an event, with `recipe_version`. Not a ULID. _Example_: `card_purchase` version `1.0.0` (AT-012).
+- **Recipe-instance id**, column `accounting_events.recipe_instance_id`: a ULID minted once per cross-entity recipe *occurrence*. It is shared by its two halves, one in each entity database. This is the "recipe id" of ADR 0004's cross-entity model. One current event per database may carry a given instance id; an identical retry is a no-op, and a different payload is a conflict. A reversal does not carry it; a corrected replacement keeps it.
+
+_Example_: the insurance payment is instance `01J...R1` on both halves. Dragonfly's later repayment is a new instance `01J...R2`. Both halves of each use the same recipe code.
+
+**Registry**:
+The application's own database (layer 3), one per user login. It maps each entity the user may see, by entity id and party id, to the file location of that entity's database. Entities enter it only by explicit registration; there is no discovery. Before any write, the application opens the target database and checks that its `entity` row (`id`, `party_id`) matches the registry row, and it refuses on a mismatch (`RegistryMismatch`). Different logins can have different, overlapping registries.
+
+_Example_: Doug's registry lists Household (`01J...EH`, `01J...PH`, `household.sqlite`) and Dragonfly (`01J...ED`, `01J...PD`, `dragonfly.sqlite`). Another user's registry lists only Dragonfly, so that user's recipe check reports Household-side halves as unverifiable.
+
+**How these relate**: a cross-entity recipe instance (`recipe_instance_id`) has one half in each entity database. Each half names the other entity by its entity id (`counterpart_entity_id`) and names the other entity as a counterparty on its postings by party id (`entity.party_id` of the other entity). The registry turns either id into a database file, and the application checks that file's `entity` row before writing.
+
 **Health check**:
-A periodic application-level scan (at least on open) that finds broken invariants across entities, such as a cross-entity recipe leg missing its counterpart, and surfaces them as flagged open items.
+Two levels.
+- The per-database `doctor` reads one entity database, read-only, and checks that database's own invariants (balance per currency, sealed commits, integrity, evidence hashes).
+- The application-level **recipe check** reads every entity database in the user's Registry and checks cross-entity recipes: a missing half, a duplicate, a mismatched counterpart, or a mismatched amount. A half whose counterpart database is not in the registry is reported as unverifiable.
+
+Both run at least on open. Neither repairs anything; findings surface as flagged open items. See ADR 0004.
 
 **Void** (of an observation):
 Removing an erroneous or duplicate observation from the books. Appears as a delete to the user; recorded as an append-only tombstone commit. Releases anything that observation was linked to.

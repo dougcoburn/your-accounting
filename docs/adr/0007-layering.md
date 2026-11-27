@@ -1,9 +1,9 @@
 # ADR 0007: Layering and boundaries
 
-Status: Proposed (2026-11-20; amended 2026-11-25 to match docs/KERNEL_INTERFACE_SPEC.md; clarified 2026-11-26)
+Status: Proposed (2026-11-20; amended 2026-11-25 to match docs/KERNEL_INTERFACE_SPEC.md; clarified 2026-11-26; amended 2026-11-26 for the ADR 0004 rewrite)
 
 ## Decision
-From the core outward. Layers 1 and 3 are amended below (2026-11-25); where the list and the amendment differ, the amendment wins.
+From the core outward. Layers 1 and 3 are amended below (2026-11-25, and again 2026-11-26 for the ADR 0004 rewrite). Where the list and an amendment differ, the latest amendment wins.
 1. **Kernel** (one per entity database): append-only journal, numbered invariants, commit validator. Knows nothing about tags, match hints, visibility or feeds.
 2. **Recipes**: build ChangeSets from observations and own match hints.
 3. **Application**: cross-entity orchestration (outbox protocol), `doctor` health check, wizards, access grants.
@@ -42,5 +42,22 @@ Where this clarification and the 2026-11-25 amendment differ, this clarification
 - An identical re-import, and an inbox retry whose payload hash matches, still use `begin_transaction(expected_revision)` with the caller's revision. When that transaction stages no other row, the kernel returns the original commit and seals no new `commits` row (no `seq` bump). A same idempotency key with a different payload hash is `IdempotencyConflict`: the kernel rejects, writes nothing, and does not overwrite the stored inbox row.
 - `doctor`'s checks still open no write transaction and change no row. The bugcheck write freeze is the latest `kernel_state` row with `state_key = 'freeze'` and `active = 1` in the entity database. `record_write_freeze` seals it in its own commit. Doctor reports that row. A later clean doctor does not clear it. `clear_write_freeze` is the only clear. The 2026-11-25 sentence that writes resume at the next clean `doctor` is withdrawn.
 
-## Note (2026-11-26): entity identity
-In the kernel, entity identity is the singleton `entity` row and nothing else. Rows carry no `entity_id` (ADR 0004 and ADR 0008 amendments, 2026-11-26). The kernel's inbox apply checks that the apply's target is this database's `entity.id` and fails closed with `EntityMismatch`. The application still decides which database an apply is sent to.
+## Amendment (2026-11-26): cross-entity orchestration is application-only (ADR 0004 rewrite)
+Where this amendment and the 2026-11-25 amendment or the 2026-11-26 clarification differ, this amendment wins.
+
+- **No outbox or inbox in the kernel.** The outbox row and the inbox apply are no longer kernel operations, and `cross_entity_outbox` / `cross_entity_inbox` are dropped. The 2026-11-25 bullet that listed them, and the clarification's inbox-retry sentence, are withdrawn.
+- **The kernel (layer 1) is single-database.** Its operations are:
+  - the append-only journal, the commit seal and the numbered invariants
+  - `import_observations`
+  - recipe-idempotent event writes: a current event with the same `recipe_instance_id` and the same payload is a no-op that returns the existing event id and seals no commit; a different payload is `IdempotencyConflict`
+  - `doctor` over that one database
+
+  The kernel stores `recipe_instance_id`, `counterpart_entity_id`, `counterpart_expected_amount_minor` and `counterpart_currency` on an event as facts. It never opens the counterpart database.
+- **Entity identity** in the kernel is the singleton `entity` row. Rows carry no `entity_id`.
+- **The application (layer 3) owns cross-entity work:**
+  - writing both halves of a cross-entity recipe, each through its own database's kernel
+  - the per-user **registry** database (entity id and party id to database file, explicit registration only)
+  - the registry check before each write (`RegistryMismatch`)
+  - the application-level recipe check across databases (missing half, duplicate, mismatched counterpart or amount, unverifiable)
+- **Unchanged:** recipes (layer 2) still build each half's ChangeSet, and there is still no cross-database atomicity (ADR 0004).
+- **Invariants unchanged:** every kernel write goes through the commit protocol. Import is not matching (ADR 0006). The per-database `doctor` is read-only, apart from the separately committed `record_write_freeze` (clarification above).
