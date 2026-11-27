@@ -378,8 +378,6 @@ pub enum ReferenceKind {
     Party,
     FinancialAccount,
     LedgerAccount,
-    Tag,
-    Feed,
 }
 
 impl ReferenceKind {
@@ -389,8 +387,6 @@ impl ReferenceKind {
             Self::Party => "party",
             Self::FinancialAccount => "financial_account",
             Self::LedgerAccount => "ledger_account",
-            Self::Tag => "tag",
-            Self::Feed => "feed",
         }
     }
 }

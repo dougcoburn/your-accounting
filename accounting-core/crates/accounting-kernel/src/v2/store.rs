@@ -13,6 +13,11 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::v2::doctor::{exit_status, DoctorCheck, DoctorRunner, Finding, Scope, Severity};
 use crate::v2::error::{persists_freeze, Class, Code, Error};
+use crate::v2::participant::{
+    admit_participant_error, in_context, install_authorizer, participants_ok, CommitStagedSet,
+    ContextCall, ContextParticipant, ContextTx, KernelStaged, ParticipantPayloads, StageOp,
+    StagedContextRow, StagedKernelEvent,
+};
 use crate::v2::sqlmap::{map_sql, SqlSite};
 use crate::v2::types::{
     is_ulid, ledger_matches_financial, require_currency, require_name, require_positive,
@@ -22,22 +27,7 @@ use crate::v2::types::{
 
 const SCHEMA_SQL: &str = include_str!("../../../../../docs/schema-v2.sql");
 
-/// One already-stored subject named by an idempotent no-op.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Subject {
-    Observation {
-        feed_id: String,
-        external_id: String,
-        commit_id: String,
-        seq: i64,
-    },
-    RecipeInstance {
-        recipe_instance_id: String,
-        event_id: String,
-        commit_id: String,
-        seq: i64,
-    },
-}
+pub use crate::v2::participant::Subject;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitResult {
@@ -182,22 +172,35 @@ struct FreezeRow {
 
 struct Staged {
     new_rows: u32,
+    context_rows: u32,
     event_ids: Vec<String>,
     subjects: Vec<Subject>,
     cross_entity: bool,
     correcting: bool,
+    kernel_events: Vec<StagedKernelEvent>,
+    superseded_targets: Vec<String>,
+    context_staged: BTreeMap<String, Vec<StagedContextRow>>,
 }
 
 impl Staged {
     fn empty() -> Self {
         Self {
             new_rows: 0,
+            context_rows: 0,
             event_ids: Vec::new(),
             subjects: Vec::new(),
             cross_entity: false,
             correcting: false,
+            kernel_events: Vec::new(),
+            superseded_targets: Vec::new(),
+            context_staged: BTreeMap::new(),
         }
     }
+}
+
+struct WrittenEvent {
+    id: String,
+    line_ids: Vec<String>,
 }
 
 struct AccountSnap {
@@ -267,6 +270,7 @@ pub struct Kernel {
     write_open: bool,
     freezing: bool,
     doctor_checks: Vec<Box<dyn DoctorCheck>>,
+    participants: Vec<Box<dyn ContextParticipant>>,
 }
 
 /// Open write transaction. Dropping it rolls the attempt back.
@@ -299,7 +303,19 @@ impl Kernel {
         ids: Box<dyn IdSource>,
         actor: &str,
     ) -> Result<Self, Error> {
-        Self::open_inner(path, clock, ids, actor, true)
+        Self::open_with(path, clock, ids, actor, Vec::new())
+    }
+
+    /// `open` with the fixed participant list from kernel spec §3.14.
+    /// The list does not change for the life of the handle.
+    pub fn open_with(
+        path: impl AsRef<Path>,
+        clock: Box<dyn Clock>,
+        ids: Box<dyn IdSource>,
+        actor: &str,
+        participants: Vec<Box<dyn ContextParticipant>>,
+    ) -> Result<Self, Error> {
+        Self::open_inner(path, clock, ids, actor, true, participants)
     }
 
     #[cfg(test)]
@@ -309,7 +325,7 @@ impl Kernel {
         ids: Box<dyn IdSource>,
         actor: &str,
     ) -> Result<Self, Error> {
-        Self::open_inner(path, clock, ids, actor, false)
+        Self::open_inner(path, clock, ids, actor, false, Vec::new())
     }
 
     fn open_inner(
@@ -318,7 +334,9 @@ impl Kernel {
         ids: Box<dyn IdSource>,
         actor: &str,
         enable_foreign_keys: bool,
+        participants: Vec<Box<dyn ContextParticipant>>,
     ) -> Result<Self, Error> {
+        participants_ok(&participants)?;
         if actor.is_empty() || actor.contains('\n') {
             return Err(Error::new(Code::InvalidShape, &[], vec![]));
         }
@@ -334,6 +352,7 @@ impl Kernel {
         };
         conn.execute_batch(pragma)
             .map_err(|_| Error::new(Code::StorageFault, &[], vec![]))?;
+        install_authorizer(&conn)?;
         let flag = read_fk(&conn)?;
         Ok(Self {
             conn,
@@ -344,6 +363,7 @@ impl Kernel {
             write_open: false,
             freezing: false,
             doctor_checks: Vec::new(),
+            participants,
         })
     }
 
@@ -474,8 +494,6 @@ impl Kernel {
             ReferenceKind::Party => "SELECT name FROM parties WHERE id = ?1",
             ReferenceKind::FinancialAccount => "SELECT name FROM financial_accounts WHERE id = ?1",
             ReferenceKind::LedgerAccount => "SELECT name FROM ledger_accounts WHERE id = ?1",
-            ReferenceKind::Tag => "SELECT name FROM tags WHERE id = ?1",
-            ReferenceKind::Feed => "SELECT name FROM feeds WHERE id = ?1",
         };
         self.conn
             .query_row(sql, [id], |row| row.get(0))
@@ -1170,11 +1188,30 @@ impl Transaction<'_> {
 
     /// Stage one current, non-reversal event and its postings (kernel spec §3.3).
     ///
-    /// `recorded_at` is the timestamp `begin_transaction` captured from the
-    /// injected clock. Caller-supplied ULIDs are preserved. A reversal is
-    /// `correct_event`, not this operation.
+    /// Lines only. Context links are staged by participants after this returns
+    /// the stored ids (§3.14). `recorded_at` is the timestamp `begin_transaction`
+    /// captured from the injected clock. Caller-supplied ULIDs are preserved.
+    /// A reversal is `correct_event`, not this operation.
     pub fn append_event(&mut self, new: NewEvent) -> Result<String, Error> {
-        self.stage_new_event(new, None)
+        self.append_event_with(new, ParticipantPayloads::new())
+    }
+
+    /// `append_event` with one opaque payload per participant id.
+    pub fn append_event_with(
+        &mut self,
+        new: NewEvent,
+        payloads: ParticipantPayloads,
+    ) -> Result<String, Error> {
+        let written = self.stage_new_event(new, None)?;
+        self.dispatch_stage(
+            StageOp::Append,
+            &written.id,
+            &written.line_ids,
+            None,
+            None,
+            &payloads,
+        )?;
+        Ok(written.id)
     }
 
     /// `replacing_instance` is set only by `correct_event`, after that instance's
@@ -1184,7 +1221,7 @@ impl Transaction<'_> {
         &mut self,
         new: NewEvent,
         replacing_instance: Option<&str>,
-    ) -> Result<String, Error> {
+    ) -> Result<WrittenEvent, Error> {
         self.ensure_open()?;
         if new.recipe_id.is_empty() || new.recipe_version.is_empty() {
             return Err(self.fail(Error::new(Code::UnknownRecipe, &[], vec![])));
@@ -1307,7 +1344,11 @@ impl Transaction<'_> {
                             commit_id: existing.commit_id,
                             seq,
                         });
-                        return Ok(existing.id);
+                        let line_ids = self.event_line_ids(&existing.id)?;
+                        return Ok(WrittenEvent {
+                            id: existing.id,
+                            line_ids,
+                        });
                     }
                     return Err(self.fail(Error::new(
                         Code::IdempotencyConflict,
@@ -1338,6 +1379,17 @@ impl Transaction<'_> {
         &mut self,
         target_id: &str,
         replacement: Option<NewEvent>,
+    ) -> Result<Option<String>, Error> {
+        self.correct_event_with(target_id, replacement, ParticipantPayloads::new())
+    }
+
+    /// `correct_event` with one opaque payload per participant id.
+    /// Participants run once, after the replacement is staged.
+    pub fn correct_event_with(
+        &mut self,
+        target_id: &str,
+        replacement: Option<NewEvent>,
+        payloads: ParticipantPayloads,
     ) -> Result<Option<String>, Error> {
         self.ensure_open()?;
         require_ulid(target_id).map_err(|e| self.fail(e))?;
@@ -1384,8 +1436,10 @@ impl Transaction<'_> {
             ],
         )?;
         self.staged.new_rows += 1;
+        let mut reversal_lines = Vec::with_capacity(postings.len());
         for posting in &postings {
             let posting_id = self.allocate(None)?;
+            reversal_lines.push(posting_id.clone());
             let side = if posting.side == "debit" {
                 "credit"
             } else {
@@ -1413,13 +1467,30 @@ impl Transaction<'_> {
             params![reversal_id, target.id],
         )?;
         self.staged.correcting = true;
-        self.staged.event_ids.push(reversal_id);
-        let Some(next) = replacement else {
-            return Ok(None);
+        self.staged.event_ids.push(reversal_id.clone());
+        self.staged.kernel_events.push(StagedKernelEvent {
+            event_id: reversal_id.clone(),
+            line_ids: reversal_lines,
+            reverses_id: Some(target.id.clone()),
+        });
+        self.staged.superseded_targets.push(target.id.clone());
+        let (link_event, link_lines, result_id) = if let Some(next) = replacement {
+            let replacing = target.recipe_instance_id.clone();
+            let written = self.stage_new_event(next, replacing.as_deref())?;
+            let id = written.id.clone();
+            (written.id, written.line_ids, Some(id))
+        } else {
+            (reversal_id.clone(), Vec::new(), None)
         };
-        let replacing = target.recipe_instance_id.clone();
-        let id = self.stage_new_event(next, replacing.as_deref())?;
-        Ok(Some(id))
+        self.dispatch_stage(
+            StageOp::Correct,
+            &link_event,
+            &link_lines,
+            Some(target.id),
+            Some(reversal_id),
+            &payloads,
+        )?;
+        Ok(result_id)
     }
 
     fn write_event(
@@ -1427,7 +1498,7 @@ impl Transaction<'_> {
         new: &NewEvent,
         prepared: &[&NewPosting],
         half: Option<&RecipeHalf>,
-    ) -> Result<String, Error> {
+    ) -> Result<WrittenEvent, Error> {
         let event_id = self.allocate(new.id.clone())?;
         if self.count(
             "SELECT count(*) FROM accounting_events WHERE id = ?1",
@@ -1475,8 +1546,10 @@ impl Transaction<'_> {
             }
             self.staged.cross_entity = true;
         }
+        let mut line_ids = Vec::with_capacity(prepared.len());
         for posting in prepared {
             let posting_id = self.allocate(posting.id.clone())?;
+            line_ids.push(posting_id.clone());
             self.exec(
                 "INSERT INTO journal_postings(
                     id, event_id, ledger_account_id, currency, side, amount_minor, party_id, memo
@@ -1494,7 +1567,15 @@ impl Transaction<'_> {
             self.staged.new_rows += 1;
         }
         self.staged.event_ids.push(event_id.clone());
-        Ok(event_id)
+        self.staged.kernel_events.push(StagedKernelEvent {
+            event_id: event_id.clone(),
+            line_ids: line_ids.clone(),
+            reverses_id: None,
+        });
+        Ok(WrittenEvent {
+            id: event_id,
+            line_ids,
+        })
     }
 
     pub fn commit(mut self) -> Result<CommitResult, Error> {
@@ -1523,12 +1604,15 @@ impl Transaction<'_> {
                 subjects: std::mem::take(&mut self.staged.subjects),
             });
         }
+        self.validate_participants()?;
         let kind = if self.staged.correcting {
             "correct"
         } else if self.staged.cross_entity {
             "cross_entity"
         } else if !self.staged.event_ids.is_empty() {
             "interpret"
+        } else if self.staged.context_rows > 0 {
+            "import"
         } else {
             "setup"
         };
@@ -1550,6 +1634,174 @@ impl Transaction<'_> {
             seq: self.expected_revision + 1,
             subjects: Vec::new(),
         })
+    }
+
+    /// A context operation writes through the same `ContextTx` as `stage`.
+    /// This is not the `stage` callback, so it may call kernel operations.
+    #[allow(dead_code)]
+    pub(crate) fn with_participant<R>(
+        &mut self,
+        participant_id: &str,
+        allow_insert: bool,
+        body: impl FnOnce(&mut ContextTx<'_>) -> Result<R, Error>,
+    ) -> Result<R, Error> {
+        self.ensure_open()?;
+        let owned = match self
+            .kernel
+            .participants
+            .iter()
+            .find(|participant| participant.id() == participant_id)
+        {
+            Some(participant) => participant
+                .owned_tables()
+                .iter()
+                .map(|table| (*table).to_string())
+                .collect::<Vec<_>>(),
+            None => {
+                return Err(self.fail(Error::new(
+                    Code::UnknownTarget,
+                    &["ADR 0011"],
+                    vec![participant_id.to_string()],
+                )))
+            }
+        };
+        match self.run_participant(participant_id, &owned, allow_insert, body) {
+            Ok((value, inserts)) => {
+                self.staged.new_rows += inserts;
+                self.staged.context_rows += inserts;
+                Ok(value)
+            }
+            Err(err) => Err(self.fail(err)),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn note_subject(&mut self, subject: Subject) -> Result<(), Error> {
+        self.ensure_open()?;
+        self.staged.subjects.push(subject);
+        Ok(())
+    }
+
+    fn dispatch_stage(
+        &mut self,
+        op: StageOp,
+        event_id: &str,
+        line_ids: &[String],
+        target_event_id: Option<String>,
+        reversal_event_id: Option<String>,
+        payloads: &ParticipantPayloads,
+    ) -> Result<(), Error> {
+        if self.kernel.participants.is_empty() {
+            return Ok(());
+        }
+        let staged = KernelStaged {
+            op,
+            commit_id: self.commit_id.clone(),
+            recorded_at: self.recorded_at.clone(),
+            event_id: event_id.to_string(),
+            line_ids: line_ids.to_vec(),
+            target_event_id,
+            reversal_event_id,
+        };
+        let participants = std::mem::take(&mut self.kernel.participants);
+        let mut error = None;
+        for participant in &participants {
+            if error.is_some() {
+                break;
+            }
+            let id = participant.id().to_string();
+            let owned = owned_tables(participant.as_ref());
+            let payload = payloads.get(&id);
+            match self.run_participant(&id, &owned, true, |tx| {
+                participant.stage(tx, &staged, payload)
+            }) {
+                Ok((outcome, inserts)) => {
+                    let counted = inserts.max(outcome.rows_staged);
+                    self.staged.new_rows += counted;
+                    self.staged.context_rows += counted;
+                    self.staged.subjects.extend(outcome.subjects);
+                }
+                Err(err) => {
+                    error = Some(admit_participant_error(participant.as_ref(), err));
+                }
+            }
+        }
+        self.kernel.participants = participants;
+        if let Some(err) = error {
+            return Err(self.fail(err));
+        }
+        Ok(())
+    }
+
+    fn validate_participants(&mut self) -> Result<(), Error> {
+        if self.kernel.participants.is_empty() {
+            return Ok(());
+        }
+        let events = self.staged.kernel_events.clone();
+        let superseded = self.staged.superseded_targets.clone();
+        let participants = std::mem::take(&mut self.kernel.participants);
+        let mut error = None;
+        for participant in &participants {
+            if error.is_some() {
+                break;
+            }
+            let id = participant.id().to_string();
+            let owned = owned_tables(participant.as_ref());
+            let own = self
+                .staged
+                .context_staged
+                .get(&id)
+                .cloned()
+                .unwrap_or_default();
+            let set = CommitStagedSet {
+                events: events.clone(),
+                superseded_targets: superseded.clone(),
+                own_rows: own,
+            };
+            if let Err(err) =
+                self.run_participant(&id, &owned, false, |tx| participant.validate(tx, &set))
+            {
+                error = Some(admit_participant_error(participant.as_ref(), err));
+            }
+        }
+        self.kernel.participants = participants;
+        if let Some(err) = error {
+            return Err(self.fail(err));
+        }
+        Ok(())
+    }
+
+    fn run_participant<R>(
+        &mut self,
+        participant_id: &str,
+        owned: &[String],
+        allow_insert: bool,
+        body: impl FnOnce(&mut ContextTx<'_>) -> Result<R, Error>,
+    ) -> Result<(R, u32), Error> {
+        let existing = self
+            .staged
+            .context_staged
+            .get(participant_id)
+            .cloned()
+            .unwrap_or_default();
+        let call = ContextCall {
+            commit_id: &self.commit_id,
+            recorded_at: &self.recorded_at,
+            owned: owned.to_vec(),
+            allow_insert,
+        };
+        let (value, inserts, rows) = in_context(&self.kernel.conn, call, existing, body)?;
+        self.staged
+            .context_staged
+            .insert(participant_id.to_string(), rows);
+        Ok((value, inserts))
+    }
+
+    fn event_line_ids(&mut self, event_id: &str) -> Result<Vec<String>, Error> {
+        match load_line_ids(&self.kernel.conn, event_id) {
+            Ok(ids) => Ok(ids),
+            Err(err) => Err(self.fail(map_sql(err, SqlSite::Read))),
+        }
     }
 
     fn ensure_open(&self) -> Result<(), Error> {
@@ -1662,8 +1914,6 @@ impl Transaction<'_> {
                 "SELECT count(*) FROM financial_accounts WHERE id = ?1"
             }
             ReferenceKind::LedgerAccount => "SELECT count(*) FROM ledger_accounts WHERE id = ?1",
-            ReferenceKind::Tag => "SELECT count(*) FROM tags WHERE id = ?1",
-            ReferenceKind::Feed => "SELECT count(*) FROM feeds WHERE id = ?1",
         };
         Ok(self.count(sql, &[id])? > 0)
     }
@@ -1908,6 +2158,25 @@ impl Drop for Transaction<'_> {
             self.kernel.write_open = false;
         }
     }
+}
+
+fn load_line_ids(conn: &Connection, event_id: &str) -> Result<Vec<String>, rusqlite::Error> {
+    let mut stmt =
+        conn.prepare("SELECT id FROM journal_postings WHERE event_id = ?1 ORDER BY rowid")?;
+    let rows = stmt.query_map([event_id], |row| row.get(0))?;
+    let mut ids = Vec::new();
+    for row in rows {
+        ids.push(row?);
+    }
+    Ok(ids)
+}
+
+fn owned_tables(participant: &dyn ContextParticipant) -> Vec<String> {
+    participant
+        .owned_tables()
+        .iter()
+        .map(|table| (*table).to_string())
+        .collect()
 }
 
 fn ensure_schema(conn: &Connection) -> Result<(), Error> {

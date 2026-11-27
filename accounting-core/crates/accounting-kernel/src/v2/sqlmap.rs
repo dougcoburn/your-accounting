@@ -116,18 +116,8 @@ fn map_raise(msg: &str) -> Option<(Code, bool)> {
             true,
         ),
         (
-            "a void must reverse every current event",
-            Code::VoidWithoutReversal,
-            true,
-        ),
-        (
             "dissolving a reconciled group must reverse",
             Code::DissolveWithoutReversal,
-            true,
-        ),
-        (
-            "observed legs must be reposted",
-            Code::DissolveWithoutRepost,
             true,
         ),
         (
@@ -158,26 +148,6 @@ fn map_raise(msg: &str) -> Option<(Code, bool)> {
         ),
         ("posting currency must match", Code::CurrencyMismatch, false),
         (
-            "observation currency must match",
-            Code::CurrencyMismatch,
-            false,
-        ),
-        (
-            "corroborating row must be",
-            Code::CorroborationMismatch,
-            false,
-        ),
-        (
-            "posting must match its observation",
-            Code::ObservationMismatch,
-            false,
-        ),
-        (
-            "voided observation cannot be interpreted",
-            Code::VoidedObservation,
-            false,
-        ),
-        (
             "invalid settlement group transition",
             Code::InvalidGroupTransition,
             false,
@@ -195,16 +165,6 @@ fn map_raise(msg: &str) -> Option<(Code, bool)> {
         (
             "settlement exceeds the open claim",
             Code::ClaimSettlementExceedsOpen,
-            false,
-        ),
-        (
-            "opposite-side posting to the purchase",
-            Code::RefundShapeInvalid,
-            false,
-        ),
-        (
-            "INV-015: refund links exceed",
-            Code::RefundCapExceeded,
             false,
         ),
         (
@@ -236,14 +196,11 @@ fn map_constraint(msg: &str, site: SqlSite) -> Error {
     if msg.contains("UNIQUE constraint failed: entity.singleton") {
         return Error::new(Code::SecondEntity, &["ADR 0004"], vec![]);
     }
-    if msg.contains("UNIQUE constraint failed: observations.feed_id, observations.external_id") {
-        return Error::new(Code::ImportConflict, &[], vec![]);
-    }
     if msg.contains("UNIQUE constraint failed: settlement_postings.posting_id") {
         return Error::new(Code::PostingAlreadySettled, &["ADR 0006"], vec![]);
     }
-    if msg.contains("UNIQUE constraint failed: observation_voids.observation_id") {
-        return Error::new(Code::ObservationAlreadyVoided, &[], vec![]);
+    if let Some(err) = crate::v2::contexts::map_owned(msg, site) {
+        return err;
     }
     if msg.contains("UNIQUE constraint failed: accounting_events.recipe_instance_id") {
         return Error::new(Code::IdempotencyConflict, &["ADR 0004"], vec![]);
@@ -307,13 +264,16 @@ fn map_constraint(msg: &str, site: SqlSite) -> Error {
         if msg.contains("last4") {
             return Error::new(Code::InvalidShape, &[], vec![]).with_token("last4");
         }
-        if msg.contains("sha256") || msg.contains("row_hash") {
-            return Error::new(Code::InvalidShape, &[], vec![]).with_token("hash");
+        if let Some(err) = crate::v2::contexts::map_owned(msg, site) {
+            return err;
         }
         if let Some(token) = check_token(msg) {
             return Error::new(Code::InvalidShape, &[], vec![]).with_token(token);
         }
         return Error::new(Code::UnmappedStorageError, &[], vec![]);
+    }
+    if let Some(err) = crate::v2::contexts::map_owned(msg, site) {
+        return err;
     }
     if matches!(site, SqlSite::Begin) {
         return Error::new(Code::StorageFault, &[], vec![]);
@@ -325,12 +285,6 @@ fn check_token(msg: &str) -> Option<&'static str> {
     if msg.contains("'freeze'") || msg.contains("'cross_entity'") {
         return Some("commit_kind");
     }
-    if msg.contains("'extraction_error'") {
-        return Some("void_reason");
-    }
-    if msg.contains("'inflow'") {
-        return Some("observation_direction");
-    }
     if msg.contains("'forgiveness'") {
         return Some("settlement_kind");
     }
@@ -339,9 +293,6 @@ fn check_token(msg: &str) -> Option<&'static str> {
     }
     if msg.contains("'appraisal'") {
         return Some("valuation_source");
-    }
-    if msg.contains("'monarch_csv'") {
-        return Some("feed_kind");
     }
     if msg.contains("'black_box'") {
         return Some("tracking_mode");
