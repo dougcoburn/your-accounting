@@ -488,7 +488,6 @@ The SQL text in this section is the mapping key for the adapter. It **MUST NOT**
 | `SupersedeInvalid` | user | `superseded_by` changed a fact, was cleared, was set twice, or was set outside the reversal's open commit. |
 | `SupersedeMissing` | user | A reversal commit did not flag its target. |
 | `EventInsertedSuperseded` | user | An insert carried `superseded_by`. |
-| `VoidWithoutReversal` | user | Retained in the closed list. `void_observation` does not reverse kernel events, so a void does not produce this code. |
 | `VoidedObservation` | user | A posting link targeted a voided observation. |
 | `ObservationAlreadyVoided` | user | A second tombstone for the same observation. |
 | `ObservationMismatch` | user | INV-007. Link does not match account, amount, currency, and direction. |
@@ -527,7 +526,7 @@ The SQL text in this section is the mapping key for the adapter. It **MUST NOT**
 | `StatementNotAgreed` | user | INV-010. Raised by U32 only. Month-1 `assert_balance` does not raise it. |
 | `OrphanEvidence` | import | Staged evidence bytes with no committed row. `doctor` only. Collectable. |
 
-**Owners (ADR 0011).** The list stays one closed list (the shared error envelope). Codes owned by the observation import context: `ImportConflict`, `CorroborationMismatch`, `ObservationMismatch`, `ObservationDoubleConsumed`, `VoidedObservation`, `ObservationAlreadyVoided`, `VoidWithoutReversal`, `OrphanEvidence`, `EvidenceHashMismatch` (§4.2). Codes owned by recipes: `RefundShapeInvalid`, `RefundCapExceeded`. `CurrencyMismatch` stays shared.
+**Owners (ADR 0011).** The list stays one closed list (the shared error envelope). Codes owned by the observation import context: `ImportConflict`, `CorroborationMismatch`, `ObservationMismatch`, `ObservationDoubleConsumed`, `VoidedObservation`, `ObservationAlreadyVoided`, `OrphanEvidence`, `EvidenceHashMismatch` (§4.2). Codes owned by recipes: `RefundShapeInvalid`, `RefundCapExceeded`. `CurrencyMismatch` stays shared.
 
 An identical re-import and an identical recipe retry are successes, not codes. When the transaction staged nothing else they are the §2.2 no-op: the caller gets the original commit, and no new `commits` row exists. A different payload on the same current `recipe_instance_id` is `IdempotencyConflict`.
 
@@ -795,6 +794,10 @@ Doug, 2026-11-26: tags, evidence (file) links, observation links, and refund lin
 Choice: owners are observation import (`feeds`, `import_runs`, `observations`, `observation_voids`, `posting_observations`, evidence tables and `evidence_links`), recipes (`refund_links`), and the application (`tags`, `posting_tags`). `docs/schema-v2.sql` is unchanged; its triggers on those tables are storage backstops owned by those contexts. Decided (Doug, 2026-11-26, ADR 0011 option (i)): context rows commit in the kernel's transaction through the two-method participant hook in §3.14. A separate post-commit transaction and a separate application database were rejected.
 
 ## 9. Changelog
+
+### 2026-11-27 — `VoidWithoutReversal` leaves the closed list
+
+`void_observation` tombstones an observation and does not reverse a kernel event, so nothing produces `VoidWithoutReversal`. The code is removed from §4.1 and from the observation-import owner list. The Rust enum drops the same variant.
 
 ### 2026-11-26 — ADR 0011: kernel stages only events and lines
 

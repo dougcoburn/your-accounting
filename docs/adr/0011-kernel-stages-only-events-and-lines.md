@@ -52,7 +52,7 @@ Whether settlement and obligations follow the same pattern is a later, reversibl
   - each context: the open-commit and append-only triggers on its own tables.
 - **One `commits_seal` clause reads `posting_observations`.** "A dissolved group's observed legs must be reposted" is observation-context validation, run before the seal. The SQL clause stays as the backstop. The void-must-reverse clause was removed on 2026-11-27.
 - **Codes.** They stay in the one closed list (KIS §4), which is the shared error envelope. Each code now names its owner:
-  - observation import: `ImportConflict`, `CorroborationMismatch`, `ObservationMismatch`, `ObservationDoubleConsumed`, `VoidedObservation`, `ObservationAlreadyVoided`, `VoidWithoutReversal`, `OrphanEvidence`, `EvidenceHashMismatch`;
+  - observation import: `ImportConflict`, `CorroborationMismatch`, `ObservationMismatch`, `ObservationDoubleConsumed`, `VoidedObservation`, `ObservationAlreadyVoided`, `OrphanEvidence`, `EvidenceHashMismatch`;
   - recipes: `RefundShapeInvalid`, `RefundCapExceeded`.
 - **Tokens.** These `InvalidShape` tokens move to observation import: `void_reason`, `observation_direction`, `feed_kind`, `evidence_link_target`, `hash`. Some `unique_other` sources move with their tables: `tags.name` to the application, the `refund_links` pair to recipes, `evidence_deletions.sha256` to observation import.
 - **Doctor.**
@@ -101,7 +101,7 @@ This keeps today's atomicity, the commit seal on link rows, every foreign key an
 
 ## Amendment (Doug, 2026-11-27)
 
-Voiding an observation tombstones it and ends its live links in the import context. It does not reverse or correct the kernel event or its lines. A line is observed while any live observation link remains, and expected otherwise. `commits.kind` has no `void` value. When the tombstone needs a `commits` row, the kind is `import`. `VoidWithoutReversal` stays in the closed list and is not produced by `void_observation`.
+Voiding an observation tombstones it and ends its live links in the import context. It does not reverse or correct the kernel event or its lines. A line is observed while any live observation link remains, and expected otherwise. `commits.kind` has no `void` value. When the tombstone needs a `commits` row, the kind is `import`.
 
 ## Consequences
 

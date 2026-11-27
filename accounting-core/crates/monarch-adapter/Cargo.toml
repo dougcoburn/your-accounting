@@ -1,0 +1,13 @@
+[package]
+name = "monarch-adapter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Monarch CSV feed for the observation import context"
+
+[dependencies]
+accounting-kernel = { workspace = true }
+sha2 = "0.10"
+
+[dev-dependencies]
+accounting-kernel = { workspace = true }

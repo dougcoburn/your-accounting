@@ -94,6 +94,21 @@ pub struct LedgerAccountRow {
     pub name: String,
 }
 
+/// A committed observation. `payload_json` stays in this process; callers do not log it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservationFact {
+    pub id: String,
+    pub external_id: String,
+    pub financial_account_id: String,
+    pub occurred_date: String,
+    pub posted_date: Option<String>,
+    pub direction: String,
+    pub amount_minor: i64,
+    pub currency: String,
+    pub row_hash: String,
+    pub payload_json: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct NewEntity {
     pub id: Option<String>,
@@ -455,6 +470,27 @@ impl Kernel {
             .map_err(|e| map_sql(e, SqlSite::Read))
     }
 
+    pub fn financial_accounts_with_last4(
+        &self,
+        last4: &str,
+    ) -> Result<Vec<FinancialAccountRow>, Error> {
+        self.collect_rows(
+            "SELECT id, name, kind, currency, tracking_mode, last4
+             FROM financial_accounts WHERE last4 = ?1",
+            [last4],
+            |row| {
+                Ok(FinancialAccountRow {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    kind: row.get(2)?,
+                    currency: row.get(3)?,
+                    tracking_mode: row.get(4)?,
+                    last4: row.get(5)?,
+                })
+            },
+        )
+    }
+
     pub fn ledger_account(&self, id: &str) -> Result<Option<LedgerAccountRow>, Error> {
         self.conn
             .query_row(
@@ -474,6 +510,118 @@ impl Kernel {
             )
             .optional()
             .map_err(|e| map_sql(e, SqlSite::Read))
+    }
+
+    /// Category accounts whose current name is `name` (latest rename, else the original).
+    pub fn ledger_categories_named(&self, name: &str) -> Result<Vec<LedgerAccountRow>, Error> {
+        self.collect_rows(
+            "SELECT a.id, a.financial_account_id, a.account_type, a.kind, a.parent_id,
+                    coalesce(
+                      (SELECT n.name FROM reference_current_names n
+                       WHERE n.target_kind = 'ledger_account' AND n.target_id = a.id),
+                      a.name
+                    )
+             FROM ledger_accounts a
+             WHERE a.kind = 'category'
+               AND coalesce(
+                     (SELECT n.name FROM reference_current_names n
+                      WHERE n.target_kind = 'ledger_account' AND n.target_id = a.id),
+                     a.name
+                   ) = ?1",
+            [name],
+            |row| {
+                Ok(LedgerAccountRow {
+                    id: row.get(0)?,
+                    financial_account_id: row.get(1)?,
+                    account_type: row.get(2)?,
+                    kind: row.get(3)?,
+                    parent_id: row.get(4)?,
+                    name: row.get(5)?,
+                })
+            },
+        )
+    }
+
+    pub fn observation_by_external_id(
+        &self,
+        feed_id: &str,
+        external_id: &str,
+    ) -> Result<Option<ObservationFact>, Error> {
+        self.conn
+            .query_row(
+                "SELECT id, external_id, financial_account_id, occurred_date, posted_date,
+                        direction, amount_minor, currency, row_hash, payload_json
+                 FROM observations WHERE feed_id = ?1 AND external_id = ?2",
+                params![feed_id, external_id],
+                |row| {
+                    Ok(ObservationFact {
+                        id: row.get(0)?,
+                        external_id: row.get(1)?,
+                        financial_account_id: row.get(2)?,
+                        occurred_date: row.get(3)?,
+                        posted_date: row.get(4)?,
+                        direction: row.get(5)?,
+                        amount_minor: row.get(6)?,
+                        currency: row.get(7)?,
+                        row_hash: row.get(8)?,
+                        payload_json: row.get(9)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|err| map_sql(err, SqlSite::Read))
+    }
+
+    pub fn observation_count(&self) -> Result<i64, Error> {
+        self.scalar("SELECT count(*) FROM observations")
+    }
+
+    pub fn observation_review_state(&self, observation_id: &str) -> Result<Option<String>, Error> {
+        self.conn
+            .query_row(
+                "SELECT review_state FROM observation_review_state WHERE observation_id = ?1",
+                [observation_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|err| map_sql(err, SqlSite::Read))
+    }
+
+    pub fn posting_origin(&self, posting_id: &str) -> Result<Option<String>, Error> {
+        self.conn
+            .query_row(
+                "SELECT origin FROM posting_origin WHERE posting_id = ?1",
+                [posting_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|err| map_sql(err, SqlSite::Read))
+    }
+
+    pub fn tag_count(&self) -> Result<i64, Error> {
+        self.scalar("SELECT count(*) FROM tags")
+    }
+
+    pub fn posting_tag_count(&self) -> Result<i64, Error> {
+        self.scalar("SELECT count(*) FROM posting_tags")
+    }
+
+    fn collect_rows<T, F>(&self, sql: &str, params: [&str; 1], mut map: F) -> Result<Vec<T>, Error>
+    where
+        F: FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+    {
+        let mut stmt = self
+            .conn
+            .prepare(sql)
+            .map_err(|err| map_sql(err, SqlSite::Read))?;
+        let rows = stmt
+            .query_map(params, |row| map(row))
+            .map_err(|err| map_sql(err, SqlSite::Read))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|err| map_sql(err, SqlSite::Read))?);
+        }
+        Ok(out)
     }
 
     pub fn current_name(&self, kind: ReferenceKind, id: &str) -> Result<Option<String>, Error> {
@@ -1068,6 +1216,11 @@ impl Transaction<'_> {
         )?;
         self.staged.new_rows += 1;
         Ok(id)
+    }
+
+    pub fn ledger_categories_named(&self, name: &str) -> Result<Vec<LedgerAccountRow>, Error> {
+        self.ensure_open()?;
+        self.kernel.ledger_categories_named(name)
     }
 
     pub fn create_ledger_account(&mut self, new: NewLedgerAccount) -> Result<String, Error> {

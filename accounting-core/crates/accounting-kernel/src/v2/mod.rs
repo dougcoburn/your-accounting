@@ -35,7 +35,7 @@ pub use participant::{
 pub use store::{
     CommitInfo, CommitResult, CounterpartExpectation, DoctorReport, EntityRow, FinancialAccountRow,
     FreezeOutcome, Kernel, LedgerAccountRow, NewEntity, NewEvent, NewFinancialAccount,
-    NewLedgerAccount, NewParty, NewPosting, PartyRow, Subject, Transaction,
+    NewLedgerAccount, NewParty, NewPosting, ObservationFact, PartyRow, Subject, Transaction,
 };
 pub use types::{
     AccountType, Clock, FinancialKind, FixedClock, IdSource, LedgerKind, PartyLabel, ReferenceKind,
