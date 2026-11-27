@@ -26,7 +26,7 @@ Refreshed again 2026-11-26 against `main` at 523a3c622401c9341f80dd1356155721153
 | Status | Units |
 |---|---|
 | Done | U03 (#22, employer placeholder cleaned in #24), U15 (#19), U16 (#25, amended by #26 and #27), U17 (#31) |
-| Partial | U01 — `scripts/check-denylist.sh` landed in #24; the CI workflow (fmt, clippy, test, synthetic-marker / CSV placement guard) and `.gitignore` entries for `local.config.json` and real CSV paths are still open. U04 — the real October CSV is in place locally; paystub lines and any statement end dates are still outstanding (open question 1). Posted dates will come from the Monarch Date column (question 8, decided). |
+| Partial | U01 — `scripts/check-denylist.sh` landed in #24; the CI workflow (fmt, clippy, test, synthetic-marker / CSV placement guard) and `.gitignore` entries for `local.config.json` and real CSV paths are still open. U04 — the real October CSV is in place locally; October paystubs and bank statements will be placed in `/workspace/ya-private-data` (question 1, decided). Posted dates will come from the Monarch Date column (question 8, decided). |
 | In review, not merged | U02 — product brief in [#18](https://github.com/dougcoburn/your-accounting/pull/18). Prototypes A, B, and C are open as throwaway alternatives in [#21](https://github.com/dougcoburn/your-accounting/pull/21), [#20](https://github.com/dougcoburn/your-accounting/pull/20), and [#23](https://github.com/dougcoburn/your-accounting/pull/23), covering much of the U05–U10 screen set. Short feedback checks (U11 / U12) run as each screen lands. U13 is a living record of that feedback, not a freeze before build. This plan is the month-1 spec. |
 | Not started | U18–U40. The kernel critical path continues at **U18**. |
 
@@ -43,7 +43,7 @@ Cross-references only; the unit list below is not rewritten to match every schem
 
 ## Ground rules
 
-- **Real data stays out of agents and repos.** No real rows in any repo, PR, issue, CI log, commit message, feedback log or agent prompt. Agents get structure only (column names, account types, last-4).
+- **Real data stays out of agents and repos.** No real rows in any repo, PR, issue, CI log, commit message, feedback log or agent prompt. Agents get structure only (column names, account types, last-4). Sharing the column header row alone (no data rows) with agents as structure is OK (question 1, decided 2026-11-26).
 - **Where to view.** Synthetic transactions are viewed in the box desktop browser. Real transactions are viewed on Doug's Mac, with the real CSV kept there.
 - **Where the real data lives.** The real CSV is at `/workspace/ya-private-data/october-2025-monarch.csv` (mode 600, outside every git working tree). The app reads it only at runtime, through `YA_MONARCH_CSV` (or a gitignored `local.config.json`), and never copies it, caches it, or logs rows. Team bots never read that folder. Only Doug's browser session (or the main bot acting for Doug) opens it.
 - **Fixtures are synthetic.** Every committed fixture is generated, Monarch-shaped and carries a `# synthetic` marker. CI rejects any CSV or JSON under the repo that lacks the marker.
@@ -108,7 +108,7 @@ Size: S is about 1 day, M is 2-4 days. "Doug" units cannot be delegated.
 | U01 | CI (fmt, clippy, test) + data guard (synthetic marker check, block CSVs outside `fixtures/`, block >4-digit account numbers, `.gitignore`) | DevOps | - | CI red on a planted unmarked CSV, green on main | S | Partial (#24 denylist only) |
 | U02 | Month-1 product brief: screens, done criteria, feedback-log template | PM | - | [`product/month1-brief.md`](product/month1-brief.md) PR; Doug approves | S | In review (#18) |
 | U03 | Synthetic October generator (seeded; ~200 rows, 12 accounts, ~44 categories, ~80/20 out/in, e-* tags on almost all rows, unique Id, same 14 columns) covering card buys, card payment, paycheck, HSA missing side, Dragonfly e-tagged buy, Acme Corp partial reimbursement, refund, perk credit, duplicate row, in-flight items | Data Sci | U01 | Deterministic output; every scenario in a coverage table; passes the data guard | M | Done (#22, #24) |
-| U04 | Oct 2025 Monarch CSV in `/workspace/ya-private-data/` (**done 2026-11-22**); still to add paystub lines and any statement end dates there. Posted dates come from the Monarch Date column (no extra file). | Doug | - | Files present locally; nothing in git | S | Partial (CSV in; paystubs pending) |
+| U04 | Oct 2025 Monarch CSV in `/workspace/ya-private-data/` (**done 2026-11-22**); October paystubs and bank statements will be placed there (Captain copies them; team bots never read the folder). Column header row alone may be shared with agents as structure. Posted dates come from the Monarch Date column (no extra file). | Doug | - | Files present locally; nothing in git | S | Partial (CSV in; paystubs and statements forthcoming) |
 | U05 | Prototype shell: localhost server, CSV loader (fixture or `YA_MONARCH_CSV`), TS Monarch adapter, read-only register | FE | U01, U03 | Loads fixture; real path from env/gitignored config only; no rows in console or server logs; binds 127.0.0.1 | M | In review (prototypes A/B/C: #21, #20, #23) |
 | U06 | Worklist view: origin (observed/expected), state (unreviewed/interpreted/reconciled/voided), occurred vs posted dates, filters | FE | U05 | All fixture rows visible; state counts shown | S | In review (see U05) |
 | U07 | Recipe picker: choose recipe per line, debit/credit preview, category tree per entity, seeded from imported Monarch categories (Doug adds more as needed) | FS | U05 | Every fixture scenario can pick a recipe and shows a balanced preview | M | In review (see U05) |
@@ -164,20 +164,17 @@ These are also pre-seeded as FQ-01–FQ-22 in the #18 feedback-log draft.
 - **Register / worklist:** One list with state filters, or separate "to do" and "done" tabs? Which columns matter (occurred, posted, account last-4, merchant, amount, suggested category, entity hint)? Should Monarch's category show as a hint or be hidden? Should expected lines sit inline with their source or in their own section? Is sorting by occurred date right?
 - **Recipe picker:** Choose the recipe first and then fill in details, or pick a suggested treatment in one click? Should the debit/credit preview always show, or be behind a toggle? How deep should the category tree go per entity? Seed it from imported Monarch categories; Doug adds more as needed (question 4, decided). Is the vocabulary right (recipe, interpreted, on-behalf)?
 - **Settlement grouping:** Should suggestions open automatically, or only when you ask? What evidence do you need before confirming (dates, memo, residual)? How should a paycheck's per-line groups look: one card with sub-lines, or separate items? How should an open HSA expected slot nag you?
-- **Reconciliation vs statement:** Is "occurred balance → in-flight items → statement ending" readable? Posted dates come from the Monarch Date column (question 8, decided). Will you type statement endings by hand for October, or skip that this month (still open; see question 1)? Should a mismatch block anything, or just flag it?
+- **Reconciliation vs statement:** Is "occurred balance → in-flight items → statement ending" readable? Posted dates come from the Monarch Date column (question 8, decided). October bank statements will be placed in the private folder (question 1, decided). Will you type statement endings by hand for October, or skip that this month? Should a mismatch block anything, or just flag it?
 - **Corrections / void:** Should an edit look like an edit, with the reversal hidden unless audit is on? Is a void confirm-and-done, or should it ask for a reason? Should you see "changed after close" markers on closed months?
 - **Overall:** Which screen would you use daily? What is missing? What should be dropped from month 1? Which of prototypes A, B, and C (or which parts of each) should be kept?
 
 ## Questions for Doug
 
-Several of these were also restated in #18. Question 5 was already decided when #19 landed. Answers below are from 2026-11-26 unless noted.
-
-### Still open
-
-1. **Rest of the local data.** The CSV is in. When can real paystubs and any statement end dates be placed in `/workspace/ya-private-data/`? May the column header row alone (no data rows) be shared with agents as structure?
+Several of these were also restated in #18. All numbered questions are now decided. Answers below are from 2026-11-26 unless noted.
 
 ### Decided
 
+1. **Rest of the local data.** **Decided 2026-11-26:** Doug will pull his October paystubs and bank statements now, and they will be placed in `/workspace/ya-private-data` (Captain copies them; team bots never read that folder). Sharing the column header row alone (no data rows) with agents as structure is OK.
 2. **Where to view the prototype.** **Decided 2026-11-26:** synthetic transactions in the box desktop browser; real transactions on Doug's Mac with the CSV kept there.
 3. **Month-1 UI end state.** **Decided 2026-11-26:** a real local web UI over the Rust app (U37), not CLI plus the prototype as a reference only. The MAP still keeps a polished UI out of scope.
 4. **Chart of accounts seed.** **Decided 2026-11-26:** import Monarch categories to start; Doug adds more as needed.
