@@ -1077,28 +1077,45 @@ fn recipe_expectations_are_a_set_and_intercompany_postings_name_a_party() {
     missing_party.recipe_instance_id = Some(uid("RR06"));
     missing_party.postings[0].ledger_account_id = receivable.clone();
     let missing_party = reject(missing_party, Code::InvalidShape);
+    assert_eq!(missing_party.token, Some("recipe_party"));
     assert_eq!(missing_party.refs, vec!["ADR 0004".to_string()]);
     assert_eq!(missing_party.ids, vec![receivable.clone()]);
-    assert!(missing_party.token.is_none());
 
     let mut missing_payable = recipe_half(&books, "EV4A", "PS4H", "PS4J", MINOR, MINOR);
     missing_payable.recipe_instance_id = Some(uid("RR07"));
-    missing_payable.postings[1].ledger_account_id = payable;
-    assert_eq!(
-        reject(missing_payable, Code::InvalidShape).refs,
-        vec!["ADR 0004".to_string()]
-    );
+    missing_payable.postings[1].ledger_account_id = payable.clone();
+    let missing_payable = reject(missing_payable, Code::InvalidShape);
+    assert_eq!(missing_payable.token, Some("recipe_party"));
+    assert_eq!(missing_payable.refs, vec!["ADR 0004".to_string()]);
+    assert_eq!(missing_payable.ids, vec![payable]);
 
     let mut named = recipe_half(&books, "EV49", "PS4K", "PS52", MINOR, MINOR);
     named.recipe_instance_id = Some(uid("RR06"));
     named.postings[0].ledger_account_id = receivable.clone();
     named.postings[0].party_id = Some(books.employer.clone());
-    {
+    let named_id = {
         let mut tx = kernel.begin_transaction(Some(3)).expect("begin");
-        tx.stage_event(named).expect("party set");
+        let id = tx.stage_event(named).expect("party set");
         let sealed = tx.commit().expect("commit");
         assert_eq!(sealed.seq, 4);
-    }
+        id
+    };
+
+    // A corrected replacement is also a half, so a dropped party is the same token.
+    let mut dropped = recipe_half(&books, "EV4B", "PS53", "PS54", MINOR, MINOR);
+    dropped.recipe_instance_id = Some(uid("RR06"));
+    dropped.postings[0].ledger_account_id = receivable.clone();
+    let dropped_party = {
+        let mut tx = kernel.begin_transaction(Some(4)).expect("begin");
+        tx.correct_event(&named_id, Some(dropped))
+            .expect_err("replacement party")
+    };
+    let dropped_party = code_of(dropped_party, Code::InvalidShape);
+    assert_eq!(dropped_party.token, Some("recipe_party"));
+    assert_eq!(dropped_party.refs, vec!["ADR 0004".to_string()]);
+    assert_eq!(dropped_party.ids, vec![receivable]);
+    assert_eq!(kernel.revision().expect("rev"), 4);
+    assert_eq!(current_halves(&kernel, &uid("RR06")), 1);
 }
 
 #[test]
