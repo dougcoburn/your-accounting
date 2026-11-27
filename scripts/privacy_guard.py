@@ -5,17 +5,20 @@ One command for CI: scripts/check-privacy.sh (this file's ``check`` subcommand).
 Planted-violation tests: scripts/test-privacy.sh (``test`` subcommand).
 
 Guards:
-  data-files        no financial data files outside fixtures/; synthetic marker required
+  data-files        csv, qfx, ofx, pdf, db, and sqlite outside a fixtures/ dir;
+                    json only when it is under fixtures/ or carries a synthetic marker
   private           private/ is gitignored and nothing under it is tracked
   denylist          placeholder, local, env, and hashed identifying terms
-  account-numbers   account-number-like digit runs in fixtures and docs
-  logs              redacting logger drops payee, description, and memo
+  account-numbers   account-number-like digit runs in tracked text data, docs, and prototypes/
+  logs              redacting logger drops payee, description, and memo;
+                    skip when the crate or cargo is absent
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -28,32 +31,53 @@ from pathlib import Path
 SCRIPT = Path(__file__).resolve()
 GUARDS = ("data-files", "private", "denylist", "account-numbers", "logs")
 
-TEXT_EXTENSIONS = {
+# Placement guard. JSON is handled separately: it counts only under a fixtures
+# directory, or when the file itself carries a synthetic-data marker.
+REAL_DATA_EXTENSIONS = {
     ".csv",
-    ".tsv",
-    ".json",
+    ".qfx",
+    ".ofx",
+    ".pdf",
+    ".db",
+    ".sqlite",
+    ".sqlite3",
+}
+TEXT_DATA_EXTENSIONS = {
+    ".csv",
     ".ofx",
     ".qfx",
+}
+BINARY_DATA_EXTENSIONS = REAL_DATA_EXTENSIONS - TEXT_DATA_EXTENSIONS
+# Account-number scan covers these text data files wherever they are tracked,
+# plus markdown, anything under a docs/ directory, and everything under prototypes/.
+ACCOUNT_TEXT_DATA_EXTENSIONS = TEXT_DATA_EXTENSIONS | {
+    ".tsv",
+    ".json",
     ".qif",
     ".qbo",
     ".ofc",
     ".iif",
 }
-BINARY_EXTENSIONS = {
-    ".pdf",
-    ".db",
-    ".sqlite",
-    ".sqlite3",
+ACCOUNT_SKIP_SUFFIXES = BINARY_DATA_EXTENSIONS | {
     ".xls",
     ".xlsx",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".ico",
+    ".woff",
+    ".woff2",
+    ".zip",
+    ".gz",
 }
-DATA_EXTENSIONS = TEXT_EXTENSIONS | BINARY_EXTENSIONS
 MARKERS = (b"# synthetic", b"<!-- synthetic -->", b"% synthetic")
-FIXTURE_PREFIX = "fixtures/"
 PLACEHOLDER_FILE = "scripts/denylist.placeholders"
 HASH_FILE = "scripts/denylist.sha256"
 LOCAL_DENYLIST = "private/denylist.txt"
-ACCOUNT_PREFIXES = ("docs/", "fixtures/", "accounting-core/docs/")
+CRATE_MANIFEST = Path("accounting-core/crates/accounting-privacy/Cargo.toml")
+WORKSPACE_MANIFEST = Path("accounting-core/Cargo.toml")
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 DIGIT_RUN = re.compile(r"(?<![\d.])(\d{5,})(?![\d.])")
@@ -63,32 +87,36 @@ MONEY = re.compile(
     r"\b(?:USD|EUR|JPY|GBP|minor|amount_minor|expected_amount_minor|debit|credit)\b",
     re.IGNORECASE,
 )
+# Unquoted or quoted integer that is the entire value of a *Minor JSON key.
+JSON_MINOR_VALUE = re.compile(
+    r'"(?P<key>[A-Za-z_][A-Za-z0-9_]*)"\s*:\s*(?:"(?P<qnum>\d+)"|(?P<bnum>\d+))(?!\d)'
+)
 
-# Extensions the planted test requires the guard to keep blocking.
+# Extensions the planted test requires the guard to keep blocking outside fixtures/.
 REQUIRED_DATA_EXTENSIONS = {
     ".csv",
-    ".tsv",
     ".json",
     ".pdf",
     ".qfx",
     ".ofx",
-    ".qbo",
-    ".qif",
-    ".ofc",
-    ".iif",
     ".db",
     ".sqlite",
     ".sqlite3",
-    ".xls",
-    ".xlsx",
 }
 
 
 class Report:
-    def __init__(self, name: str, errors: list[str] | None = None, config_error: str | None = None):
+    def __init__(
+        self,
+        name: str,
+        errors: list[str] | None = None,
+        config_error: str | None = None,
+        skipped: str | None = None,
+    ):
         self.name = name
         self.errors = errors or []
         self.config_error = config_error
+        self.skipped = skipped
 
     def code(self) -> int:
         if self.config_error:
@@ -130,10 +158,45 @@ def read_text(path: Path) -> str | None:
         return data.decode("latin-1")
 
 
+def is_fixture_rel(rel: str) -> bool:
+    """True when a parent directory is named fixtures, at any depth."""
+    return "fixtures" in Path(rel).parts[:-1]
+
+
+def marker_in(data: bytes) -> bool:
+    return any(marker in data for marker in MARKERS)
+
+
+def json_synthetic_marker(data: bytes) -> bool:
+    """True for an in-file JSON synthetic marker.
+
+    Accepted forms: a byte marker (``# synthetic``, an HTML comment, or a PDF
+    ``% synthetic`` comment), or a top-level ``"_synthetic": true`` key.
+    A nested ``_synthetic`` key does not count.
+    """
+    if marker_in(data):
+        return True
+    try:
+        parsed = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return isinstance(parsed, dict) and parsed.get("_synthetic") is True
+
+
+def sidecar_marker(root: Path, rel: str, present: set[str]) -> bool:
+    sidecar = rel + ".synthetic"
+    if sidecar not in present:
+        return False
+    return b"# synthetic" in (root / sidecar).read_bytes()
+
+
 def emit(report: Report) -> int:
     if report.config_error:
         print(f"{report.name}: {report.config_error}", file=sys.stderr)
         return 2
+    if report.skipped and not report.errors:
+        print(f"{report.name}: SKIP {report.skipped}")
+        return 0
     if report.errors:
         if report.name == "denylist":
             print(
@@ -159,28 +222,33 @@ def check_data_files(root: Path) -> Report:
     errors: list[str] = []
     for rel in files:
         suffix = Path(rel).suffix.lower()
-        if suffix not in DATA_EXTENSIONS:
-            continue
-        if not rel.startswith(FIXTURE_PREFIX):
-            errors.append(f"{rel} is outside fixtures/")
+        if suffix not in REAL_DATA_EXTENSIONS and suffix != ".json":
             continue
         path = root / rel
         try:
             data = path.read_bytes()
         except OSError as err:
             return Report("data-files", config_error=f"could not read {rel}: {err}")
-        if suffix in TEXT_EXTENSIONS:
-            if not any(marker in data for marker in MARKERS):
+        try:
+            side = sidecar_marker(root, rel, present)
+        except OSError as err:
+            return Report("data-files", config_error=f"could not read {rel}.synthetic: {err}")
+        if suffix == ".json":
+            marked = json_synthetic_marker(data) or side
+            if not is_fixture_rel(rel) and not marked:
+                continue
+        if not is_fixture_rel(rel):
+            errors.append(f"{rel} is outside fixtures/")
+            continue
+        if suffix in TEXT_DATA_EXTENSIONS:
+            if not marker_in(data):
                 errors.append(f"{rel} is missing a synthetic marker")
             continue
-        sidecar = rel + ".synthetic"
-        sidecar_ok = False
-        if sidecar in present:
-            try:
-                sidecar_ok = b"# synthetic" in (root / sidecar).read_bytes()
-            except OSError as err:
-                return Report("data-files", config_error=f"could not read {sidecar}: {err}")
-        if not any(marker in data for marker in MARKERS) and not sidecar_ok:
+        if suffix == ".json":
+            if not json_synthetic_marker(data) and not side:
+                errors.append(f"{rel} is missing a synthetic marker")
+            continue
+        if not marker_in(data) and not side:
             errors.append(f"{rel} is missing a synthetic marker")
     return Report("data-files", errors)
 
@@ -308,17 +376,38 @@ def check_denylist(root: Path, env: Mapping[str, str] | None = None) -> Report:
     return Report("denylist", errors)
 
 
+def minor_json_value_spans(line: str) -> set[tuple[int, int]]:
+    """Spans of 1-6 digit values of JSON keys whose name ends in ``minor``.
+
+    ``openingMinor``, ``fromAmountMinor``, and ``amount_minor`` are minor-unit
+    money fields. A longer run is not exempt: it can hide an account number.
+    """
+    spans: set[tuple[int, int]] = set()
+    for match in JSON_MINOR_VALUE.finditer(line):
+        if not match.group("key").lower().endswith("minor"):
+            continue
+        group = "qnum" if match.group("qnum") is not None else "bnum"
+        if len(match.group(group)) > 6:
+            continue
+        spans.add(match.span(group))
+    return spans
+
+
 def account_line_violation(line: str, rel: str) -> bool:
     if GROUPED_ACCOUNT.search(line):
         return True
+    exempt = minor_json_value_spans(line)
+    strict = is_fixture_rel(rel)
     for match in DIGIT_RUN.finditer(line):
+        if (match.start(1), match.end(1)) in exempt:
+            continue
         run = match.group(1)
         token = token_at(line, match.start(1), match.end(1))
         if IBAN.fullmatch(token):
             return True
         if any(char.isalpha() for char in token):
             continue
-        if rel.startswith(FIXTURE_PREFIX):
+        if strict:
             return True
         if len(run) <= 6 and MONEY.search(line):
             continue
@@ -336,6 +425,19 @@ def token_at(line: str, start: int, end: int) -> str:
     return line[left:right]
 
 
+def account_scan_target(rel: str) -> bool:
+    """Tracked text data, docs, and prototype files."""
+    suffix = Path(rel).suffix.lower()
+    if suffix in ACCOUNT_SKIP_SUFFIXES:
+        return False
+    if suffix in ACCOUNT_TEXT_DATA_EXTENSIONS or suffix in {".md", ".rst"}:
+        return True
+    parts = Path(rel).parts
+    if "docs" in parts[:-1]:
+        return True
+    return bool(parts) and parts[0] == "prototypes"
+
+
 def check_account_numbers(root: Path) -> Report:
     try:
         files = git_files(root)
@@ -343,7 +445,7 @@ def check_account_numbers(root: Path) -> Report:
         return Report("account-numbers", config_error=str(err))
     errors: list[str] = []
     for rel in files:
-        if not rel.startswith(ACCOUNT_PREFIXES):
+        if not account_scan_target(rel):
             continue
         path = root / rel
         if not path.is_file():
@@ -360,13 +462,37 @@ def check_account_numbers(root: Path) -> Report:
     return Report("account-numbers", errors)
 
 
-def check_logs(root: Path) -> Report:
-    manifest = root / "accounting-core" / "Cargo.toml"
+_CARGO_LOOKUP = object()
+
+
+def check_logs(root: Path, cargo_bin: str | None | object = _CARGO_LOOKUP) -> Report:
+    """Run the redaction tests, or skip when cargo or the crate is absent.
+
+    The default looks up ``cargo`` on ``PATH``. Tests pass ``cargo_bin=None``
+    to simulate a machine without cargo. A present crate whose redaction test
+    fails is still a failure.
+    """
+    if cargo_bin is _CARGO_LOOKUP:
+        resolved = shutil.which("cargo")
+    elif isinstance(cargo_bin, str) and cargo_bin:
+        resolved = cargo_bin
+    else:
+        resolved = None
+    crate_manifest = root / CRATE_MANIFEST
+    missing: list[str] = []
+    if not resolved:
+        missing.append("cargo is absent")
+    if not crate_manifest.is_file():
+        missing.append("accounting-privacy crate is absent")
+    if missing:
+        return Report("logs", skipped="; ".join(missing))
+    manifest = root / WORKSPACE_MANIFEST
     if not manifest.is_file():
-        return Report("logs", config_error="missing accounting-core/Cargo.toml")
+        return Report("logs", errors=["accounting-privacy tests failed", "missing accounting-core/Cargo.toml"])
+    assert resolved is not None
     proc = subprocess.run(
         [
-            "cargo",
+            resolved,
             "test",
             "--manifest-path",
             str(manifest),
@@ -510,7 +636,9 @@ def first_placeholder(root: Path) -> str:
 
 
 def test_data_files(root: Path) -> None:
-    expect(REQUIRED_DATA_EXTENSIONS <= DATA_EXTENSIONS, "data extension list shrunk")
+    counted = REAL_DATA_EXTENSIONS | {".json"}
+    expect(REQUIRED_DATA_EXTENSIONS <= counted, "data extension list shrunk")
+    expect(".tsv" not in counted and ".xlsx" not in counted, "non-data extensions must stay out of the placement guard")
     with TempRepo() as repo:
         rels = []
         for suffix in sorted(REQUIRED_DATA_EXTENSIONS):
@@ -563,6 +691,63 @@ def test_data_files(root: Path) -> None:
         repo.add_force(*good)
         report = check_data_files(repo.path)
         expect(report.code() == 0, "marked synthetic fixtures must pass", report)
+
+    with TempRepo() as repo:
+        manifests = {
+            "package.json": b'{"name":"prototype","version":"1.0.0"}\n',
+            "package-lock.json": b'{"name":"prototype","lockfileVersion":3}\n',
+            "tsconfig.json": b'{"compilerOptions":{"strict":true}}\n',
+            "prototypes/b-triage/package.json": b'{"name":"triage"}\n',
+            "prototypes/b-triage/package-lock.json": b'{"name":"triage","lockfileVersion":3}\n',
+            "prototypes/b-triage/tsconfig.json": b'{"files":[]}\n',
+            "app/settings.json": b'{"port":5171}\n',
+        }
+        for rel, data in manifests.items():
+            repo.write_bytes(rel, data)
+        repo.add_force(*manifests)
+        report = check_data_files(repo.path)
+        expect(report.code() == 0, "package manifests and unmarked json must pass", report)
+
+    with TempRepo() as repo:
+        repo.write("notes/export.json", '{"_synthetic": true, "payee": "Acme Corp"}\n')
+        repo.add_force("notes/export.json")
+        report = check_data_files(repo.path)
+        expect(report.code() == 1, "json with a synthetic marker outside fixtures/ must fail", report)
+        expect(any("notes/export.json" in err and "outside" in err for err in report.errors), "marked json must be named", report)
+
+    with TempRepo() as repo:
+        good = {
+            "prototypes/c-journal/fixtures/planted.csv": b"# synthetic\nDate,Merchant\n2025-10-01,Acme Corp\n",
+            "prototypes/c-journal/fixtures/books.json": b'{"_synthetic": true, "name": "Acme Corp"}\n',
+            "prototypes/c-journal/fixtures/sidecar.json": b'{"name": "Acme Corp"}\n',
+            "prototypes/c-journal/fixtures/sidecar.json.synthetic": b"# synthetic\n",
+        }
+        for rel, data in good.items():
+            repo.write_bytes(rel, data)
+        repo.add_force(*good)
+        report = check_data_files(repo.path)
+        expect(report.code() == 0, "per-prototype fixtures with a marker must pass", report)
+
+    with TempRepo() as repo:
+        bad = {
+            "prototypes/c-journal/fixtures/plain.json": b'{"name": "Acme Corp"}\n',
+            "prototypes/c-journal/fixtures/nested.json": b'{"inner": {"_synthetic": true}}\n',
+            "prototypes/c-journal/data/rows.csv": b"# synthetic\nDate,Merchant\n2025-10-01,Acme Corp\n",
+        }
+        for rel, data in bad.items():
+            repo.write_bytes(rel, data)
+        repo.add_force(*bad)
+        report = check_data_files(repo.path)
+        expect(report.code() == 1, "unmarked prototype fixtures and data outside fixtures/ must fail", report)
+        for rel in bad:
+            expect(any(rel in err for err in report.errors), f"missing {rel}", report)
+
+    with TempRepo() as repo:
+        repo.write_bytes("exports/notes.tsv", b"# synthetic\nAcme Corp\n")
+        repo.write_bytes("exports/sheet.xlsx", b"# synthetic\n")
+        repo.add_force("exports/notes.tsv", "exports/sheet.xlsx")
+        report = check_data_files(repo.path)
+        expect(report.code() == 0, "tsv and xlsx are not data files for this guard", report)
 
     report = check_data_files(root)
     expect(report.code() == 0, "clean tree must pass data-files", report)
@@ -735,14 +920,147 @@ def test_account_numbers(root: Path) -> None:
             report = check_account_numbers(repo.path)
             expect(report.code() == 1, f"docs must reject {label}", report)
 
+    with TempRepo() as repo:
+        repo.write(
+            "prototypes/c-journal/fixtures/books.json",
+            "\n".join(
+                [
+                    "{",
+                    '  "_synthetic": true,',
+                    '  "openingMinor": 120000,',
+                    '  "fromAmountMinor": 10050,',
+                    '  "amount_minor": "120001"',
+                    "}",
+                    "",
+                ]
+            ),
+        )
+        repo.add_force("prototypes/c-journal/fixtures/books.json")
+        report = check_account_numbers(repo.path)
+        expect(report.code() == 0, "minor-unit JSON values of at most 6 digits must pass", report)
+
+    with TempRepo() as repo:
+        repo.write(
+            "prototypes/c-journal/fixtures/books.json",
+            '{"_synthetic": true, "openingMinor": 123456789012}\n',
+        )
+        repo.add_force("prototypes/c-journal/fixtures/books.json")
+        report = check_account_numbers(repo.path)
+        expect(report.code() == 1, "a long digit run in a minor JSON field must fail", report)
+        expect(all("123456789012" not in err for err in report.errors), "must not print the digits", report)
+
+    with TempRepo() as repo:
+        repo.write(
+            "prototypes/b-triage/src/accounts.ts",
+            'export const account = "123456789012";\nexport const openingMinor = 120000;\n',
+        )
+        repo.add_force("prototypes/b-triage/src/accounts.ts")
+        report = check_account_numbers(repo.path)
+        expect(report.code() == 1, "prototypes/ must be scanned for account numbers", report)
+        expect(any("prototypes/b-triage/src/accounts.ts" in err for err in report.errors), "prototype path must be named", report)
+
+    with TempRepo() as repo:
+        repo.write(
+            "prototypes/c-journal/fixtures/books.json",
+            '{"minorAccount": 123456, "openingMinor": 100}\n',
+        )
+        repo.add_force("prototypes/c-journal/fixtures/books.json")
+        report = check_account_numbers(repo.path)
+        expect(report.code() == 1, "a key that does not end in minor is still an account number", report)
+
+    with TempRepo() as repo:
+        repo.write("NOTES.md", "account 123456789012\n")
+        repo.add_force("NOTES.md")
+        report = check_account_numbers(repo.path)
+        expect(report.code() == 1, "markdown outside docs/ must be scanned", report)
+
+    with TempRepo() as repo:
+        repo.write("exports/rows.csv", "account,123456789012\n")
+        repo.add_force("exports/rows.csv")
+        report = check_account_numbers(repo.path)
+        expect(report.code() == 1, "tracked text data outside fixtures/ must be scanned", report)
+
     report = check_account_numbers(root)
     expect(report.code() == 0, "clean tree must pass account-numbers", report)
 
 
+def write_privacy_crate(repo: TempRepo, lib_rs: str) -> None:
+    repo.write(
+        "accounting-core/Cargo.toml",
+        "\n".join(
+            [
+                "[workspace]",
+                'resolver = "2"',
+                'members = ["crates/accounting-privacy"]',
+                "",
+            ]
+        ),
+    )
+    repo.write(
+        "accounting-core/crates/accounting-privacy/Cargo.toml",
+        "\n".join(
+            [
+                "[package]",
+                'name = "accounting-privacy"',
+                'version = "0.0.0"',
+                'edition = "2021"',
+                "",
+            ]
+        ),
+    )
+    repo.write("accounting-core/crates/accounting-privacy/src/lib.rs", lib_rs)
+
+
 def test_logs(root: Path) -> None:
+    with TempRepo() as repo:
+        repo.write("README.md", "Acme Corp placeholder\n")
+        repo.add_all()
+        report = check_logs(repo.path)
+        expect(report.code() == 0, "a tree without the crate must skip logs", report)
+        expect(
+            report.skipped is not None and "accounting-privacy crate is absent" in report.skipped,
+            "skip must name the missing crate",
+            report,
+        )
+        proc = run_cli(repo.path, "check", "logs", env=env_without_denylist())
+        expect(proc.returncode == 0, "logs cli must exit 0 when the crate is absent")
+        expect("SKIP" in proc.stdout, "logs cli must print SKIP")
+        expect("accounting-privacy crate is absent" in proc.stdout, "logs cli must say why it skipped")
+
+    report = check_logs(root, cargo_bin=None)
+    expect(report.code() == 0, "missing cargo must skip even when the crate exists", report)
+    expect(report.skipped is not None and "cargo is absent" in report.skipped, "skip must name cargo", report)
+
+    with TempRepo() as repo:
+        write_privacy_crate(
+            repo,
+            "\n".join(
+                [
+                    "#[cfg(test)]",
+                    "mod tests {",
+                    "    #[test]",
+                    "    fn clean_log_redacts_synthetic_transaction() {",
+                    '        panic!("planted unredacted log");',
+                    "    }",
+                    "",
+                    "    #[test]",
+                    "    fn planted_unredacted_log_fails_the_guard() {}",
+                    "}",
+                    "",
+                ]
+            ),
+        )
+        repo.add_all()
+        report = check_logs(repo.path)
+        expect(report.code() == 1, "a present crate whose redaction test fails must fail", report)
+        expect(report.skipped is None, "a failing redaction test must not skip", report)
+        proc = run_cli(repo.path, "check", "logs", env=env_without_denylist())
+        expect(proc.returncode == 1, "logs cli must exit 1 when the redaction test fails")
+        expect("SKIP" not in proc.stdout, "a failing redaction test must not print SKIP")
+
     report = check_logs(root)
     expect(report.code() == 0, "clean log redaction tests must pass", report)
-    # The planted-violation assertion lives in the crate test that just ran.
+    expect(report.skipped is None, "logs must run when the crate and cargo are present", report)
     expect(
         (root / "accounting-core/crates/accounting-privacy/src/lib.rs").is_file(),
         "redacting logger source must exist",
