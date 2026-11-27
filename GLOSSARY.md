@@ -33,11 +33,11 @@ A movement a recipe says must exist in another account (e.g. HSA receipt for a p
 **Black-box account** (candidate name):
 A destination treated like an expense (e.g. "investment contribution") for money leaving tracked books into an account not modeled in detail.
 
-**Review state** (per line item):
-Unreviewed (no recipe chosen), Interpreted (draft: recipe chosen, group not yet complete), Reconciled (settlement group complete and committed), Voided. Agreement with a statement is a separate term: Statement-matched. A transaction's overall state is derived from its lines.
+**Review state** (per live observation):
+Unreviewed (no recipe chosen), Interpreted (draft: recipe chosen, group not yet complete), Reconciled (settlement group complete and committed). A voided observation is not a review state and leaves this list. Agreement with a statement is a separate term: Statement-matched. A transaction's overall state is derived from its lines.
 
-**Origin**:
-Observed (from a feed row) or Expected (a recipe says it should exist, not yet seen).
+**Origin** (of a kernel line):
+Observed while at least one live observation link points at the line. Expected when none does. A link is live while its observation has no void tombstone. Voiding the only live link makes the line Expected. Voiding one of two duplicate observations leaves the line Observed.
 
 **Tracking mode** (of a financial account):
 Transparent (balance tracked; money in and out is transfers) or Black box (money sent there is booked like an expense; nothing inside is tracked). Changed only through the mode-switch wizard.
@@ -189,7 +189,7 @@ Two levels.
 Both run at least on open. Neither repairs anything; findings surface as flagged open items. See ADR 0004.
 
 **Void** (of an observation):
-Removing an erroneous or duplicate observation from the books. Appears as a delete to the user; recorded as an append-only tombstone commit. Releases anything that observation was linked to.
+Removing an erroneous or duplicate observation from the import context. Appears as a delete to the user; recorded as an append-only tombstone. Ends that observation's live links and does not reverse or correct the kernel event or its lines. The line becomes Expected unless another live observation still links to it.
 
 **Worklist**:
 All observations not yet reconciled or voided. Open is a to-do state, not an end state.

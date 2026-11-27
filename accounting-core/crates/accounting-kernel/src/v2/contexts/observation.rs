@@ -59,11 +59,6 @@ fn raise(msg: &str) -> Option<(Code, &'static [&'static str])> {
             &["ADR 0002"],
         ),
         (
-            "a void must reverse every current event",
-            Code::VoidWithoutReversal,
-            &["ADR 0002"],
-        ),
-        (
             "observed legs must be reposted",
             Code::DissolveWithoutRepost,
             &["ADR 0006"],
@@ -133,13 +128,13 @@ mod tests {
         assert_eq!(voided.code, Code::VoidedObservation);
 
         let missed = kernel_map(
-            "ADR 0002: a void must reverse every current event linked to the observation",
+            "ADR 0006: a dissolved group's observed legs must be reposted in the same commit",
             SqlSite::Seal,
         );
         assert_eq!(missed.code, Code::ValidatorMissed);
         assert_eq!(
             missed.refs,
-            vec!["VoidWithoutReversal".to_string(), "ADR 0011".to_string()]
+            vec!["DissolveWithoutRepost".to_string(), "ADR 0011".to_string()]
         );
 
         assert!(feed_name_sql().contains("feeds"));

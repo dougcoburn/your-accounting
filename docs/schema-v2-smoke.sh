@@ -173,11 +173,18 @@ INSERT INTO observations(id,feed_id,external_id,financial_account_id,occurred_da
   VALUES('${P}B002','${P}FED1','synthetic-1','${P}FAC1','2025-10-30','outflow',4250,'USD','$(printf 'a%.0s' {1..64})','{}','${P}C004','$T');
 COMMIT;"
 
-rejects "ADR 0002 a void must reverse the linked current event in the same commit" "a void must reverse every current event" "
+equals "linked line origin is observed" "observed" "SELECT origin FROM posting_origin WHERE posting_id='${P}PS06';"
+ok "a void tombstones the observation and leaves the linked event current" "
 BEGIN;
 INSERT INTO observation_voids(id,observation_id,reason,commit_id,recorded_at) VALUES('${P}V001','${P}B001','duplicate','${P}C004','$T');
-INSERT INTO commits(id,expected_revision,seq,kind,actor,recorded_at) VALUES('${P}C004',3,4,'void','smoke','$T');
-COMMIT;"
+SELECT CASE WHEN
+  (SELECT origin FROM posting_origin WHERE posting_id='${P}PS06') = 'expected'
+  AND (SELECT superseded_by FROM accounting_events WHERE id='${P}EV03') IS NULL
+  AND (SELECT count(*) FROM accounting_events WHERE reverses_id IS NOT NULL) = 1
+  AND NOT EXISTS (SELECT 1 FROM observation_review_state WHERE observation_id='${P}B001')
+THEN 1 ELSE 1/0 END;
+ROLLBACK;"
+rejects "commit kind void is not a kernel kind" "CHECK constraint failed" "INSERT INTO commits(id,expected_revision,seq,kind,actor,recorded_at) VALUES('${P}C0V0',3,4,'void','smoke','$T');"
 rejects "ADR 0005 no valuation snapshot on a card account" "valuation snapshots only on non-cash asset accounts" "
 BEGIN;
 INSERT INTO valuation_snapshots(id,financial_account_id,as_of,value_minor,currency,source,commit_id,recorded_at) VALUES('${P}VS01','${P}FAC1','2025-10-31',100,'USD','manual','${P}C004','$T');

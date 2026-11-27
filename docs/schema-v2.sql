@@ -88,7 +88,7 @@ CREATE TABLE commits (
     id                TEXT PRIMARY KEY CHECK (length(id) = 26 AND id NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
     expected_revision INTEGER NOT NULL CHECK (expected_revision >= 0),
     seq               INTEGER NOT NULL UNIQUE CHECK (seq >= 1),
-    kind        TEXT NOT NULL CHECK (kind IN ('setup','import','interpret','settle','correct','void','assert','cross_entity','grant','freeze')),
+    kind        TEXT NOT NULL CHECK (kind IN ('setup','import','interpret','settle','correct','assert','cross_entity','grant','freeze')),
     actor       TEXT NOT NULL CHECK (length(actor) > 0),
     reason      TEXT NOT NULL DEFAULT '',
     recorded_at TEXT NOT NULL CHECK (recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z' AND julianday(recorded_at) IS NOT NULL),
@@ -374,9 +374,10 @@ CREATE TABLE observations (
 ) STRICT;
 CREATE INDEX observations_account_date ON observations(financial_account_id, occurred_date);
 
--- ADR 0002: voiding is a tombstone commit; it looks like a delete to the user
--- and releases anything linked (the seal trigger requires every current event
--- interpreting the observation to be reversed in the same commit).
+-- Voiding is an import-context tombstone (Doug, 2026-11-27). It ends this
+-- observation's live links and does not reverse or correct kernel events.
+-- posting_observations rows stay; a link is live only while its observation
+-- has no row here. The commit, when one is required, is a non-reversal kind.
 CREATE TABLE observation_voids (
     id             TEXT PRIMARY KEY CHECK (length(id) = 26 AND id NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
     observation_id TEXT NOT NULL UNIQUE REFERENCES observations(id),
@@ -868,14 +869,6 @@ BEGIN
                   WHERE s.commit_id = NEW.id AND s.state = 'reconciled' AND a.kind = 'clearing'
                   GROUP BY s.group_id, p.currency, p.ledger_account_id
                   HAVING sum(CASE p.side WHEN 'debit' THEN p.amount_minor ELSE -p.amount_minor END) <> 0);
-    -- ADR 0002 void: voiding releases links; every current event interpreting
-    -- the observation must be reversed in the same commit.
-    SELECT RAISE(ABORT, 'ADR 0002: a void must reverse every current event linked to the observation')
-    WHERE EXISTS (SELECT 1 FROM observation_voids v
-                  JOIN posting_observations po ON po.observation_id = v.observation_id
-                  JOIN journal_postings p ON p.id = po.posting_id
-                  JOIN accounting_events e ON e.id = p.event_id
-                  WHERE v.commit_id = NEW.id AND e.superseded_by IS NULL AND e.reverses_id IS NULL);
     -- ADR 0006 / PR 19 Q3: settlement_postings.posting_id is UNIQUE forever, so
     -- dissolving a reconciled group must reverse every leg in the same commit
     -- (or earlier) ...
@@ -934,11 +927,11 @@ SELECT s.group_id, s.state, s.seq, s.commit_id
 FROM settlement_group_states s
 WHERE s.seq = (SELECT max(seq) FROM settlement_group_states x WHERE x.group_id = s.group_id);
 
--- ADR 0006 / GLOSSARY "Review state": derived per observation, never stored.
+-- ADR 0006 / GLOSSARY "Review state": derived per live observation, never stored.
+-- A voided observation is off this view. Origin (observed or expected) is separate.
 CREATE VIEW observation_review_state AS
 SELECT o.id AS observation_id,
        CASE
-         WHEN EXISTS (SELECT 1 FROM observation_voids v WHERE v.observation_id = o.id) THEN 'voided'
          WHEN EXISTS (SELECT 1 FROM posting_observations po
                       JOIN journal_postings p ON p.id = po.posting_id
                       JOIN accounting_events e ON e.id = p.event_id
@@ -952,7 +945,22 @@ SELECT o.id AS observation_id,
                       WHERE dp.observation_id = o.id AND g.state = 'draft') THEN 'interpreted'
          ELSE 'unreviewed'
        END AS review_state
-FROM observations o WHERE o.corroborates_id IS NULL;
+FROM observations o
+WHERE o.corroborates_id IS NULL
+  AND NOT EXISTS (SELECT 1 FROM observation_voids v WHERE v.observation_id = o.id);
+
+-- GLOSSARY "Origin": observed while any live observation link points at the line,
+-- otherwise expected. A link is live when its observation has no void tombstone.
+CREATE VIEW posting_origin AS
+SELECT p.id AS posting_id,
+       CASE WHEN EXISTS (
+         SELECT 1 FROM posting_observations po
+         WHERE po.posting_id = p.id
+           AND NOT EXISTS (
+             SELECT 1 FROM observation_voids v WHERE v.observation_id = po.observation_id
+           )
+       ) THEN 'observed' ELSE 'expected' END AS origin
+FROM journal_postings p;
 
 -- ADR 0001: remaining claim amount, derived.
 CREATE VIEW obligation_balances AS
@@ -1004,10 +1012,11 @@ HAVING sum(CASE side WHEN 'debit' THEN amount_minor ELSE -amount_minor END) <> 0
 CREATE VIEW doctor_superseded_drift AS             -- ADR 0002 amendment: flag vs reverses_id
 SELECT e.id FROM accounting_events e LEFT JOIN accounting_events r ON r.reverses_id = e.id
 WHERE e.superseded_by IS NOT r.id;
-CREATE VIEW doctor_observation_double_consumed AS  -- INV-007 among current events
+CREATE VIEW doctor_observation_double_consumed AS  -- INV-007 among live current links
 SELECT po.observation_id FROM posting_observations po
 JOIN journal_postings p ON p.id = po.posting_id JOIN accounting_events e ON e.id = p.event_id
 WHERE e.superseded_by IS NULL AND e.reverses_id IS NULL
+  AND NOT EXISTS (SELECT 1 FROM observation_voids v WHERE v.observation_id = po.observation_id)
 GROUP BY po.observation_id HAVING count(*) > 1;
 
 -- =============================================================================

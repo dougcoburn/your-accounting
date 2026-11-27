@@ -1,7 +1,8 @@
 //! Observation import (U22, ADR 0011).
 //!
-//! Stores already-keyed feed rows, links them to kernel lines by position, and
-//! voids them by reversing those events in the same commit. `row_hash` is the
+//! Stores already-keyed feed rows and links them to kernel lines by position.
+//! A void tombstones the observation and ends its live links. It does not
+//! reverse or correct the kernel event. `row_hash` is the
 //! adapter's hash: a Monarch `Date` is the posted date when the adapter copies
 //! it into `posted_date` (U23). This module does not read feed files.
 //!
@@ -52,7 +53,6 @@ const CODES: &[Code] = &[
     Code::ObservationDoubleConsumed,
     Code::VoidedObservation,
     Code::ObservationAlreadyVoided,
-    Code::VoidWithoutReversal,
     Code::DissolveWithoutRepost,
     Code::OrphanEvidence,
     Code::EvidenceHashMismatch,
@@ -143,7 +143,6 @@ impl ContextParticipant for ObservationImport {
 
     fn validate(&self, tx: &ContextTx<'_>, set: &CommitStagedSet) -> Result<(), Error> {
         reject_double_consumed(tx, set)?;
-        reject_void_without_reversal(tx)?;
         reject_missing_repost(tx)?;
         Ok(())
     }
@@ -280,7 +279,7 @@ impl Transaction<'_> {
         Ok(work.outcome)
     }
 
-    /// Tombstone the observation and reverse every current interpreting event.
+    /// Tombstone the observation. Live links to it end. Kernel events and lines stay.
     pub fn void_observation(&mut self, observation_id: &str, reason: &str) -> Result<(), Error> {
         self.ensure_open()?;
         if !is_ulid(observation_id) {
@@ -320,24 +319,6 @@ impl Transaction<'_> {
                 &[],
                 vec![observation_id.to_string()],
             )));
-        }
-        let events = match collect_strings(
-            self.db(),
-            "SELECT DISTINCT e.id
-             FROM posting_observations po
-             JOIN journal_postings p ON p.id = po.posting_id
-             JOIN accounting_events e ON e.id = p.event_id
-             WHERE po.observation_id = ?1
-               AND e.superseded_by IS NULL
-               AND e.reverses_id IS NULL
-             ORDER BY e.id",
-            observation_id,
-        ) {
-            Ok(events) => events,
-            Err(err) => return Err(self.fail(map_sql(err, SqlSite::Read))),
-        };
-        for event_id in &events {
-            self.correct_event(event_id, None)?;
         }
         let void_id = self.allocate(None)?;
         let observation_id = observation_id.to_string();
@@ -810,7 +791,10 @@ fn reject_double_consumed(tx: &ContextTx<'_>, set: &CommitStagedSet) -> Result<(
              JOIN accounting_events e ON e.id = p.event_id
              WHERE po.observation_id = ?1
                AND e.superseded_by IS NULL
-               AND e.reverses_id IS NULL",
+               AND e.reverses_id IS NULL
+               AND NOT EXISTS (
+                 SELECT 1 FROM observation_voids v WHERE v.observation_id = po.observation_id
+               )",
             [&row.row_id],
             |r| r.get(0),
         )?;
@@ -821,32 +805,6 @@ fn reject_double_consumed(tx: &ContextTx<'_>, set: &CommitStagedSet) -> Result<(
                 vec![row.row_id.clone()],
             ));
         }
-    }
-    Ok(())
-}
-
-fn reject_void_without_reversal(tx: &ContextTx<'_>) -> Result<(), Error> {
-    let stuck = tx.query_vec(
-        "SELECT v.observation_id FROM observation_voids v
-         WHERE v.commit_id = ?1
-           AND EXISTS (
-             SELECT 1 FROM posting_observations po
-             JOIN journal_postings p ON p.id = po.posting_id
-             JOIN accounting_events e ON e.id = p.event_id
-             WHERE po.observation_id = v.observation_id
-               AND e.superseded_by IS NULL
-               AND e.reverses_id IS NULL
-           )
-         ORDER BY v.observation_id",
-        [tx.commit_id()],
-        |row| row.get::<_, String>(0),
-    )?;
-    if let Some(observation_id) = stuck.first() {
-        return Err(Error::new(
-            Code::VoidWithoutReversal,
-            &["ADR 0002"],
-            vec![observation_id.clone()],
-        ));
     }
     Ok(())
 }
@@ -947,20 +905,6 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 fn scalar(conn: &Connection, sql: &str, arg: &str) -> Result<i64, rusqlite::Error> {
     conn.query_row(sql, [arg], |row| row.get(0))
-}
-
-fn collect_strings(
-    conn: &Connection,
-    sql: &str,
-    arg: &str,
-) -> Result<Vec<String>, rusqlite::Error> {
-    let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map([arg], |row| row.get(0))?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(row?);
-    }
-    Ok(out)
 }
 
 struct DoubleConsumedCheck;
@@ -1461,6 +1405,41 @@ mod tests {
             .expect("review")
     }
 
+    fn strings(kernel: &Kernel, sql: &str) -> Vec<String> {
+        let conn = kernel.connection();
+        let mut stmt = conn.prepare(sql).expect("prepare");
+        let rows = stmt.query_map([], |row| row.get(0)).expect("query");
+        rows.map(|row| row.expect("row")).collect()
+    }
+
+    fn kernel_rows(kernel: &Kernel) -> (Vec<String>, Vec<String>) {
+        (
+            strings(
+                kernel,
+                "SELECT id || '|' || ifnull(reverses_id,'') || '|' || ifnull(superseded_by,'')
+                   || '|' || effective_date || '|' || recipe_id
+                 FROM accounting_events ORDER BY id",
+            ),
+            strings(
+                kernel,
+                "SELECT id || '|' || event_id || '|' || ledger_account_id || '|' || side
+                   || '|' || amount_minor
+                 FROM journal_postings ORDER BY id",
+            ),
+        )
+    }
+
+    fn origin(kernel: &Kernel, posting: &str) -> String {
+        kernel
+            .connection()
+            .query_row(
+                "SELECT origin FROM posting_origin WHERE posting_id = ?1",
+                [posting],
+                |row| row.get(0),
+            )
+            .expect("origin")
+    }
+
     fn import_one(kernel: &mut Kernel, books: &Books, rev: i64) -> (String, String) {
         let mut tx = kernel.begin_transaction(Some(rev)).expect("begin");
         let feed = tx
@@ -1589,8 +1568,8 @@ mod tests {
     }
 
     #[test]
-    fn void_hides_the_observation_and_reverses_its_event() {
-        let tmp = Tmp::new("void");
+    fn void_of_the_only_observation_makes_the_line_expected() {
+        let tmp = Tmp::new("void-sole");
         let mut kernel = open_import(tmp.path());
         let books = chart(&mut kernel);
         let (_feed, observation) = import_one(&mut kernel, &books, 1);
@@ -1605,6 +1584,9 @@ mod tests {
         .expect("link");
         tx.commit().expect("commit");
         assert_eq!(review(&kernel, &observation), "unreviewed");
+        assert_eq!(origin(&kernel, &uid("PS02")), "observed");
+        assert_eq!(origin(&kernel, &uid("PS01")), "expected");
+        let before = kernel_rows(&kernel);
 
         let mut tx = kernel.begin_transaction(Some(3)).expect("begin");
         tx.void_observation(&observation, "duplicate")
@@ -1616,22 +1598,28 @@ mod tests {
                 .expect("row")
                 .expect("info")
                 .kind,
-            "correct"
+            "import"
         );
-        assert_eq!(review(&kernel, &observation), "voided");
-        let superseded: Option<String> = kernel
-            .connection()
-            .query_row(
-                "SELECT superseded_by FROM accounting_events WHERE id = ?1",
-                [uid("EV01")],
-                |row| row.get(0),
-            )
-            .expect("event");
-        assert!(superseded.is_some());
+        assert_eq!(origin(&kernel, &uid("PS02")), "expected");
+        assert_eq!(kernel_rows(&kernel), before);
+        assert_eq!(
+            count(
+                &kernel,
+                "SELECT count(*) FROM accounting_events
+                 WHERE reverses_id IS NOT NULL OR superseded_by IS NOT NULL"
+            ),
+            0
+        );
         assert_eq!(
             count(&kernel, "SELECT count(*) FROM posting_observations"),
             1
         );
+        let still_reviewed: Result<String, _> = kernel.connection().query_row(
+            "SELECT review_state FROM observation_review_state WHERE observation_id = ?1",
+            [&observation],
+            |row| row.get(0),
+        );
+        assert!(still_reviewed.is_err());
 
         let mut tx = kernel.begin_transaction(Some(4)).expect("begin");
         let err = tx
@@ -1652,11 +1640,87 @@ mod tests {
             .expect_err("voided link");
         assert_eq!(err.code, Code::VoidedObservation);
         drop(tx);
-        assert_eq!(count(&kernel, "SELECT count(*) FROM accounting_events"), 2);
+        assert_eq!(count(&kernel, "SELECT count(*) FROM accounting_events"), 1);
+        assert_eq!(kernel_rows(&kernel), before);
     }
 
     #[test]
-    fn link_mismatch_and_void_without_reversal_roll_back() {
+    fn void_of_one_duplicate_leaves_the_line_observed() {
+        let tmp = Tmp::new("void-dup");
+        let mut kernel = open_import(tmp.path());
+        let books = chart(&mut kernel);
+        let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
+        let feed = tx
+            .ensure_feed(NewFeed {
+                id: Some(uid("FE01")),
+                kind: "monarch_csv".to_string(),
+                name: "Synthetic Monarch".to_string(),
+            })
+            .expect("feed");
+        let mut first = row(&books, "dup-a", Some(POSTED), &hash_of(0x11), "USD");
+        first.id = Some(uid("BS01"));
+        let mut second = row(&books, "dup-b", Some(POSTED), &hash_of(0x22), "USD");
+        second.id = Some(uid("BS02"));
+        let imported = tx
+            .import_observations(batch(&feed, vec![first, second]))
+            .expect("import");
+        tx.commit().expect("commit");
+        let left = imported.observation_ids[0].clone();
+        let right = imported.observation_ids[1].clone();
+
+        let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
+        tx.append_event_with(
+            purchase(&books, "EV01", "PS01", "PS02"),
+            observation_links(vec![
+                ObservationLink {
+                    line_index: 1,
+                    observation_id: left.clone(),
+                },
+                ObservationLink {
+                    line_index: 1,
+                    observation_id: right.clone(),
+                },
+            ]),
+        )
+        .expect("link");
+        tx.commit().expect("commit");
+        assert_eq!(origin(&kernel, &uid("PS02")), "observed");
+        let before = kernel_rows(&kernel);
+
+        let mut tx = kernel.begin_transaction(Some(3)).expect("begin");
+        tx.void_observation(&left, "duplicate").expect("void one");
+        let sealed = tx.commit().expect("commit");
+        assert_eq!(
+            kernel
+                .commit_at_seq(sealed.seq)
+                .expect("row")
+                .expect("info")
+                .kind,
+            "import"
+        );
+        assert_eq!(origin(&kernel, &uid("PS02")), "observed");
+        assert_eq!(kernel_rows(&kernel), before);
+        assert_eq!(
+            count(
+                &kernel,
+                "SELECT count(*) FROM accounting_events
+                 WHERE reverses_id IS NOT NULL OR superseded_by IS NOT NULL"
+            ),
+            0
+        );
+
+        let mut tx = kernel.begin_transaction(Some(4)).expect("begin");
+        tx.void_observation(&right, "duplicate")
+            .expect("void the other");
+        tx.commit().expect("commit");
+        assert_eq!(origin(&kernel, &uid("PS02")), "expected");
+        assert_eq!(kernel_rows(&kernel), before);
+        assert_eq!(count(&kernel, "SELECT count(*) FROM accounting_events"), 1);
+        assert_eq!(count(&kernel, "SELECT count(*) FROM journal_postings"), 2);
+    }
+
+    #[test]
+    fn link_mismatch_rolls_back() {
         let tmp = Tmp::new("rollback");
         let mut kernel = open_import(tmp.path());
         let books = chart(&mut kernel);
@@ -1680,47 +1744,6 @@ mod tests {
             count(&kernel, "SELECT count(*) FROM posting_observations"),
             0
         );
-
-        let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
-        tx.append_event_with(
-            purchase(&books, "EV01", "PS01", "PS02"),
-            observation_links(vec![ObservationLink {
-                line_index: 1,
-                observation_id: observation.clone(),
-            }]),
-        )
-        .expect("link");
-        tx.commit().expect("commit");
-
-        let mut tx = kernel.begin_transaction(Some(3)).expect("begin");
-        tx.with_participant(PARTICIPANT_ID, true, |ctx| {
-            let id = uid("VD01");
-            let commit_id = ctx.commit_id().to_string();
-            let recorded_at = ctx.recorded_at().to_string();
-            ctx.insert_row(
-                "observation_voids",
-                &id,
-                "INSERT INTO observation_voids(id, observation_id, reason, commit_id, recorded_at)
-                 VALUES (?1, ?2, 'duplicate', ?3, ?4)",
-                params![id, observation, commit_id, recorded_at],
-            )?;
-            Ok(())
-        })
-        .expect("stage void");
-        let err = tx.commit().expect_err("void rule");
-        assert_eq!(err.code, Code::VoidWithoutReversal);
-        assert_ne!(err.code, Code::ValidatorMissed);
-        assert!(err.refs.iter().any(|r| r == "ADR 0011"));
-        assert_eq!(count(&kernel, "SELECT count(*) FROM observation_voids"), 0);
-        let current: Option<String> = kernel
-            .connection()
-            .query_row(
-                "SELECT superseded_by FROM accounting_events WHERE id = ?1",
-                [uid("EV01")],
-                |row| row.get(0),
-            )
-            .expect("event");
-        assert_eq!(current, None);
     }
 
     #[test]

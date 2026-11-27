@@ -32,9 +32,7 @@ pub(crate) fn map_owned(msg: &str, site: SqlSite) -> Option<Error> {
 
 /// A `commits_seal` rule the participant's `validate` was required to reject.
 pub(crate) fn seal_backstop(msg: &str) -> Option<Error> {
-    let rule = if msg.contains("a void must reverse every current event") {
-        "VoidWithoutReversal"
-    } else if msg.contains("observed legs must be reposted") {
+    let rule = if msg.contains("observed legs must be reposted") {
         "DissolveWithoutRepost"
     } else {
         return None;
