@@ -94,7 +94,7 @@ No real database exists yet. The v2 schema landed as a fresh migration 1 in #19.
 1. **Prototype loop** (runs first, in parallel with kernel phase 2): a throwaway TypeScript single-page app on 127.0.0.1 with an in-browser toy ledger. It loads the synthetic fixture by default (viewed in the box desktop browser) and Doug's real CSV from `YA_MONARCH_CSV` (viewed on Doug's Mac, with the CSV kept there). A short feedback check runs as each screen lands. This plan is the month-1 spec; U13 is a living record of prototype feedback, not a gate before build. Three alternative prototypes (A, B, C) are already in review; pick or mix from those rather than rebuilding U05–U10 from scratch unless review says otherwise.
 2. **Kernel v2** (UI-independent, so it starts now): typed accounts, append-only events, commit validator, `doctor`. Docs (U15, U16) and U17 (#31) are done. Next code is U18, after this plan is approved.
 3. **Import**: observation store and the Rust Monarch adapter (the Monarch Date is the posted date; natural key; void).
-4. **Recipes and settlement**: recipe contract, append-only groups, recipe batches, cross-entity outbox, match suggestions. Follow the rewritten ADR 0004 already on main.
+4. **Recipes and settlement**: recipe contract, append-only groups, recipe batches, cross-entity recipe halves and the recipe check, match suggestions. Follow the rewritten ADR 0004 already on main.
 5. **Reconciliation**: balance assertions, occurred-date balance, in-flight explanation.
 6. **Worklist and corrections**: derived review state, register/audit views, correct/void commands.
 7. **CLI/UI and month close**: CLI, a real local web UI over the Rust app (U37), golden end-to-end gate, real October dry run on the box.
@@ -133,9 +133,9 @@ Size: S is about 1 day, M is 2-4 days. "Doug" units cannot be delegated.
 | U26 | Append-only settlement groups: exclusivity, zero residual per group/entity/currency, drafts never post | BE | U19 | AT-004, AT-030, INV-006 tests | M | Not started |
 | U27 | Recipes A: purchase→category, refund/contra (linked or standalone, cap), perk credit, own-account transfer | FS | U25, U26 | AT-003, AT-017, AT-018 green | M | Not started |
 | U28 | Recipes B: paycheck gross-to-net from manual paystub, pre-tax/Roth separate accounts, HSA expected slot as its own draft group | FS | U27 | AT-019/020 (adapted, no committed clearing) green | M | Not started |
-| U29 | Cross-entity on-behalf + reimbursement claims: outbox, two legs, partial settle, forgive (user picks category) | BE | U26, U25 | AT-001, AT-005-007 + ADR 0004 crash/retry/mismatch tests | M | Not started |
+| U29 | Cross-entity on-behalf + reimbursement claims: application-orchestrated recipe halves (one per entity database, joined by `recipe_instance_id`; identical retry is a no-op), partial settle, forgive (user picks category) | BE | U26, U25 | AT-001, AT-005-007 + ADR 0004 crash/retry/mismatch tests | M | Not started |
 | U30 | Match suggestions per recipe: deterministic order, bounded N-sum | BE | U27 | Stable-order tests | S | Not started |
-| U31 | Recipe and outbox acceptance pass, `doctor` pairing check | QA | U28, U29, U30 | All recipe ATs green in CI | M | Not started |
+| U31 | Recipe acceptance pass, including cross-entity recipe halves (ADR 0004: application-orchestrated halves joined by `recipe_instance_id`) and the application-level recipe check (counterpart not visible, missing half, orphaned 7 days, duplicate, mismatched counterpart, mismatched amount per currency); per-database `doctor` stays single-database | QA | U28, U29, U30 | All recipe ATs and recipe-check status tests green in CI | M | Not started |
 | U32 | Balance assertions + occurred-date reconciliation with in-flight explanation (both directions) | BE | U26 | AT-009/010/014/024 adapted to the occurred date | M | Not started |
 | U33 | Reconciliation tests on the fixture's in-flight items | QA | U32 | Tests in CI | S | Not started |
 | U34 | Register/worklist read model: derived per-line state, origin, hide superseded pairs, audit lineage | FS | U26 | Register matches this plan and living U13 feedback on the fixture | S | Not started |

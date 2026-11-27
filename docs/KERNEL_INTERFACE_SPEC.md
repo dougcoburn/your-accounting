@@ -13,7 +13,7 @@ Where two documents disagree, use this order, then the choices in §8:
 1. An ADR, unless §8 records a later decision that changes it. The change may tighten a rule or widen the kernel. Widening is what §8.2 did, and it is the scope this file uses: importing already-keyed observations, recipe-idempotent event writes, and single-database `doctor` are kernel operations. ADR 0007 was amended on 2026-11-25 so it states that same wider scope, and on 2026-11-26 it removed the cross-database message protocol (ADR 0004 rewrite). §0 does not treat the wider scope as a conflict with the ADR. A later §8 decision that widens the kernel is resolved the same way: amend the ADR until the two documents name the same operations.
 2. `docs/SPEC-v2-delta.md` over `docs/SPEC.md`. The delta already says: where the delta and an ADR disagree, the ADR wins and the delta has a bug.
 3. `docs/schema-v2.sql` for any rule that is actually a trigger, CHECK, UNIQUE, foreign key, or STRICT table. If this spec describes a trigger the schema does not have, this spec has a bug.
-4. This file over `accounting-core/docs/KERNEL_INTERFACE_SPEC.md` for the v2 kernel. That other file is the v1 `LedgerStore` contract of the `accounting-core` crate. It is not updated here, and it is not this interface. See §8.1.
+4. This file over `accounting-core/docs/KERNEL_INTERFACE_SPEC-v1-SUPERSEDED.md` (renamed 2026-11-26 from `accounting-core/docs/KERNEL_INTERFACE_SPEC.md`) for the v2 kernel. That other file is the v1 `LedgerStore` contract of the `accounting-core` crate. It is not updated here, and it is not this interface. See §8.1.
 
 The kernel scope under this order is the widened one in §1 and §8.2. Match hints, feed formats, and viewer-relative display stay outside the kernel. The earlier narrow reading of ADR 0007 (journal, invariants, and the commit validator only) is not the contract.
 
@@ -605,7 +605,7 @@ These are places the sources do not say the same thing. The choice used in this 
 
 ### 8.1 Where this spec lives
 
-`accounting-core/docs/KERNEL_INTERFACE_SPEC.md` already exists. It specifies the v1 `LedgerStore` crate: opaque entities, a contra role, `replaces_entry_id`, one database, and a bugcheck that includes partition deltas and the requested mutation. The crate still implements that file. This change does not modify crate code, so that file is left as the crate's contract.
+`accounting-core/docs/KERNEL_INTERFACE_SPEC-v1-SUPERSEDED.md` (named `accounting-core/docs/KERNEL_INTERFACE_SPEC.md` until 2026-11-26) already exists. It specifies the v1 `LedgerStore` crate: opaque entities, a contra role, `replaces_entry_id`, one database, and a bugcheck that includes partition deltas and the requested mutation. The crate still implements that file. This change does not modify crate code, so that file is left as the crate's contract.
 
 This v2 interface is `docs/KERNEL_INTERFACE_SPEC.md`, next to schema v2. v1's bugcheck payload is not the v2 policy. v2 messages are ids and codes only (§5).
 

@@ -1,4 +1,4 @@
-//! Closed error taxonomy from `docs/KERNEL_INTERFACE_SPEC.md` §4.
+//! Closed error taxonomy from `docs/KERNEL_INTERFACE_SPEC.md` (repository root, v2) §4.
 //!
 //! Display is `code`, `class`, `refs`, `ids`, and the `InvalidShape` token.
 //! SQL text, amounts, names, and payloads are not stored on the value.
