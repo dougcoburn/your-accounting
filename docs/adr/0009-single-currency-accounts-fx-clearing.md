@@ -1,6 +1,6 @@
 # ADR 0009: Single-currency ledger accounts; one multi-currency FX Clearing account
 
-Status: Accepted (2026-11-26, Doug; PR 33 answers 2026-11-26, Doug). One open decision remains: FX across recipe halves (below). Post-month-1 unit: it is not part of the month-1 implementation plan, and no month-1 unit depends on it. Until it is scheduled and lands, schema v2 and the kernel interface spec stay as they are.
+Status: Accepted (2026-11-26, Doug; PR 33 answers 2026-11-26, Doug; FX across recipe halves decided 2026-11-26, Doug). No open decisions remain. Post-month-1 unit: it is not part of the month-1 implementation plan, and no month-1 unit depends on it. Until it is scheduled and lands, schema v2 and the kernel interface spec stay as they are.
 
 ## Context
 Schema v2 puts a currency on every posting and balances every event per currency (INV-001, ADR 0008 amendment). A currency is fixed only on financial accounts (INV-004). A ledger account that is not backed by a financial account, such as a receivable, a category or a clearing account, can hold postings in any currency, and SPEC §2.3 calls categories "independent of currency".
@@ -20,6 +20,7 @@ That leaves two things open: SPEC §13 decision 2 (the journal model for an FX e
 10. **Rate plausibility check.** An external, doctor-style check flags derived rates that are implausible for the exchange date. The zero effective balance is true by construction, so this check is what catches a wrong amount. Its rate source is a port (an interface) that is expected to stay in flux. A finding is information only and never fails the check.
 11. **Fees go to an expense account,** normally not through FX Clearing, so the derived rate reflects the exchange itself.
 12. **The common case stays in one currency.** When a USD card pays in EUR, the expense posts in USD (plus any FX fee, in USD). The EUR amount is used only to derive an informational rate (worked example 2).
+13. **FX across recipe halves: the converting side exchanges inside its own half** (Options A/A2 below). The bank statement or observation decides which side converted, not the recipe or the person booking it. The wire fee books on the converting side's expense account. Splitting the exchange across halves (Options B and C) is rejected.
 
 ## Terms
 - **FX group (exchange transaction):** one accounting event that has FX Clearing rows. It is closed when it is committed, because the kernel only accepts the shape in decision 4.
@@ -145,7 +146,7 @@ The kernel needs no exponent table, because rule 3 is about currencies, not amou
 A reversal cancels its target account by account, so it swaps sides. Reversing Tx 15 gives FX Clearing Dr USD 1,080.00 and Dr USD 105.00, Cr EUR 1,000.00. That is still one debit currency and one different credit currency, so the reversal passes rule 3 with no special case. Its derived rate is 1000.00 / 1185.00 = 0.84388185..., shown as **0.8438819 EUR per USD**: the inverse of 1.1850000, the same exchange seen backwards, not a new one. Reports show a reversed group and its reversal as a cancelled pair, like the register does for other reversed pairs. The plausibility check skips reversals. A correction's replacement is a new FX group with its own derived rate, and it is checked.
 
 ### Recipe halves (ADR 0004)
-Each half is one event in one entity's database, so rule 3 applies to each half alone, against that entity's own FX Clearing account. FX Clearing rows are never intercompany postings, so they never count toward a half's amount (ADR 0004). How an exchange that crosses two entities is modelled is the open decision below.
+Each half is one event in one entity's database, so rule 3 applies to each half alone, against that entity's own FX Clearing account. FX Clearing rows are never intercompany postings, so they never count toward a half's amount (ADR 0004). An exchange that crosses two entities completes inside the converting side's half (decision 13, section "FX across recipe halves" below).
 
 ### Reporting closed groups and month-end
 - FX Clearing never appears with a balance, and `account_balances` leaves it out.
@@ -171,38 +172,47 @@ Synthetic round trip:
 - **Settlement groups (ADR 0006):** the INV-008 zero-residual rule keeps applying to `clearing` accounts only. `fx_clearing` rows are never settlement legs.
 - **Valuation (ADR 0005)** and the deferred FX translation display (GLOSSARY) are unchanged. Neither writes postings.
 
-## OPEN DECISION for Doug: FX across recipe halves
-**Case** (synthetic). Esther, once she is her own entity, wires EUR 1,000.00 from her German checking account to the Household USD checking account, which receives USD 1,185.00. Two entity databases, two currencies, one business event.
+## DECIDED: FX across recipe halves (Doug, 2026-11-26)
+**Case** (synthetic). Esther, once she is her own entity, wires EUR 1,000.00 from her German checking account to the Household USD checking account, which receives USD 1,185.00. Esther's bank charges a EUR 20.00 wire fee. Two entity databases, two currencies, one business event.
 
-### Option A (Architect recommendation): the exchange stays inside one half
-The recipe instance has a single obligation currency, and both halves' expectations are in it. By default the **sending side converts**, because the sending bank usually performs the conversion.
+**Decision: Option A/A2. The converting side does the exchange inside its own half.**
+- The recipe instance has a single obligation currency, and both halves' expectations are in it: the currency the converting side ends up owing or being owed in.
+- **Which side converted is decided by the bank statement or observation**, not by the recipe and not by the person booking it. If the sending bank's statement shows the conversion, the sender converts (A). If the receiving bank's statement shows it, the receiver converts (A2).
+- **The wire fee books on the converting side's expense account**, in the fee's currency, never through FX Clearing.
+- The ADR 0004 recipe check works unchanged, and rule 3 still applies to each half alone.
+- Trade-off accepted: the converting side needs an intercompany account in the other currency (Esther needs AR / Household in USD under A). That is one more single-currency ledger account under the (category, currency) rule.
+
+### A: the sending side converts (synthetic)
+Esther's bank statement shows EUR 1,000.00 out at a stated rate, USD 1,185.00 sent, and the EUR 20.00 fee.
 
 | Database | Debit | Credit |
 |---|---|---|
 | Esther | FX Clearing EUR 1,000.00 | EUR checking EUR 1,000.00 |
 | Esther | AR / Household USD 1,185.00 | FX Clearing USD 1,185.00 |
+| Esther | Wire fees (EUR) EUR 20.00 | EUR checking EUR 20.00 |
 | Household | USD checking USD 1,185.00 | AP / Esther USD 1,185.00 |
 
-- Both halves expect USD 118500. The ADR 0004 recipe check works unchanged, and the rule that an exchange completes inside one half stays.
-- Esther's FX group: debit EUR 1,000.00, credit USD 1,185.00, rate 1.1850000 USD per EUR. Each half balances per currency (INV-001).
-- **Variant A2: the receiving side converts.** The obligation is in EUR, and Household holds the FX group: Esther records Dr AR / Household EUR 1,000.00, Cr EUR checking EUR 1,000.00. Household records Dr FX Clearing EUR 1,000.00, Cr AP / Esther EUR 1,000.00, and Dr USD checking USD 1,185.00, Cr FX Clearing USD 1,185.00. Both halves expect EUR 100000.
-- **Picking the variant:** follow which bank actually performed the conversion.
-- **Trade-off:** the converting side needs an intercompany account in the other currency (Esther needs AR / Household in USD). That is fine under the (category, currency) rule: it is one more single-currency ledger account.
+- Esther's half balances per currency: EUR 100000 + 2000 = 100000 + 2000; USD 118500 = 118500. Household's half: USD 118500 = 118500.
+- Esther's FX group: debit EUR 1,000.00, credit USD 1,185.00, rate 1.1850000 USD per EUR.
+- Both halves expect USD 118500.
 
-### Option B: each half in its own currency, rate derived across the recipe instance
-Esther records Dr AR / Household EUR 1,000.00, Cr EUR checking EUR 1,000.00. Household records Dr USD checking USD 1,185.00, Cr AP / Esther USD 1,185.00.
-- The obligation exists in two currencies, so the recipe check cannot compare the halves' amounts without a rate.
-- The zero-by-construction property is lost: no single event holds both currencies.
-- The rate lives in the application layer, not in the kernel's posted amounts.
-- Orphans and corrections get harder: a missing or corrected half leaves a rate with only one side.
-- Not recommended.
+### A2: the receiving side converts (synthetic)
+Household's bank statement shows EUR 1,000.00 received and converted to USD 1,185.00, less a USD 20.00 incoming wire fee.
 
-### Option C: one FX Clearing group split across the two databases
-Rejected. There is no cross-database atomicity (ADR 0004), so the zero-effective-balance invariant cannot hold per transaction. Each half's FX Clearing would be one-sided, which rule 3 rejects anyway.
+| Database | Debit | Credit |
+|---|---|---|
+| Esther | AR / Household EUR 1,000.00 | EUR checking EUR 1,000.00 |
+| Household | FX Clearing EUR 1,000.00 | AP / Esther EUR 1,000.00 |
+| Household | USD checking USD 1,185.00 | FX Clearing USD 1,185.00 |
+| Household | Wire fees (USD) USD 20.00 | USD checking USD 20.00 |
 
-### Details still open under this decision
-- Who decides the variant (A or A2) for a given transfer: the recipe from the observation, or the person booking it.
-- Which side carries the fee: the converting side's expense account by default, or the side whose bank charged it.
+- Household's half balances per currency: EUR 100000 = 100000; USD 118500 + 2000 = 118500 + 2000. Esther's half: EUR 100000 = 100000.
+- Household's FX group: debit EUR 1,000.00, credit USD 1,185.00, rate 1.1850000 USD per EUR.
+- Both halves expect EUR 100000.
+
+### Rejected alternatives
+- **Option B: each half in its own currency, rate derived across the recipe instance** (Esther: Dr AR / Household EUR, Cr EUR checking; Household: Dr USD checking, Cr AP / Esther USD). Rejected: the obligation would exist in two currencies, so the recipe check could not compare the halves without a rate; the zero-by-construction property is lost because no single event holds both currencies; the rate would live in the application layer, not in posted amounts; and orphans and corrections leave a rate with only one side.
+- **Option C: one FX Clearing group split across the two databases.** Rejected: there is no cross-database atomicity (ADR 0004), so the zero-effective-balance invariant cannot hold per transaction. Each half's FX Clearing would be one-sided, which rule 3 rejects anyway.
 
 ## Consequences
 - An exchange is one ordinary balanced event. Its rate is derived from the posted amounts, so there is no stored rate to drift from the amounts.
@@ -210,7 +220,7 @@ Rejected. There is no cross-database atomicity (ADR 0004), so the zero-effective
 - The kernel's new checks are cheap and need no market data. The plausibility check, behind its port, carries the "is this amount right" question without ever failing.
 - Every posting ledger account has a currency. A logical category used in two currencies gets two ledger accounts; the common card-abroad case stays in the card's currency and needs none.
 - Resolves SPEC §13 decision 2 (FX journal model) and the native-currency part of decision 6. Retained-earnings presentation per currency stays with decision 6.
-- Required tests: each accept and reject example above, the JPY exponent case, rate rounding to 7 decimals half-even (1.1850000, 0.8438819), a reversal (inverse rate, shape accepted), a correction (new group), a second FX Clearing account (rejected), a duplicate (category, currency) account (rejected), a posting on a logical category node (rejected), the USD-card dinner with and without FX Clearing, a recipe half whose FX Clearing is one-sided (rejected), and a fee booked to expense.
+- Required tests: each accept and reject example above, the JPY exponent case, rate rounding to 7 decimals half-even (1.1850000, 0.8438819), a reversal (inverse rate, shape accepted), a correction (new group), a second FX Clearing account (rejected), a duplicate (category, currency) account (rejected), a posting on a logical category node (rejected), the USD-card dinner with and without FX Clearing, a recipe half whose FX Clearing is one-sided (rejected), cross-half FX under A and under A2 with the wire fee on the converting side, and a fee booked to expense.
 
 ## Alternatives considered
 - **Per-currency FX clearing accounts with an FX gain/loss plug.** Rejected: it needs a home currency to measure the gain in, which decision 9 rules out, and it creates a balance that means nothing without conversion.
@@ -219,4 +229,4 @@ Rejected. There is no cross-database atomicity (ADR 0004), so the zero-effective
 - **Currency-scoped logical categories** (Dining-USD as its own category). Rejected by decision 2: the category is one logical thing; only its ledger accounts are per currency.
 
 ## Open questions for Doug
-1. **OPEN DECISION: FX across recipe halves.** Option A (recommended, sending side converts by default; A2 when the receiving bank converts), Option B, or Option C (rejected). See the section above, including who picks the variant and which side carries the fee.
+None. The last one, FX across recipe halves, was decided on 2026-11-26 (decision 13).

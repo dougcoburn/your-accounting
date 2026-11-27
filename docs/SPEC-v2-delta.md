@@ -116,7 +116,7 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
 ### §13 Open decisions
 - **Resolved:** 1 (integer minor units), 3 (occurred date, with in-flight explanation), 8 (settlement exclusivity with no participation limits in month 1, ADR 0006), 9 (ADR 0002 closed-month invariant).
 - **Still open:** 2, 6, 7, 10, 11, 12.
-- **Decided for post-month-1 (ADR 0009):** 2 (FX journal model: single-currency ledger accounts plus one FX Clearing account per entity), and the native-currency part of 6 (isolated per-currency month-end reports, even within one entity; no single reporting currency, no revaluation). Retained-earnings presentation per currency stays open under 6. FX across recipe halves is an open decision in ADR 0009.
+- **Decided for post-month-1 (ADR 0009):** 2 (FX journal model: single-currency ledger accounts plus one FX Clearing account per entity), and the native-currency part of 6 (isolated per-currency month-end reports, even within one entity; no single reporting currency, no revaluation). Retained-earnings presentation per currency stays open under 6. FX across recipe halves: the converting side exchanges inside its own half (ADR 0009 decision 13).
 
 ### §14 Architectural decisions
 - SPEC **ADR-003** (transparent and opaque entities) is superseded by docs/adr 0003 and 0004.
@@ -192,7 +192,7 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
 
 ## 6. Proposed: single-currency accounts and FX Clearing (ADR 0009, post-month-1)
 
-**Status:** Decided by Doug (2026-11-26, including the PR 33 answers). One open decision remains in ADR 0009: FX across recipe halves (Architect recommends Option A). Not part of the month-1 plan. Nothing here is in `docs/schema-v2.sql` or the kernel yet. When the unit is scheduled, the schema, the smoke checks and `docs/KERNEL_INTERFACE_SPEC.md` §3.3, §4.1 and §4.3 change together (kernel spec §7). ADR 0009 has the full rules, the worked example and the open questions.
+**Status:** Decided by Doug (2026-11-26, including the PR 33 answers). FX across recipe halves is decided too: the converting side, as the bank statement shows, does the exchange inside its own half, and the wire fee books on its expense account. No open decisions remain. Not part of the month-1 plan. Nothing here is in `docs/schema-v2.sql` or the kernel yet. When the unit is scheduled, the schema, the smoke checks and `docs/KERNEL_INTERFACE_SPEC.md` §3.3, §4.1 and §4.3 change together (kernel spec §7). ADR 0009 has the full rules and the worked examples.
 
 **Schema delta (proposed):**
 
