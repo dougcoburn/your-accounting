@@ -1,4 +1,4 @@
-//! SQLite adapter for the v2 write protocol and U17 reference data.
+//! SQLite adapter for the v2 write protocol, reference data, and append-only events.
 //!
 //! Reference rows are not commit-scoped (SPEC-v2-delta §5 Q5). Each successful
 //! write still seals a `commits` row so the caller-supplied revision is checked
@@ -155,6 +155,8 @@ pub struct NewEvent {
     pub recipe_id: String,
     pub recipe_version: String,
     pub effective_date: String,
+    /// Event fact. Compared on a recipe retry. Empty is allowed.
+    pub description: String,
     pub postings: Vec<NewPosting>,
     /// Shared ULID of a cross-entity recipe half. Set together with `counterpart_entity_id`, or both absent.
     pub recipe_instance_id: Option<String>,
@@ -218,6 +220,17 @@ struct StoredHalf {
     description: String,
     recipe_instance_id: String,
     counterpart_entity_id: String,
+}
+
+struct TargetEvent {
+    id: String,
+    recipe_id: String,
+    recipe_version: String,
+    effective_date: String,
+    recipe_instance_id: Option<String>,
+    counterpart_entity_id: Option<String>,
+    reverses_id: Option<String>,
+    superseded_by: Option<String>,
 }
 
 struct StoredPosting {
@@ -1109,8 +1122,23 @@ impl Transaction<'_> {
         Ok(())
     }
 
-    /// Minimum event insert for INV-003 and recipe-half idempotency. Not `append_event`.
-    pub fn stage_event(&mut self, new: NewEvent) -> Result<String, Error> {
+    /// Stage one current, non-reversal event and its postings (kernel spec §3.3).
+    ///
+    /// `recorded_at` is the timestamp `begin_transaction` captured from the
+    /// injected clock. Caller-supplied ULIDs are preserved. A reversal is
+    /// `correct_event`, not this operation.
+    pub fn append_event(&mut self, new: NewEvent) -> Result<String, Error> {
+        self.stage_new_event(new, None)
+    }
+
+    /// `replacing_instance` is set only by `correct_event`, after that instance's
+    /// current row was superseded in this same transaction. The retired-instance
+    /// check does not apply to that replacement (kernel spec §3.9).
+    fn stage_new_event(
+        &mut self,
+        new: NewEvent,
+        replacing_instance: Option<&str>,
+    ) -> Result<String, Error> {
         self.ensure_open()?;
         if new.recipe_id.is_empty() || new.recipe_version.is_empty() {
             return Err(self.fail(Error::new(Code::UnknownRecipe, &[], vec![])));
@@ -1222,38 +1250,44 @@ impl Transaction<'_> {
             return Err(self.fail(Error::new(Code::Unbalanced, &["INV-001"], vec![])));
         }
         if let Some(half) = &half {
-            if let Some(existing) = self.current_half(&half.recipe_instance_id)? {
-                if self.same_recipe_payload(&new, half, &existing)? {
-                    let seq = self.seq_of(&existing.commit_id)?;
-                    self.staged.subjects.push(Subject::RecipeInstance {
-                        recipe_instance_id: half.recipe_instance_id.clone(),
-                        event_id: existing.id.clone(),
-                        commit_id: existing.commit_id,
-                        seq,
-                    });
-                    return Ok(existing.id);
+            let replacing_this = replacing_instance == Some(half.recipe_instance_id.as_str());
+            if !replacing_this {
+                if let Some(existing) = self.current_half(&half.recipe_instance_id)? {
+                    if self.same_recipe_payload(&new, half, &existing)? {
+                        let seq = self.seq_of(&existing.commit_id)?;
+                        self.staged.subjects.push(Subject::RecipeInstance {
+                            recipe_instance_id: half.recipe_instance_id.clone(),
+                            event_id: existing.id.clone(),
+                            commit_id: existing.commit_id,
+                            seq,
+                        });
+                        return Ok(existing.id);
+                    }
+                    return Err(self.fail(Error::new(
+                        Code::IdempotencyConflict,
+                        &["ADR 0004"],
+                        vec![half.recipe_instance_id.clone(), existing.id],
+                    )));
                 }
-                return Err(self.fail(Error::new(
-                    Code::IdempotencyConflict,
-                    &["ADR 0004"],
-                    vec![half.recipe_instance_id.clone(), existing.id],
-                )));
-            }
-            if let Some(retired) = self.retired_event(&half.recipe_instance_id)? {
-                return Err(self.fail(Error::new(
-                    Code::IdempotencyConflict,
-                    &["ADR 0004"],
-                    vec![half.recipe_instance_id.clone(), retired],
-                )));
+                if let Some(retired) = self.retired_event(&half.recipe_instance_id)? {
+                    return Err(self.fail(Error::new(
+                        Code::IdempotencyConflict,
+                        &["ADR 0004"],
+                        vec![half.recipe_instance_id.clone(), retired],
+                    )));
+                }
             }
         }
         self.write_event(&new, &prepared, half.as_ref())
     }
 
-    /// Correct a current recipe half. The reversal is inserted with no recipe
-    /// fields, `superseded_by` is set on the target, and only then is the
-    /// replacement inserted. SQLite cannot defer the partial unique index.
-    /// `replacement` is `None` when the instance is retired with no new half.
+    /// Reverse a current event, set `superseded_by` once, then stage the replacement.
+    ///
+    /// Order is load-bearing: reversal insert, then the flag update, then the
+    /// replacement. The replacement may use a different `effective_date`. A recipe
+    /// half's replacement keeps the same instance and counterpart. `None` retires
+    /// the event with no replacement. The reversal carries the target's effective
+    /// date and no recipe-instance fields (ADR 0002, ADR 0004).
     pub fn correct_event(
         &mut self,
         target_id: &str,
@@ -1261,26 +1295,27 @@ impl Transaction<'_> {
     ) -> Result<Option<String>, Error> {
         self.ensure_open()?;
         require_ulid(target_id).map_err(|e| self.fail(e))?;
-        let Some(target) = self.current_half_by_id(target_id)? else {
+        let Some(target) = self.load_target(target_id)? else {
             return Err(self.fail(Error::new(
                 Code::UnknownTarget,
                 &[],
                 vec![target_id.to_string()],
             )));
         };
-        let replacement_half = if let Some(next) = &replacement {
-            let Some(half) = self.recipe_half(next)? else {
-                return Err(self.fail(shape("recipe_fields")));
-            };
-            if half.recipe_instance_id != target.recipe_instance_id
-                || half.counterpart_entity_id != target.counterpart_entity_id
+        if target.reverses_id.is_some() || target.superseded_by.is_some() {
+            return Err(self.fail(Error::new(
+                Code::ReversalTargetInvalid,
+                &["ADR 0002"],
+                vec![target.id.clone()],
+            )));
+        }
+        if let (Some(instance), Some(next)) = (&target.recipe_instance_id, &replacement) {
+            if next.recipe_instance_id.as_deref() != Some(instance.as_str())
+                || next.counterpart_entity_id.as_deref() != target.counterpart_entity_id.as_deref()
             {
                 return Err(self.fail(shape("recipe_fields")));
             }
-            Some(half)
-        } else {
-            None
-        };
+        }
         let postings = self.event_postings(&target.id)?;
         if postings.len() < 2 {
             return Err(self.fail(Error::new(Code::InsufficientPostings, &["INV-002"], vec![])));
@@ -1336,65 +1371,9 @@ impl Transaction<'_> {
         let Some(next) = replacement else {
             return Ok(None);
         };
-        let prepared = self.prepare_replacement(&next)?;
-        let id = self.write_event(&next, &prepared, replacement_half.as_ref())?;
+        let replacing = target.recipe_instance_id.clone();
+        let id = self.stage_new_event(next, replacing.as_deref())?;
         Ok(Some(id))
-    }
-
-    fn prepare_replacement<'a>(&mut self, new: &'a NewEvent) -> Result<Vec<&'a NewPosting>, Error> {
-        if new.postings.len() < 2 {
-            return Err(self.fail(Error::new(Code::InsufficientPostings, &["INV-002"], vec![])));
-        }
-        let mut sums: BTreeMap<String, i64> = BTreeMap::new();
-        for posting in &new.postings {
-            require_ulid(&posting.ledger_account_id).map_err(|e| self.fail(e))?;
-            require_currency(&posting.currency).map_err(|e| self.fail(e))?;
-            require_positive(posting.amount_minor).map_err(|e| self.fail(e))?;
-            let Some(account) = self.account_snap(&posting.ledger_account_id)? else {
-                return Err(self.fail(Error::new(
-                    Code::UnknownTarget,
-                    &[],
-                    vec![posting.ledger_account_id.clone()],
-                )));
-            };
-            if matches!(account.kind.as_str(), "receivable" | "payable")
-                && posting.party_id.is_none()
-            {
-                return Err(self.fail(
-                    Error::new(
-                        Code::InvalidShape,
-                        &["ADR 0004"],
-                        vec![posting.ledger_account_id.clone()],
-                    )
-                    .with_token("recipe_party"),
-                ));
-            }
-            if matches!(account.account_type.as_str(), "income" | "expense")
-                && self.count(
-                    "SELECT count(*) FROM ledger_accounts WHERE parent_id = ?1",
-                    &[posting.ledger_account_id.as_str()],
-                )? > 0
-            {
-                return Err(self.fail(Error::new(
-                    Code::NonLeafCategory,
-                    &["INV-003"],
-                    vec![posting.ledger_account_id.clone()],
-                )));
-            }
-            let signed = if posting.side == Side::Debit {
-                posting.amount_minor
-            } else {
-                -posting.amount_minor
-            };
-            let entry = sums.entry(posting.currency.clone()).or_insert(0);
-            *entry = entry
-                .checked_add(signed)
-                .ok_or_else(|| self.fail(Error::new(Code::InvalidMoney, &[], vec![])))?;
-        }
-        if sums.values().any(|net| *net != 0) {
-            return Err(self.fail(Error::new(Code::Unbalanced, &["INV-001"], vec![])));
-        }
-        Ok(new.postings.iter().collect())
     }
 
     fn write_event(
@@ -1424,13 +1403,14 @@ impl Transaction<'_> {
             "INSERT INTO accounting_events(
                 id, commit_id, recipe_id, recipe_version, effective_date, description, recorded_at,
                 recipe_instance_id, counterpart_entity_id
-             ) VALUES (?1, ?2, ?3, ?4, ?5, '', ?6, ?7, ?8)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 event_id,
                 commit_id,
                 new.recipe_id,
                 new.recipe_version,
                 new.effective_date,
+                new.description,
                 recorded_at,
                 instance,
                 counterpart
@@ -1707,15 +1687,33 @@ impl Transaction<'_> {
         )
     }
 
-    fn current_half_by_id(&mut self, id: &str) -> Result<Option<StoredHalf>, Error> {
-        self.load_half(
-            "SELECT id, commit_id, recipe_id, recipe_version, effective_date, description,
-                    recipe_instance_id, counterpart_entity_id
-             FROM accounting_events
-             WHERE id = ?1 AND superseded_by IS NULL AND reverses_id IS NULL
-               AND recipe_instance_id IS NOT NULL",
-            id,
-        )
+    fn load_target(&mut self, id: &str) -> Result<Option<TargetEvent>, Error> {
+        match self
+            .kernel
+            .conn
+            .query_row(
+                "SELECT id, recipe_id, recipe_version, effective_date,
+                        recipe_instance_id, counterpart_entity_id, reverses_id, superseded_by
+                 FROM accounting_events WHERE id = ?1",
+                [id],
+                |row| {
+                    Ok(TargetEvent {
+                        id: row.get(0)?,
+                        recipe_id: row.get(1)?,
+                        recipe_version: row.get(2)?,
+                        effective_date: row.get(3)?,
+                        recipe_instance_id: row.get(4)?,
+                        counterpart_entity_id: row.get(5)?,
+                        reverses_id: row.get(6)?,
+                        superseded_by: row.get(7)?,
+                    })
+                },
+            )
+            .optional()
+        {
+            Ok(value) => Ok(value),
+            Err(err) => Err(self.fail(map_sql(err, SqlSite::Read))),
+        }
     }
 
     fn load_half(&mut self, sql: &str, key: &str) -> Result<Option<StoredHalf>, Error> {
@@ -1799,7 +1797,7 @@ impl Transaction<'_> {
         if new.recipe_id != existing.recipe_id
             || new.recipe_version != existing.recipe_version
             || new.effective_date != existing.effective_date
-            || !existing.description.is_empty()
+            || new.description != existing.description
             || half.recipe_instance_id != existing.recipe_instance_id
             || half.counterpart_entity_id != existing.counterpart_entity_id
         {
