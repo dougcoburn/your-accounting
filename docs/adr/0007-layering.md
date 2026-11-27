@@ -70,6 +70,6 @@ Where this amendment and the earlier amendments or the clarification differ, thi
   - the append-only journal (events and their lines), the commit seal and its numbered invariants;
   - recipe-idempotent event writes;
   - the `doctor` runner and the ledger-core checks (ADR 0010).
-- **Open:** whether context rows commit in the kernel's transaction, through a narrow context hook. This is ADR 0011 open decision 1.
+- **Decided (Doug, 2026-11-26):** context rows commit in the kernel's transaction, through the participant hook `stage()`/`validate()` (ADR 0011 option (i); kernel interface spec §3.14).
 - **Unchanged:** every write still goes through the commit protocol. Import is still not matching. Doctor is still read-only.
 

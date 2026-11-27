@@ -211,5 +211,6 @@ This is where terms belong. The definitions stay above until the move after U22 
 - **Observation link** (`posting_observations`), **Observation**, **Feed**, **Void**, **Evidence** and **evidence (file) link** (`evidence_links`): observation import context. These are not kernel concepts.
 - **Refund link** (`refund_links`, the INV-015 cap): recipes context. **Contra-expense**, the posting pattern, stays in ledger core.
 - **Tag** (`tags`, `posting_tags`): application context. **Entity tag** (e-*) hints come from adapters and recipes.
-- Context rows reference a kernel event or line **by id**. Whether they commit in the kernel's transaction is ADR 0011 open decision 1.
+- Context rows reference a kernel event or line **by id**, and they commit in the kernel's transaction.
+- **Context participant**: a registered context that stages its rows with `stage()` and checks them with `validate()` inside the kernel's write transaction (ADR 0011, decided 2026-11-26; KERNEL_INTERFACE_SPEC §3.14).
 

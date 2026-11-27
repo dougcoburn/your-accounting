@@ -1,6 +1,6 @@
 # ADR 0011: The kernel stages only events and their lines
 
-Status: **Accepted** (Doug, 2026-11-26, relayed by Captain). One open decision for Doug is listed below. Docs only: no schema or code change in this ADR.
+Status: **Accepted** (Doug, 2026-11-26, relayed by Captain). Atomicity decided by Doug on 2026-11-26: option (i). No open decisions remain. Docs only: no schema or code change in this ADR.
 Amends: [ADR 0007](0007-layering.md) (its 2026-11-25 amendment, which made import and stored tag rows kernel operations) and [ADR 0010](0010-bounded-contexts-small-agent-context.md) (context map: ledger core and observation import).
 
 ## Context
@@ -14,6 +14,8 @@ The kernel's `append_event` today (`docs/KERNEL_INTERFACE_SPEC.md` §3.3) stages
 1. **Not kernel concepts:** tags, file/evidence links, observation links and refund links.
 2. **Context tables hold them.** They live in higher-layer (context or application) tables that reference a kernel event or line **by id**.
 3. **`append_event` stages the event and its lines only.** An event's ADR 0004 recipe-half fields and its `event_counterpart_expectations` rows are part of the event (§3.9) and stay.
+4. **Events and their context links commit together (option (i), decided 2026-11-26).** Each context is a registered participant. In the kernel's own write transaction, it stages its rows with `stage()` and checks them with `validate()`. This is normative in `docs/KERNEL_INTERFACE_SPEC.md` §3.14.
+5. **The reversible defaults below stand** (Doug, 2026-11-26).
 
 ## Ownership (defaults per ADR 0010 decision 4, reversible)
 
@@ -56,41 +58,50 @@ Whether settlement and obligations follow the same pattern is a later, reversibl
 - **Doctor.**
   - The context-table rows of `doctor_unsealed_rows` become each context's own unsealed check. The kernel runner keeps the kernel-table rows.
   - `doctor_observation_double_consumed` is already U22 (ADR 0010).
-- **INV-013.** Transitive validation in `correct` asks each context to validate the links it owns (refunds, observation links), through the same hook as below.
+- **INV-013.** Transitive validation in `correct` asks each context to validate the links it owns (refunds, observation links), through `validate` (KIS §3.14).
 
-## Defaults for the other questions (reversible, not asked)
+## Defaults for the other questions (reversible; confirmed by Doug, 2026-11-26)
 
 - **Tamper evidence.** There is no hash chain in schema v2. The "seal" means three things:
   - the `commits` row is written last;
   - deferred `commit_id` foreign keys;
   - open-commit and append-only triggers.
 
-  **Default:** context rows stay append-only, and each carries the `commit_id` of the commit it was written in, with its `recorded_at` taken from that commit. They are covered by the same seal as today, at no extra cost under option (i) below. A context may write its rows in a later commit than the event (for example, tagging later), but it never edits a row. Removals are new rows, such as a tombstone. A hash chain over all rows would be a separate decision. It isn't needed here.
+  **Default:** context rows stay append-only, and each carries the `commit_id` of the commit it was written in, with its `recorded_at` taken from that commit. They are covered by the same seal as today, at no extra cost under option (i). A context may write its rows in a later commit than the event (for example, tagging later), but it never edits a row. Removals are new rows, such as a tombstone. A hash chain over all rows would be a separate decision. It isn't needed here.
 - **Corrections.** When `correct` reverses an event and stages its replacement, each context re-links to the replacement lines **in the same operation**, through the hook. Links to the superseded event's lines are kept for history. Every "current" reading joins to `accounting_events` and filters `superseded_by IS NULL AND reverses_id IS NULL`, as `doctor_observation_double_consumed` already does, so old links do no harm.
 - **Stable line ids (verified).** `journal_postings.id` is a ULID primary key with a format CHECK. The caller supplies it or the kernel allocates it from the injected id source, and it's preserved. Context foreign keys to lines are safe. One caveat: an identical §3.9 recipe retry returns the **stored** event and posting ids, so a context must link to the returned ids, not the ids it sent.
 
-## Open decisions for Doug
+## DECIDED: atomicity of an event and its links (Doug, 2026-11-26)
 
-1. **Atomicity of an event and its links (one-way door).** Today an event and its observation link commit together. With links moved out of the kernel, they could commit separately. If that happens, the observation looks unconsumed, and a **second interpretation** could double-book it, from a recipe suggestion or a person. A re-import of the same row cannot, because it is already a no-op on `(feed_id, external_id)`.
-   - **(i) Same file, same transaction, through a narrow kernel hook (recommended).**
-     - The kernel takes `BEGIN IMMEDIATE`, stages the event and lines, then calls each registered context's `stage(tx, new event and line ids, commit_id)`.
-     - Before the seal, it calls `validate(tx, staged ids)`. Then it seals.
-     - The kernel learns no link semantics. The interface grows by one trait with two methods, the same shape as the ADR 0010 validator rule hook that FX uses.
-     - This keeps today's atomicity, the commit seal on link rows, the §2.2 no-op rule ("nothing staged by the kernel or any context") and every foreign key.
-     - Cost: in-process context modules get a transaction handle limited to their own tables. External callers still never get a connection (KIS §1).
-   - **(ii) Separate transaction after commit, made safe by idempotency.**
-     - Writes are deterministic, keyed by the observation id: a repeated interpretation returns the existing event, and the link is then repaired.
-     - A U22 doctor check finds imported-and-interpreted events with no link.
-     - Cost: the window is real, and it needs a new idempotency column on the kernel's `accounting_events`, with retry and repair code in every context.
-   - **(iii) A separate application DB file.** It loses foreign keys and atomicity. Rejected.
+**The question (a one-way door).** Today an event and its observation link commit together. Once links move out of the kernel, they could commit separately. Then the observation looks unconsumed, and a **second interpretation** could double-book it, from a recipe suggestion or a person. A re-import of the same row cannot, because it is already a no-op on `(feed_id, external_id)`.
 
-   **Recommendation: (i).** The kernel interface stays small: two callbacks, with no link vocabulary. Fall back to (ii) only if Doug wants contexts to never share the kernel's transaction.
+**Decision: option (i). Same file, same transaction, through a two-method participant hook.** The normative text is KERNEL_INTERFACE_SPEC §3.14. In short:
 
-This is the only question for Doug in this ADR. The others above are reversible defaults (ADR 0010 decision 4).
+- **Registration.** The application registers context participants at `open`. Each one declares an id, its owned tables, and the codes it may return.
+- **`stage(tx, kernel-staged ids, payload)`.** This runs after each `append_event` or `correct` has staged its kernel rows. It gets the stored event and line ids, plus the caller's opaque per-participant payload, which refers to lines by position. On `correct`, it re-links to the replacement lines.
+- **`validate(tx, staged set)`.** This runs read-only at `commit`, after U19 and before the `commits` row is written.
+- **The `ContextTx` handle.**
+  - It lives only inside the open write transaction.
+  - It allows INSERT only, into the participant's own tables. It may read any table.
+  - It allows no DDL, PRAGMA, ATTACH, or transaction control, and no writes to kernel tables.
+  - Enforcement is through the SQLite authorizer where available.
+  - External callers still get no connection.
+- **Errors.**
+  - Codes come from the closed §4 list. Each participant returns its own codes or the shared ones.
+  - A code it did not declare becomes `UnmappedStorageError`.
+  - Any error rolls back the whole transaction.
+  - A storage backstop firing after `validate` accepted the rows is `ValidatorMissed`.
+- **The §2.2 no-op** requires zero rows from the kernel and from every participant.
+
+This keeps today's atomicity, the commit seal on link rows, every foreign key and the no-op rule. The kernel learns no link semantics.
+
+### Rejected alternatives
+- **(ii) A separate transaction after commit, made safe by idempotency.** Writes would be keyed by the observation id, a repeated interpretation would return the existing event, and the link would then be repaired. A U22 doctor check would find interpreted events with no link. Rejected: the double-booking window is real, it needs a new idempotency column on the kernel's `accounting_events`, and every context would need retry and repair code.
+- **(iii) A separate application database file.** Rejected: it loses foreign keys and atomicity.
 
 ## Consequences
 
-- KIS §1, §3.3–§3.6, §3.12, §4 and §8 are amended in the same PR (§8.16). `schema-v2.sql` is unchanged. The smoke test stays green.
+- KIS §1, §2, §3.3–§3.6, §3.12, §4 and §8 are amended in the same PR (§8.16), and §3.14 is new (the participant hook). `schema-v2.sql` is unchanged. The smoke test stays green.
 - **Rust impact for Backend** (no change in this PR):
   - `v2/error.rs`: codes keep their names. An owner annotation, or a per-context grouping, comes later.
   - `v2/sqlmap.rs`: these move behind context modules:
@@ -101,7 +112,7 @@ This is the only question for Doug in this ADR. The others above are reversible 
     - `Subject::Observation` (the §2.2 no-op subject) becomes a context-supplied subject;
     - `blocking_bugcheck` drops `doctor_observation_double_consumed` from the kernel list, and the kernel-table part of `doctor_unsealed_rows` splits out;
     - `ReferenceKind::Tag` and `Feed` reads move to their contexts;
-    - the hook from option (i) is added at `commit()` and in `correct_event`;
+    - participant registration at `open`, `stage` calls after `append_event` and `correct_event`, `validate` calls in `commit()` before the `commits` insert, a `ContextTx` with the SQLite authorizer, and the no-op rule counting participant rows (KIS §3.14);
     - the `v2/tests.rs` test of `Subject::Observation` (line 1803 on `main`) moves with it.
   - `NewEvent` has no link fields today, so `append_event` (#71) needs no field removal.
 - **Issues updated:** #48, #49, #51, #52, #53, #55, #57, #65.
