@@ -24,7 +24,7 @@ This file lists what v2 changes in the v0.2 spec and why. Where this delta and `
 | Settlement | Mutable `state`/`revision` | Append-only **`settlement_group_states`**, with draft participants and no postings in drafts. `settlement_postings.posting_id` is UNIQUE | ADR 0006, INV-006, INV-008 |
 | Voids | Not modelled | An **`observation_voids` tombstone**. The same commit must reverse every current event that interprets the observation | ADR 0002 |
 | Claims | `obligations` and `obligation_settlements` | The same, plus `obligation_postings`, which links a claim to its purchase postings. A settlement cap trigger is added | ADR 0001 |
-| Cross-entity | One entry spanning entities | **`cross_entity_outbox`** in the first leg's commit and an idempotent **`cross_entity_inbox`** on the counterpart | ADR 0004 |
+| Cross-entity | One entry spanning entities | **Two halves**, one event per entity database, written by the application and linked by `accounting_events.recipe_instance_id` with `counterpart_entity_id` and the expected counterpart amount. An identical retry is a no-op. An application recipe check reads both databases. No outbox or inbox | ADR 0004 (rewritten 2026-11-26) |
 | Evidence | Shared store with a mutable `status` | Evidence is **per entity database**. Deleting it writes an `evidence_deletions` tombstone, and status is derived | ADR 0004, INV-020 |
 | Valuation | Not modelled | **`valuation_snapshots`** live outside the journal, on non-cash asset accounts only | ADR 0005 |
 | Audit | `audit_operations` and `audit_changes` (before/after JSON) | **Removed.** The append-only log is the audit: commits record actor and reason, and events record lineage | ADR 0002 |
@@ -33,7 +33,7 @@ This file lists what v2 changes in the v0.2 spec and why. Where this delta and `
 ## 2. Changes by SPEC section
 
 ### §1 Architecture and authority
-- "SQLite is the sole authoritative store" still holds, but as **one SQLite database per entity** (ADR 0004). A cross-entity recipe writes one commit per database and pairs them through the outbox. `doctor` checks the pairing.
+- "SQLite is the sole authoritative store" still holds, but as **one SQLite database per entity** (ADR 0004). A cross-entity recipe writes one commit per database, and the application writes both. The halves share a `recipe_instance_id`. There is no cross-database atomicity: the application's recipe check, which reads both databases through the per-user registry, detects a missing half, a duplicate, or a mismatched amount. The per-database `doctor` stays single-database and read-only.
 - The evidence store is **per entity database**, not shared (ADR 0004).
 - "Schema migrations … tested against prior-version fixtures": v2 is **migration 1**. No v0.2 database exists, so there is no data migration. The "upgraded database" runs in §12 start at v2.
 
@@ -72,7 +72,7 @@ This file lists what v2 changes in the v0.2 spec and why. Where this delta and `
 > The **occurred date** (the transaction or purchase date) is an event's `effective_date`, and it alone assigns the event to a period. That includes statement reconciliation. Feed rows also keep the **posted date** when the feed has one. It is used only to explain the gap to a statement: the occurred-date balance at the cutoff, minus items that occurred on or before the cutoff but posted after it, plus items that posted on or before the cutoff but occurred after it, must equal the statement's ending balance. Corrections and reversals keep the effective date of the event they correct (ADR 0002). The v0.2 `effective_date_override` is removed. (Decision 2026-11-22, MAP "Statement cutoff".)
 
 ### §4 Invariants
-- **INV-001** now applies per event and per currency within `journal_postings` alone (ADR 0008). Each database holds one entity, the singleton `entity` row (ADR 0004/0008 amendment), so postings do not carry `entity_id`.
+- **INV-001** now applies per event and per currency within `journal_postings` alone (ADR 0008 and its 2026-11-26 amendment). Each database holds one entity, so there is no entity partition: postings and ledger accounts carry no `entity_id` (ADR 0004 amendment 2026-11-26). The singleton `entity` row is the database's identity.
 - **INV-012 and INV-013**: "atomically replacing current state" becomes "atomically appending reversals and replacements" (ADR 0002).
 - **New, from the ADR 0002 amendment:** `superseded_by` is NULL or the id of the single event whose `reverses_id` points at this event. It is set in that reversal's commit and never changed. A reversal targets a current, non-reversal event, cancels it account by account, and keeps its effective date.
 - **New, from the ADR 0002 void rule:** a void commit reverses every current event that interprets the voided observation.
@@ -94,10 +94,12 @@ This file lists what v2 changes in the v0.2 spec and why. Where this delta and `
 
 Removed: `entities.visibility`, `parties.opaque_entity_id`, `account_owner_valid`, `canonical_transactions`, `account_movements`, `movement_observations`, `event_transactions`, `scenarios` (renamed `recipes`), `transaction_tags`, `audit_operations`, `audit_changes`, `reporting_groups`, `reporting_group_members`, and the `mcp_*` tables. Also every mutable `state`/`revision`/`status` column.
 
-Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`, `import_runs`, `observation_voids`, `posting_observations`, `settlement_group_states`, `settlement_draft_participants`, `obligation_postings`, `cross_entity_outbox`, `cross_entity_inbox`, `evidence_deletions`, `valuation_snapshots` and `reference_renames`.
+Dropped by the ADR 0004 rewrite (2026-11-26): `cross_entity_outbox` and `cross_entity_inbox`, which earlier drafts of v2 added. `accounting_events` gains `counterpart_entity_id`, `counterpart_expected_amount_minor` and `counterpart_currency` beside the existing `recipe_instance_id`.
+
+Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`, `import_runs`, `observation_voids`, `posting_observations`, `settlement_group_states`, `settlement_draft_participants`, `obligation_postings`, `evidence_deletions`, `valuation_snapshots` and `reference_renames`.
 
 ### §11 Acceptance tests affected
-- **AT-001, AT-016:** two databases, with the legs paired by the outbox and inbox. "Business owes Household" is a payable to a party in one database and a receivable in the other.
+- **AT-001, AT-016:** two databases, with the halves paired by `recipe_instance_id` and checked by the application's recipe check (ADR 0004). "Business owes Household" is a payable to a party in one database and a receivable in the other.
 - **AT-004, AT-020:** remain draft groups. No clearing posting is ever committed. **AT-019** has to be adapted: the HSA expected slot becomes its own draft group (plan U28).
 - **AT-005:** "opaque entity" becomes a party.
 - **AT-009, AT-010, AT-014, AT-024:** use occurred-date windows (plan U32).
@@ -135,22 +137,25 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
    - a void whose linked events are not reversed (ADR 0002)
    - a dissolved reconciled group whose legs are not all reversed, or whose observed legs are not reposted (§5 Q3)
 5. `COMMIT`. If the commits row was never written, the deferred foreign keys fail at COMMIT and nothing persists.
-6. Once sealed, a commit accepts no new rows. Open-commit triggers on all 24 commit-scoped tables enforce this (23 in PR 19; U17 adds `kernel_state`), and the smoke script tries each table.
+6. Once sealed, a commit accepts no new rows. Open-commit triggers on all 22 commit-scoped tables enforce this (23 in PR 19; U17 adds `kernel_state`; the ADR 0004 rewrite drops `cross_entity_outbox` and `cross_entity_inbox`), and the smoke script tries each table.
 
 **doctor rules (U21; all must be clean, exit nonzero otherwise):**
 - `PRAGMA integrity_check` returns `ok`.
 - `PRAGMA foreign_key_check` returns no rows. This is a doctor rule, not just a smoke check.
 - `doctor_unsealed_rows` returns no rows. It lists rows in commit-scoped tables, and rows hanging off them, whose commit has no `commits` row.
 - `doctor_unbalanced_events`, `doctor_superseded_drift` and `doctor_observation_double_consumed` return no rows.
-- The ADR 0004 cross-database checks (outbox/inbox pairing, evidence hashes) pass.
+- The ADR 0004 application recipe check (missing half, duplicate, mismatched counterpart or amount) and the evidence-hash check pass.
 
 ## 4. Where each rule is enforced
 
 | Rule | Storage (schema-v2) | Commit validator (U19) / doctor (U21) |
 |---|---|---|
-| INV-001 balance per event and currency | `commits_seal` | `doctor_unbalanced_events` |
+| INV-001 balance per event, currency | `commits_seal` | `doctor_unbalanced_events` |
 | INV-002 posting shape | CHECKs, STRICT, `commits_seal` (at least 2 postings) | — |
-| INV-003 leaf category | `journal_postings_category_leaf`, `ledger_accounts_parent_valid` | — |
+| INV-003 leaf category, same-type parent | `journal_postings_category_leaf`, `ledger_accounts_parent_valid` | — |
+| ADR 0004: recipe fields all-or-none, none on a reversal, counterpart is not this entity | CHECK on `accounting_events`; trigger on `counterpart_entity_id` vs `entity.id` | — |
+| ADR 0004: one current half per `recipe_instance_id` per database; identical retry is a no-op | partial UNIQUE index `WHERE superseded_by IS NULL`; kernel payload compare (`IdempotencyConflict`) | — |
+| ADR 0004: target database is the registered entity | application registry check (`RegistryMismatch`) before any write | — |
 | INV-004, INV-005 one owner, one currency | singleton entity, `journal_postings_currency_valid`, `observations_currency_valid` | — |
 | INV-006 drafts never post | `commits_seal` | — |
 | INV-007 no double consumption | `posting_observations_valid`, observation natural key | `doctor_observation_double_consumed` |
@@ -165,7 +170,7 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
 | ADR 0002 amendment `superseded_by` | `accounting_events_only_supersede`, `commits_seal` | `doctor_superseded_drift` |
 | ADR 0002 closed month | — | U19 |
 | ADR 0001 claim caps | `obligation_settlements_cap` | — |
-| ADR 0004 outbox pairing | idempotency-key uniqueness | doctor (cross-database) |
+| ADR 0004 recipe pairing | one current half per database (partial UNIQUE index) | application recipe check (cross-database) |
 | ADR 0005 valuation snapshots | `valuation_snapshots_noncash` | — |
 | ADR 0006 exclusivity | `settlement_postings.posting_id` UNIQUE | — |
 | ADR 0006 dissolving a reconciled group (§5 Q3) | `commits_seal`: all legs reversed, observed legs reposted | U19: replacement legs regrouped |

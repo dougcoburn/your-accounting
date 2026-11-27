@@ -156,7 +156,33 @@ fn event(id: &str, postings: Vec<NewPosting>) -> NewEvent {
         recipe_version: "1".to_string(),
         effective_date: "2026-01-02".to_string(),
         postings,
+        recipe_instance_id: None,
+        counterpart_entity_id: None,
+        counterpart_expected_amount_minor: None,
+        counterpart_currency: None,
     }
+}
+
+fn recipe_half(
+    books: &Books,
+    event_id: &str,
+    debit: &str,
+    credit: &str,
+    amount: i64,
+    expected: i64,
+) -> NewEvent {
+    let mut new = event(
+        event_id,
+        vec![
+            posting(debit, &books.groceries, Side::Debit, amount, "USD"),
+            posting(credit, &books.card, Side::Credit, amount, "USD"),
+        ],
+    );
+    new.recipe_instance_id = Some(uid("RR01"));
+    new.counterpart_entity_id = Some(uid("XENT"));
+    new.counterpart_expected_amount_minor = Some(expected);
+    new.counterpart_currency = Some("USD".to_string());
+    new
 }
 
 fn purchase(
@@ -251,17 +277,24 @@ fn column_names(kernel: &Kernel, table: &str) -> Vec<String> {
     rows.map(|row| row.expect("column")).collect()
 }
 
-fn inbox_apply(books: &Books, event_id: Option<String>, amount: i64, instance: &str) -> InboxApply {
-    InboxApply {
-        idempotency_key: "idem-party-001".to_string(),
-        recipe_instance_id: uid(instance),
-        source_party_id: books.employer.clone(),
-        counterpart_entity_id: books.entity.clone(),
-        action: InboxAction::Leg,
-        amount_minor: amount,
-        currency: "USD".to_string(),
-        event_id,
-    }
+fn event_field(kernel: &Kernel, column: &str, id: &str) -> Option<String> {
+    let sql = format!("SELECT {column} FROM accounting_events WHERE id = ?1");
+    kernel
+        .connection()
+        .query_row(&sql, [id], |row| row.get(0))
+        .expect("event")
+}
+
+fn current_halves(kernel: &Kernel, instance: &str) -> i64 {
+    kernel
+        .connection()
+        .query_row(
+            "SELECT count(*) FROM accounting_events
+             WHERE recipe_instance_id = ?1 AND superseded_by IS NULL",
+            [instance],
+            |row| row.get(0),
+        )
+        .expect("count")
 }
 
 #[test]
@@ -692,24 +725,15 @@ fn user_error_does_not_persist_a_freeze() {
 }
 
 #[test]
-fn inbox_idempotency_noop_and_conflict() {
-    let tmp = Tmp::new("inbox");
+fn recipe_retry_is_a_noop_and_a_different_payload_conflicts() {
+    let tmp = Tmp::new("recipe");
     let mut kernel = open_at(&tmp.db());
     let books = chart(&mut kernel);
     let event_id = {
         let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
         let event_id = tx
-            .stage_event(purchase(
-                &books,
-                "PS01",
-                "PS02",
-                &books.groceries,
-                MINOR,
-                "USD",
-            ))
+            .stage_event(recipe_half(&books, "EV20", "PS20", "PS21", MINOR, MINOR))
             .expect("event");
-        tx.apply_inbox(inbox_apply(&books, Some(event_id.clone()), MINOR, "R101"))
-            .expect("inbox");
         let sealed = tx.commit().expect("commit");
         assert!(!sealed.noop);
         assert_eq!(sealed.seq, 2);
@@ -719,197 +743,202 @@ fn inbox_idempotency_noop_and_conflict() {
         assert_eq!(info.id, sealed.commit_id.expect("id"));
         event_id
     };
-    assert_eq!(kernel.inbox_count().expect("count"), 1);
+    assert_eq!(
+        event_field(&kernel, "recipe_instance_id", &event_id),
+        Some(uid("RR01"))
+    );
+    assert_eq!(
+        event_field(&kernel, "counterpart_entity_id", &event_id),
+        Some(uid("XENT"))
+    );
     assert_eq!(kernel.posting_count().expect("count"), 2);
     let original = kernel.commit_at_seq(2).expect("read").expect("row").id;
 
     let retry = {
         let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
-        tx.apply_inbox(inbox_apply(&books, None, MINOR, "R101"))
+        let returned = tx
+            .stage_event(recipe_half(&books, "EV21", "PS22", "PS23", MINOR, MINOR))
             .expect("retry");
+        assert_eq!(returned, event_id);
         tx.commit().expect("noop")
     };
     assert!(retry.noop);
     assert!(retry.commit_id.is_none());
     assert_eq!(retry.seq, 2);
     match retry.subjects.as_slice() {
-        [Subject::IdempotencyKey {
-            idempotency_key,
+        [Subject::RecipeInstance {
+            recipe_instance_id,
+            event_id: stored,
             commit_id,
             seq,
         }] => {
-            assert_eq!(idempotency_key, "idem-party-001");
+            assert_eq!(recipe_instance_id, &uid("RR01"));
+            assert_eq!(stored, &event_id);
             assert_eq!(commit_id, &original);
             assert_eq!(*seq, 2);
         }
         _ => panic!("noop subject"),
     }
     assert_eq!(kernel.revision().expect("rev"), 2);
-    assert_eq!(kernel.inbox_count().expect("count"), 1);
+    assert_eq!(current_halves(&kernel, &uid("RR01")), 1);
     assert_eq!(kernel.commit_count().expect("count"), 2);
-    let stored = kernel.inbox("idem-party-001").expect("read").expect("row");
-    assert!(stored.amount_minor == MINOR, "stored inbox amount changed");
-    assert_eq!(stored.event_id, event_id);
-    let _ = kernel
-        .begin_transaction(Some(2))
-        .expect("same revision still current");
 
     let conflict = {
         let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
         tx.create_party(party(&uid("VND2"), "Example Grocer", PartyLabel::Vendor))
             .expect("party");
-        tx.apply_inbox(inbox_apply(&books, None, MINOR + 1, "R101"))
-            .expect_err("conflict")
+        tx.stage_event(recipe_half(
+            &books,
+            "EV22",
+            "PS24",
+            "PS25",
+            MINOR,
+            MINOR + 1,
+        ))
+        .expect_err("conflict")
     };
     let conflict = code_of(conflict, Code::IdempotencyConflict);
     assert_eq!(conflict.class, Class::User);
     assert_eq!(conflict.refs, vec!["ADR 0004".to_string()]);
-    assert_eq!(
-        conflict.ids,
-        vec!["idem-party-001".to_string(), uid("R101")]
-    );
+    assert_eq!(conflict.ids, vec![uid("RR01"), event_id.clone()]);
     let text = conflict.to_string();
     assert!(
         !text.contains("1500") && !text.contains("1501") && !text.to_lowercase().contains("acme"),
         "idempotency conflict leaked a payload"
     );
-    let digest =
-        inbox_payload_hash(&uid("R101"), &books.employer, "leg", MINOR, "USD").expect("hash");
-    assert!(
-        !text.contains(&digest),
-        "idempotency conflict leaked a hash"
-    );
     assert!(
         kernel.party(&uid("VND2")).expect("read").is_none(),
         "conflict committed a party"
     );
-    let stored = kernel.inbox("idem-party-001").expect("read").expect("row");
-    assert!(
-        stored.amount_minor == MINOR,
-        "conflict overwrote the stored amount"
-    );
     assert_eq!(kernel.commit_count().expect("count"), 2);
-
-    let other = {
-        let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
-        tx.apply_inbox(inbox_apply(&books, None, MINOR, "R102"))
-            .expect_err("instance")
-    };
-    code_of(other, Code::IdempotencyConflict);
-    assert_eq!(kernel.inbox_count().expect("count"), 1);
-
-    let stale = code_of(
-        kernel.begin_transaction(Some(1)).expect_err("stale"),
-        Code::StaleRevision,
-    );
-    assert_eq!(stale.code, Code::StaleRevision);
-    assert_eq!(kernel.revision().expect("rev"), 2);
+    assert_eq!(current_halves(&kernel, &uid("RR01")), 1);
 
     let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
-    tx.apply_inbox(inbox_apply(&books, None, MINOR, "R101"))
+    let returned = tx
+        .stage_event(recipe_half(&books, "EV21", "PS22", "PS23", MINOR, MINOR))
         .expect("retry");
+    assert_eq!(returned, event_id);
     tx.create_party(party(&uid("VND1"), "Example Grocer", PartyLabel::Vendor))
         .expect("party");
     let sealed = tx.commit().expect("commit");
     assert!(!sealed.noop);
     assert_eq!(sealed.seq, 3);
-    assert_eq!(kernel.inbox_count().expect("count"), 1);
+    assert_eq!(
+        kernel.commit_at_seq(3).expect("read").expect("row").kind,
+        "setup"
+    );
+    assert_eq!(current_halves(&kernel, &uid("RR01")), 1);
     assert!(kernel.party(&uid("VND1")).expect("read").is_some());
 }
 
 #[test]
-fn inbox_target_must_equal_entity_id() {
-    let tmp = Tmp::new("target");
+fn recipe_fields_are_all_or_none_and_the_counterpart_is_not_self() {
+    let tmp = Tmp::new("recipe-shape");
     let mut kernel = open_at(&tmp.db());
-
-    let missing = {
-        let mut tx = kernel.begin_transaction(Some(0)).expect("begin");
-        tx.apply_inbox(InboxApply {
-            idempotency_key: "idem-party-001".to_string(),
-            recipe_instance_id: uid("R101"),
-            source_party_id: uid("ACME"),
-            counterpart_entity_id: uid("XENT"),
-            action: InboxAction::Leg,
-            amount_minor: MINOR,
-            currency: "USD".to_string(),
-            event_id: None,
-        })
-        .expect_err("no entity")
-    };
-    let missing = code_of(missing, Code::EntityMismatch);
-    assert_eq!(missing.refs, vec!["ADR 0004".to_string()]);
-    assert_eq!(missing.ids, vec![uid("XENT")]);
-    assert_eq!(kernel.revision().expect("rev"), 0);
-    assert_eq!(kernel.commit_count().expect("count"), 0);
-
     let books = chart(&mut kernel);
-    let mismatch = {
+
+    let partial = {
         let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
-        let event_id = tx
-            .stage_event(purchase(
-                &books,
-                "PS01",
-                "PS02",
-                &books.groceries,
-                MINOR,
-                "USD",
-            ))
-            .expect("stage");
-        let mut apply = inbox_apply(&books, Some(event_id), MINOR, "R101");
-        apply.counterpart_entity_id = uid("XENT");
-        tx.apply_inbox(apply).expect_err("mismatch")
+        let mut new = recipe_half(&books, "EV20", "PS20", "PS21", MINOR, MINOR);
+        new.counterpart_currency = None;
+        tx.stage_event(new).expect_err("partial")
     };
-    let mismatch = code_of(mismatch, Code::EntityMismatch);
-    assert_eq!(mismatch.class, Class::User);
-    assert_eq!(mismatch.refs, vec!["ADR 0004".to_string()]);
-    assert_eq!(mismatch.ids, vec![uid("XENT")]);
-    assert!(
-        !mismatch.to_string().contains("Household"),
-        "entity mismatch leaked the entity name"
+    assert_eq!(
+        code_of(partial, Code::InvalidShape).token,
+        Some("recipe_fields")
     );
-    assert_eq!(kernel.inbox_count().expect("count"), 0);
     assert_eq!(kernel.posting_count().expect("count"), 0);
+
+    let itself = {
+        let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
+        let mut new = recipe_half(&books, "EV20", "PS20", "PS21", MINOR, MINOR);
+        new.counterpart_entity_id = Some(books.entity.clone());
+        tx.stage_event(new).expect_err("self")
+    };
+    let itself = code_of(itself, Code::InvalidShape);
+    assert_eq!(itself.token, Some("counterpart_self"));
+    assert!(
+        !itself.to_string().contains("Household"),
+        "counterpart check leaked the entity name"
+    );
     assert_eq!(kernel.revision().expect("rev"), 1);
     assert_eq!(kernel.commit_count().expect("count"), 1);
+}
 
-    let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
-    let event_id = tx
-        .stage_event(purchase(
-            &books,
-            "PS01",
-            "PS02",
-            &books.groceries,
-            MINOR,
-            "USD",
-        ))
-        .expect("stage");
-    tx.apply_inbox(inbox_apply(&books, Some(event_id.clone()), MINOR, "R101"))
-        .expect("match");
-    let sealed = tx.commit().expect("commit");
-    assert_eq!(sealed.seq, 2);
-    let stored = kernel.inbox("idem-party-001").expect("read").expect("row");
-    assert_eq!(stored.event_id, event_id);
-    assert_eq!(stored.amount_minor, MINOR);
-
-    let wrong_retry = {
-        let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
-        let mut apply = inbox_apply(&books, None, MINOR, "R101");
-        apply.counterpart_entity_id = uid("XENT");
-        tx.apply_inbox(apply)
-            .expect_err("wrong target is not a noop")
+#[test]
+fn correction_supersedes_before_the_replacement_and_a_retired_instance_conflicts() {
+    let tmp = Tmp::new("correct");
+    let mut kernel = open_at(&tmp.db());
+    let books = chart(&mut kernel);
+    let original = {
+        let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
+        let id = tx
+            .stage_event(recipe_half(&books, "EV20", "PS20", "PS21", MINOR, MINOR))
+            .expect("half");
+        tx.commit().expect("commit");
+        id
     };
-    let wrong_retry = code_of(wrong_retry, Code::EntityMismatch);
-    assert_eq!(wrong_retry.refs, vec!["ADR 0004".to_string()]);
-    assert_eq!(kernel.inbox_count().expect("count"), 1);
-    assert_eq!(kernel.revision().expect("rev"), 2);
+
+    let replacement_id = {
+        let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
+        let next = recipe_half(&books, "EV23", "PS30", "PS31", MINOR - 100, MINOR - 100);
+        let id = tx
+            .correct_event(&original, Some(next))
+            .expect("correct")
+            .expect("replacement");
+        let sealed = tx.commit().expect("commit");
+        assert_eq!(sealed.seq, 3);
+        assert_eq!(
+            kernel.commit_at_seq(3).expect("read").expect("row").kind,
+            "correct"
+        );
+        id
+    };
+    let reversal = event_field(&kernel, "superseded_by", &original).expect("reversal");
+    assert_ne!(reversal, replacement_id);
+    assert_eq!(event_field(&kernel, "recipe_instance_id", &reversal), None);
     assert_eq!(
-        kernel
-            .inbox("idem-party-001")
-            .expect("read")
-            .expect("row")
-            .amount_minor,
-        MINOR
+        event_field(&kernel, "reverses_id", &reversal),
+        Some(original.clone())
     );
+    assert_eq!(
+        event_field(&kernel, "recipe_instance_id", &replacement_id),
+        Some(uid("RR01"))
+    );
+    assert_eq!(
+        event_field(&kernel, "counterpart_entity_id", &replacement_id),
+        Some(uid("XENT"))
+    );
+    assert_eq!(current_halves(&kernel, &uid("RR01")), 1);
+
+    let retired = {
+        let tmp = Tmp::new("retired");
+        let mut kernel = open_at(&tmp.db());
+        let books = chart(&mut kernel);
+        let original = {
+            let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
+            let id = tx
+                .stage_event(recipe_half(&books, "EV20", "PS20", "PS21", MINOR, MINOR))
+                .expect("half");
+            tx.commit().expect("commit");
+            id
+        };
+        {
+            let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
+            assert!(tx.correct_event(&original, None).expect("retire").is_none());
+            tx.commit().expect("commit");
+        }
+        let err = {
+            let mut tx = kernel.begin_transaction(Some(3)).expect("begin");
+            tx.stage_event(recipe_half(&books, "EV24", "PS32", "PS33", MINOR, MINOR))
+                .expect_err("retired")
+        };
+        let err = code_of(err, Code::IdempotencyConflict);
+        assert_eq!(err.ids[0], uid("RR01"));
+        assert_eq!(current_halves(&kernel, &uid("RR01")), 0);
+        err
+    };
+    assert_eq!(retired.code, Code::IdempotencyConflict);
 }
 
 #[test]
@@ -1504,10 +1533,6 @@ fn parsers_reject_contra_and_unknown_labels() {
         Side::parse("both").expect_err("side").token,
         Some("posting_side")
     );
-    assert_eq!(
-        InboxAction::parse("wire").expect_err("action").token,
-        Some("outbox_action")
-    );
     assert_eq!(Code::CurrencyMismatch.class(), Class::User);
     assert!(!persists_freeze(Code::CurrencyMismatch));
     assert!(!persists_freeze(Code::ForeignKeysDisabled));
@@ -1524,24 +1549,29 @@ fn parsers_reject_contra_and_unknown_labels() {
         seq: 2,
     }) {
         Subject::Observation { seq, .. } => assert_eq!(seq, 2),
-        Subject::IdempotencyKey { .. } => panic!("observation subject"),
+        Subject::RecipeInstance { .. } => panic!("observation subject"),
     }
 }
 
 #[test]
-fn inbox_hash_vector_and_storage_message_map() {
-    let hash = inbox_payload_hash(
-        "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-        "01ARZ3NDEKTSV4RRFFQ69G5FAW",
-        "leg",
-        MINOR,
-        "USD",
-    )
-    .expect("hash");
-    assert_eq!(
-        hash,
-        "0005a4d27a0bda054b111a694c6644b2294dfdfeb26c1bd8e417aa9711822726"
+fn storage_message_map() {
+    let recipe = map_message(
+        "UNIQUE constraint failed: accounting_events.recipe_instance_id",
+        SqlSite::Staging,
     );
+    assert_eq!(recipe.code, Code::IdempotencyConflict);
+    assert_eq!(recipe.refs, vec!["ADR 0004".to_string()]);
+    let itself = map_message(
+        "ADR 0004: counterpart_entity_id must be another entity",
+        SqlSite::Staging,
+    );
+    assert_eq!(itself.code, Code::InvalidShape);
+    assert_eq!(itself.token, Some("counterpart_self"));
+    let fields = map_message(
+        "CHECK constraint failed: (recipe_instance_id IS NULL) = (counterpart_currency IS NULL)",
+        SqlSite::Staging,
+    );
+    assert_eq!(fields.token, Some("recipe_fields"));
 
     let revision = map_message(
         "CHECK constraint failed: seq = expected_revision + 1",

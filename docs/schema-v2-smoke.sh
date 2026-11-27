@@ -247,8 +247,6 @@ sealed settlement_group_states "INSERT INTO settlement_group_states(id,group_id,
 sealed settlement_postings "INSERT INTO settlement_postings VALUES('${P}GRP2','${P}PS05','$S');"
 sealed obligations "INSERT INTO obligations(id,party_id,direction,ledger_account_id,currency,original_minor,opened_event_id,commit_id,recorded_at) VALUES('${P}0B09','${P}SHP1','receivable','${P}AR01','USD',100,'${P}EV0A','$S','$T');"
 sealed obligation_settlements "INSERT INTO obligation_settlements(id,obligation_id,event_id,kind,amount_minor,commit_id,recorded_at) VALUES('${P}0S01','${P}0B01','${P}EV0A','payment',100,'$S','$T');"
-sealed cross_entity_outbox "INSERT INTO cross_entity_outbox(id,recipe_instance_id,idempotency_key,counterpart_party_id,action,amount_minor,currency,event_id,commit_id,recorded_at) VALUES('${P}0X01','${P}R101','k1','${P}SHP1','leg',100,'USD','${P}EV01','$S','$T');"
-sealed cross_entity_inbox "INSERT INTO cross_entity_inbox(idempotency_key,recipe_instance_id,source_party_id,action,amount_minor,currency,event_id,commit_id,recorded_at) VALUES('k2','${P}R102','${P}SHP1','leg',100,'USD','${P}EV01','$S','$T');"
 sealed statements "INSERT INTO statements(id,financial_account_id,period_start,period_end,commit_id,recorded_at) VALUES('${P}ST01','${P}FAC1','2025-10-01','2025-10-31','$S','$T');"
 sealed balance_assertions "INSERT INTO balance_assertions(id,financial_account_id,cutoff,balance_minor,currency,source,commit_id,recorded_at) VALUES('${P}BA01','${P}FAC1','2025-10-31',4250,'USD','manual','$S','$T');"
 sealed valuation_snapshots "INSERT INTO valuation_snapshots(id,financial_account_id,as_of,value_minor,currency,source,commit_id,recorded_at) VALUES('${P}VS09','${P}FAB1','2025-10-31',100,'USD','manual','$S','$T');"
@@ -259,7 +257,7 @@ sealed refund_links "INSERT INTO refund_links(id,refund_posting_id,purchase_post
 sealed obligation_postings "INSERT INTO obligation_postings VALUES('${P}0B01','${P}PS01');"
 sealed settlement_draft_participants "INSERT INTO settlement_draft_participants(id,group_state_id,role,expected_json) VALUES('${P}DP01','${P}GS11','expected','{}');"
 sealed kernel_state "INSERT INTO kernel_state(id,state_key,active,code,commit_id,recorded_at) VALUES('${P}FRZ9','freeze',1,'UnsealedRows','$S','$T');"
-equals "all 24 commit-scoped tables are covered by doctor_unsealed_rows" "24|24" "SELECT count(*), sum(instr((SELECT sql FROM sqlite_master WHERE name='doctor_unsealed_rows'), char(39)||t||char(39)) > 0) FROM (SELECT DISTINCT tbl_name AS t FROM sqlite_master WHERE type='trigger' AND name GLOB '*_open_commit');"
+equals "all 22 commit-scoped tables are covered by doctor_unsealed_rows" "22|22" "SELECT count(*), sum(instr((SELECT sql FROM sqlite_master WHERE name='doctor_unsealed_rows'), char(39)||t||char(39)) > 0) FROM (SELECT DISTINCT tbl_name AS t FROM sqlite_master WHERE type='trigger' AND name GLOB '*_open_commit');"
 
 # --- read models ----------------------------------------------------------------
 equals "register hides the superseded entry and its reversal" "${P}EV03
@@ -292,6 +290,47 @@ COMMIT;"
 equals "U17 latest freeze row is the clear" "0" "SELECT k.active FROM kernel_state k JOIN commits c ON c.id = k.commit_id WHERE k.state_key='freeze' ORDER BY c.seq DESC LIMIT 1;"
 equals "U17 clear does not update the prior freeze row" "1" "SELECT active FROM kernel_state WHERE id='${P}FRZ1';"
 
+
+# --- ADR 0004 rewrite: recipe halves (no outbox/inbox). Household half of a
+# synthetic \$1,200.00 payment for Dragonfly (counterpart entity ${P}ENTD).
+R=$(sqlite3 "$DB" "SELECT max(seq) FROM commits"); N=$((R+1))
+rejects "ADR 0004 outbox and inbox tables are gone" "no such table: cross_entity_outbox" "SELECT 1 FROM cross_entity_outbox;"
+ok "ADR 0004 a recipe half commits with all four recipe fields" "
+BEGIN IMMEDIATE;
+INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at,recipe_instance_id,counterpart_entity_id,counterpart_expected_amount_minor,counterpart_currency) VALUES('${P}EV20','${P}CR01','card_purchase','1.0.0','2026-01-01','$T','${P}RR01','${P}ENTD',120000,'USD');
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS20','${P}EV20','${P}AR01','USD','debit',120000);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS21','${P}EV20','${P}AC01','USD','credit',120000);
+INSERT INTO commits(id,expected_revision,seq,kind,actor,recorded_at) VALUES('${P}CR01',$R,$N,'cross_entity','smoke','$T');
+COMMIT;"
+R=$N; N=$((R+1))
+rejects "ADR 0004 a second current half with the same recipe_instance_id is rejected" "UNIQUE constraint failed: accounting_events.recipe_instance_id" "
+BEGIN IMMEDIATE;
+INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at,recipe_instance_id,counterpart_entity_id,counterpart_expected_amount_minor,counterpart_currency) VALUES('${P}EV21','${P}CR02','card_purchase','1.0.0','2026-01-01','$T','${P}RR01','${P}ENTD',120000,'USD');
+COMMIT;"
+rejects "ADR 0004 recipe fields are all-or-none" "CHECK constraint failed" "
+BEGIN IMMEDIATE;
+INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at,recipe_instance_id) VALUES('${P}EV21','${P}CR02','card_purchase','1.0.0','2026-01-01','$T','${P}RR02');
+COMMIT;"
+rejects "ADR 0004 counterpart_entity_id cannot be this database's entity" "counterpart_entity_id must be another entity" "
+BEGIN IMMEDIATE;
+INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at,recipe_instance_id,counterpart_entity_id,counterpart_expected_amount_minor,counterpart_currency) VALUES('${P}EV21','${P}CR02','card_purchase','1.0.0','2026-01-01','$T','${P}RR02','${P}ENT1',120000,'USD');
+COMMIT;"
+rejects "ADR 0004 a reversal carries no recipe fields" "CHECK constraint failed" "
+BEGIN IMMEDIATE;
+INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at,reverses_id,recipe_instance_id,counterpart_entity_id,counterpart_expected_amount_minor,counterpart_currency) VALUES('${P}EV22','${P}CR02','correction','1.0.0','2026-01-01','$T','${P}EV20','${P}RR01','${P}ENTD',120000,'USD');
+COMMIT;"
+ok "ADR 0004 correcting a half: reversal without recipe fields, replacement keeps recipe_instance_id" "
+BEGIN IMMEDIATE;
+INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at,reverses_id) VALUES('${P}EV22','${P}CR02','correction','1.0.0','2026-01-01','$T','${P}EV20');
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS22','${P}EV22','${P}AR01','USD','credit',120000);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS23','${P}EV22','${P}AC01','USD','debit',120000);
+UPDATE accounting_events SET superseded_by='${P}EV22' WHERE id='${P}EV20';
+INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at,recipe_instance_id,counterpart_entity_id,counterpart_expected_amount_minor,counterpart_currency) VALUES('${P}EV23','${P}CR02','card_purchase','1.0.0','2026-01-01','$T','${P}RR01','${P}ENTD',110000,'USD');
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS24','${P}EV23','${P}AR01','USD','debit',110000);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS25','${P}EV23','${P}AC01','USD','credit',110000);
+INSERT INTO commits(id,expected_revision,seq,kind,actor,reason,recorded_at) VALUES('${P}CR02',$R,$N,'correct','smoke','amount fix','$T');
+COMMIT;"
+equals "ADR 0004 exactly one current half per recipe instance after the correction" "${P}EV23" "SELECT id FROM accounting_events WHERE recipe_instance_id='${P}RR01' AND superseded_by IS NULL;"
 
 # --- PR 19 fix 1: a connection with foreign_keys OFF can leave an unsealed row; doctor finds it
 if sqlite3 -bail "$DB" "PRAGMA foreign_keys=OFF;" "INSERT INTO user_grants(id,user_id,role,commit_id,recorded_at) VALUES('${P}6G0F','${P}H0MF','viewer','${P}CZZZ','$T');" 2>&1; then

@@ -36,6 +36,10 @@ fn is_busy(err: &SqlError) -> bool {
 }
 
 pub(crate) fn map_message(msg: &str, site: SqlSite) -> Error {
+    if msg.contains("counterpart_entity_id must be another entity") {
+        return Error::new(Code::InvalidShape, &["ADR 0004"], vec![])
+            .with_token("counterpart_self");
+    }
     if let Some((code, seal_is_miss)) = map_raise(msg) {
         if matches!(site, SqlSite::Seal) && seal_is_miss {
             return Error::new(Code::ValidatorMissed, &[code.as_str()], vec![]);
@@ -50,7 +54,6 @@ fn refs_for(code: Code) -> &'static [&'static str] {
         Code::StaleRevision => &["AT-032"],
         Code::NonLeafCategory | Code::CategoryParentInvalid => &["INV-003"],
         Code::CurrencyMismatch => &["INV-005"],
-        Code::EntityMismatch => &["ADR 0004"],
         Code::LedgerKindMismatch => &["ADR 0008"],
         Code::Unbalanced => &["INV-001"],
         Code::InsufficientPostings => &["INV-002"],
@@ -231,9 +234,7 @@ fn map_constraint(msg: &str, site: SqlSite) -> Error {
     if msg.contains("UNIQUE constraint failed: observation_voids.observation_id") {
         return Error::new(Code::ObservationAlreadyVoided, &[], vec![]);
     }
-    if msg.contains("UNIQUE constraint failed: cross_entity_outbox.idempotency_key")
-        || msg.contains("UNIQUE constraint failed: cross_entity_inbox.idempotency_key")
-    {
+    if msg.contains("UNIQUE constraint failed: accounting_events.recipe_instance_id") {
         return Error::new(Code::IdempotencyConflict, &["ADR 0004"], vec![]);
     }
     if msg.contains("UNIQUE constraint failed: commits.seq") {
@@ -278,6 +279,10 @@ fn map_constraint(msg: &str, site: SqlSite) -> Error {
         if msg.contains("length(id) = 26") || msg.contains("[^0-9A-HJKMNP-TV-Z]") {
             return Error::new(Code::InvalidId, &[], vec![]);
         }
+        if msg.contains("recipe_instance_id") {
+            return Error::new(Code::InvalidShape, &["ADR 0004"], vec![])
+                .with_token("recipe_fields");
+        }
         if msg.contains("currency") {
             return Error::new(Code::InvalidCurrency, &[], vec![]);
         }
@@ -315,7 +320,7 @@ fn check_token(msg: &str) -> Option<&'static str> {
         return Some("settlement_kind");
     }
     if msg.contains("'partial_settlement'") {
-        return Some("outbox_action");
+        return Some("settlement_kind");
     }
     if msg.contains("'appraisal'") {
         return Some("valuation_source");

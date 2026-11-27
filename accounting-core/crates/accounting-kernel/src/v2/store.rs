@@ -2,22 +2,21 @@
 //!
 //! Reference rows are not commit-scoped (SPEC-v2-delta §5 Q5). Each successful
 //! write still seals a `commits` row so the caller-supplied revision is checked
-//! under `BEGIN IMMEDIATE` (ADR 0007). An identical inbox retry that stages
-//! nothing else does not seal a commit (spec §2.2).
+//! under `BEGIN IMMEDIATE` (ADR 0007). An identical recipe retry that stages
+//! nothing else does not seal a commit (spec §2.2, §3.9).
 
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
 use rusqlite::{params, Connection, OptionalExtension};
-use sha2::{Digest, Sha256};
 
 use crate::v2::error::{persists_freeze, Class, Code, Error};
 use crate::v2::sqlmap::{map_sql, SqlSite};
 use crate::v2::types::{
     is_ulid, ledger_matches_financial, require_currency, require_name, require_positive,
-    require_ulid, shape, AccountType, Clock, FinancialKind, IdSource, InboxAction, LedgerKind,
-    PartyLabel, ReferenceKind, Side, TrackingMode,
+    require_ulid, shape, AccountType, Clock, FinancialKind, IdSource, LedgerKind, PartyLabel,
+    ReferenceKind, Side, TrackingMode,
 };
 
 const SCHEMA_SQL: &str = include_str!("../../../../../docs/schema-v2.sql");
@@ -31,8 +30,9 @@ pub enum Subject {
         commit_id: String,
         seq: i64,
     },
-    IdempotencyKey {
-        idempotency_key: String,
+    RecipeInstance {
+        recipe_instance_id: String,
+        event_id: String,
         commit_id: String,
         seq: i64,
     },
@@ -103,18 +103,6 @@ pub struct LedgerAccountRow {
     pub name: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InboxRow {
-    pub idempotency_key: String,
-    pub recipe_instance_id: String,
-    pub source_party_id: String,
-    pub action: String,
-    pub amount_minor: i64,
-    pub currency: String,
-    pub event_id: String,
-    pub commit_id: String,
-}
-
 #[derive(Debug, Clone)]
 pub struct NewEntity {
     pub id: Option<String>,
@@ -168,21 +156,11 @@ pub struct NewEvent {
     pub recipe_version: String,
     pub effective_date: String,
     pub postings: Vec<NewPosting>,
-}
-
-#[derive(Debug, Clone)]
-pub struct InboxApply {
-    pub idempotency_key: String,
-    pub recipe_instance_id: String,
-    pub source_party_id: String,
-    /// Target entity. Must equal this database's `entity.id`. Checked before the
-    /// §3.9 hash. Not stored: the inbox target column is not in the schema yet.
-    pub counterpart_entity_id: String,
-    pub action: InboxAction,
-    pub amount_minor: i64,
-    pub currency: String,
-    /// Required on the first apply. Ignored when the key is already stored.
-    pub event_id: Option<String>,
+    /// Shared ULID of a cross-entity recipe half. All four recipe fields are set, or none are.
+    pub recipe_instance_id: Option<String>,
+    pub counterpart_entity_id: Option<String>,
+    pub counterpart_expected_amount_minor: Option<i64>,
+    pub counterpart_currency: Option<String>,
 }
 
 struct FreezeRow {
@@ -195,18 +173,20 @@ struct FreezeRow {
 
 struct Staged {
     new_rows: u32,
-    inbox_new: u32,
     event_ids: Vec<String>,
     subjects: Vec<Subject>,
+    cross_entity: bool,
+    correcting: bool,
 }
 
 impl Staged {
     fn empty() -> Self {
         Self {
             new_rows: 0,
-            inbox_new: 0,
             event_ids: Vec::new(),
             subjects: Vec::new(),
+            cross_entity: false,
+            correcting: false,
         }
     }
 }
@@ -214,6 +194,35 @@ impl Staged {
 struct AccountSnap {
     account_type: String,
     financial_account_id: Option<String>,
+}
+
+struct RecipeHalf {
+    recipe_instance_id: String,
+    counterpart_entity_id: String,
+    counterpart_expected_amount_minor: i64,
+    counterpart_currency: String,
+}
+
+struct StoredHalf {
+    id: String,
+    commit_id: String,
+    recipe_id: String,
+    recipe_version: String,
+    effective_date: String,
+    description: String,
+    recipe_instance_id: String,
+    counterpart_entity_id: String,
+    counterpart_expected_amount_minor: i64,
+    counterpart_currency: String,
+}
+
+struct StoredPosting {
+    ledger_account_id: String,
+    currency: String,
+    side: String,
+    amount_minor: i64,
+    party_id: Option<String>,
+    memo: String,
 }
 
 /// One entity database. Reads stay available when writes are refused.
@@ -442,34 +451,6 @@ impl Kernel {
 
     pub fn posting_count(&self) -> Result<i64, Error> {
         self.scalar("SELECT count(*) FROM journal_postings")
-    }
-
-    pub fn inbox(&self, key: &str) -> Result<Option<InboxRow>, Error> {
-        self.conn
-            .query_row(
-                "SELECT idempotency_key, recipe_instance_id, source_party_id, action, amount_minor,
-                        currency, event_id, commit_id
-                 FROM cross_entity_inbox WHERE idempotency_key = ?1",
-                [key],
-                |row| {
-                    Ok(InboxRow {
-                        idempotency_key: row.get(0)?,
-                        recipe_instance_id: row.get(1)?,
-                        source_party_id: row.get(2)?,
-                        action: row.get(3)?,
-                        amount_minor: row.get(4)?,
-                        currency: row.get(5)?,
-                        event_id: row.get(6)?,
-                        commit_id: row.get(7)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(|e| map_sql(e, SqlSite::Read))
-    }
-
-    pub fn inbox_count(&self) -> Result<i64, Error> {
-        self.scalar("SELECT count(*) FROM cross_entity_inbox")
     }
 
     pub fn freeze(&self) -> Result<Option<FreezeOutcome>, Error> {
@@ -1220,7 +1201,178 @@ impl Transaction<'_> {
         if sums.values().any(|net| *net != 0) {
             return Err(self.fail(Error::new(Code::Unbalanced, &["INV-001"], vec![])));
         }
-        let event_id = self.allocate(new.id)?;
+        let half = self.recipe_half(&new)?;
+        if let Some(half) = &half {
+            if let Some(existing) = self.current_half(&half.recipe_instance_id)? {
+                if self.same_recipe_payload(&new, half, &existing)? {
+                    let seq = self.seq_of(&existing.commit_id)?;
+                    self.staged.subjects.push(Subject::RecipeInstance {
+                        recipe_instance_id: half.recipe_instance_id.clone(),
+                        event_id: existing.id.clone(),
+                        commit_id: existing.commit_id,
+                        seq,
+                    });
+                    return Ok(existing.id);
+                }
+                return Err(self.fail(Error::new(
+                    Code::IdempotencyConflict,
+                    &["ADR 0004"],
+                    vec![half.recipe_instance_id.clone(), existing.id],
+                )));
+            }
+            if let Some(retired) = self.retired_event(&half.recipe_instance_id)? {
+                return Err(self.fail(Error::new(
+                    Code::IdempotencyConflict,
+                    &["ADR 0004"],
+                    vec![half.recipe_instance_id.clone(), retired],
+                )));
+            }
+        }
+        self.write_event(&new, &prepared, half.as_ref())
+    }
+
+    /// Correct a current recipe half. The reversal is inserted with no recipe
+    /// fields, `superseded_by` is set on the target, and only then is the
+    /// replacement inserted. SQLite cannot defer the partial unique index.
+    /// `replacement` is `None` when the instance is retired with no new half.
+    pub fn correct_event(
+        &mut self,
+        target_id: &str,
+        replacement: Option<NewEvent>,
+    ) -> Result<Option<String>, Error> {
+        self.ensure_open()?;
+        require_ulid(target_id).map_err(|e| self.fail(e))?;
+        let Some(target) = self.current_half_by_id(target_id)? else {
+            return Err(self.fail(Error::new(
+                Code::UnknownTarget,
+                &[],
+                vec![target_id.to_string()],
+            )));
+        };
+        let replacement_half = if let Some(next) = &replacement {
+            let Some(half) = self.recipe_half(next)? else {
+                return Err(self.fail(shape("recipe_fields")));
+            };
+            if half.recipe_instance_id != target.recipe_instance_id
+                || half.counterpart_entity_id != target.counterpart_entity_id
+            {
+                return Err(self.fail(shape("recipe_fields")));
+            }
+            Some(half)
+        } else {
+            None
+        };
+        let postings = self.event_postings(&target.id)?;
+        if postings.len() < 2 {
+            return Err(self.fail(Error::new(Code::InsufficientPostings, &["INV-002"], vec![])));
+        }
+        let reversal_id = self.allocate(None)?;
+        let recorded_at = self.recorded_at.clone();
+        let commit_id = self.commit_id.clone();
+        self.exec(
+            "INSERT INTO accounting_events(
+                id, commit_id, recipe_id, recipe_version, effective_date, description, recorded_at, reverses_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, '', ?6, ?7)",
+            params![
+                reversal_id,
+                commit_id,
+                target.recipe_id,
+                target.recipe_version,
+                target.effective_date,
+                recorded_at,
+                target.id
+            ],
+        )?;
+        self.staged.new_rows += 1;
+        for posting in &postings {
+            let posting_id = self.allocate(None)?;
+            let side = if posting.side == "debit" {
+                "credit"
+            } else {
+                "debit"
+            };
+            self.exec(
+                "INSERT INTO journal_postings(
+                    id, event_id, ledger_account_id, currency, side, amount_minor, party_id, memo
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    posting_id,
+                    reversal_id,
+                    posting.ledger_account_id,
+                    posting.currency,
+                    side,
+                    posting.amount_minor,
+                    posting.party_id,
+                    posting.memo
+                ],
+            )?;
+            self.staged.new_rows += 1;
+        }
+        self.exec(
+            "UPDATE accounting_events SET superseded_by = ?1 WHERE id = ?2",
+            params![reversal_id, target.id],
+        )?;
+        self.staged.correcting = true;
+        self.staged.event_ids.push(reversal_id);
+        let Some(next) = replacement else {
+            return Ok(None);
+        };
+        let prepared = self.prepare_replacement(&next)?;
+        let id = self.write_event(&next, &prepared, replacement_half.as_ref())?;
+        Ok(Some(id))
+    }
+
+    fn prepare_replacement<'a>(&mut self, new: &'a NewEvent) -> Result<Vec<&'a NewPosting>, Error> {
+        if new.postings.len() < 2 {
+            return Err(self.fail(Error::new(Code::InsufficientPostings, &["INV-002"], vec![])));
+        }
+        let mut sums: BTreeMap<String, i64> = BTreeMap::new();
+        for posting in &new.postings {
+            require_ulid(&posting.ledger_account_id).map_err(|e| self.fail(e))?;
+            require_currency(&posting.currency).map_err(|e| self.fail(e))?;
+            require_positive(posting.amount_minor).map_err(|e| self.fail(e))?;
+            let Some(account) = self.account_snap(&posting.ledger_account_id)? else {
+                return Err(self.fail(Error::new(
+                    Code::UnknownTarget,
+                    &[],
+                    vec![posting.ledger_account_id.clone()],
+                )));
+            };
+            if matches!(account.account_type.as_str(), "income" | "expense")
+                && self.count(
+                    "SELECT count(*) FROM ledger_accounts WHERE parent_id = ?1",
+                    &[posting.ledger_account_id.as_str()],
+                )? > 0
+            {
+                return Err(self.fail(Error::new(
+                    Code::NonLeafCategory,
+                    &["INV-003"],
+                    vec![posting.ledger_account_id.clone()],
+                )));
+            }
+            let signed = if posting.side == Side::Debit {
+                posting.amount_minor
+            } else {
+                -posting.amount_minor
+            };
+            let entry = sums.entry(posting.currency.clone()).or_insert(0);
+            *entry = entry
+                .checked_add(signed)
+                .ok_or_else(|| self.fail(Error::new(Code::InvalidMoney, &[], vec![])))?;
+        }
+        if sums.values().any(|net| *net != 0) {
+            return Err(self.fail(Error::new(Code::Unbalanced, &["INV-001"], vec![])));
+        }
+        Ok(new.postings.iter().collect())
+    }
+
+    fn write_event(
+        &mut self,
+        new: &NewEvent,
+        prepared: &[&NewPosting],
+        half: Option<&RecipeHalf>,
+    ) -> Result<String, Error> {
+        let event_id = self.allocate(new.id.clone())?;
         if self.count(
             "SELECT count(*) FROM accounting_events WHERE id = ?1",
             &[event_id.as_str()],
@@ -1230,17 +1382,32 @@ impl Transaction<'_> {
         }
         let recorded_at = self.recorded_at.clone();
         let commit_id = self.commit_id.clone();
+        let (instance, counterpart, expected, currency) = match half {
+            Some(half) => (
+                Some(half.recipe_instance_id.as_str()),
+                Some(half.counterpart_entity_id.as_str()),
+                Some(half.counterpart_expected_amount_minor),
+                Some(half.counterpart_currency.as_str()),
+            ),
+            None => (None, None, None, None),
+        };
         self.exec(
             "INSERT INTO accounting_events(
-                id, commit_id, recipe_id, recipe_version, effective_date, description, recorded_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, '', ?6)",
+                id, commit_id, recipe_id, recipe_version, effective_date, description, recorded_at,
+                recipe_instance_id, counterpart_entity_id, counterpart_expected_amount_minor,
+                counterpart_currency
+             ) VALUES (?1, ?2, ?3, ?4, ?5, '', ?6, ?7, ?8, ?9, ?10)",
             params![
                 event_id,
                 commit_id,
                 new.recipe_id,
                 new.recipe_version,
                 new.effective_date,
-                recorded_at
+                recorded_at,
+                instance,
+                counterpart,
+                expected,
+                currency
             ],
         )?;
         self.staged.new_rows += 1;
@@ -1262,102 +1429,11 @@ impl Transaction<'_> {
             )?;
             self.staged.new_rows += 1;
         }
+        if half.is_some() {
+            self.staged.cross_entity = true;
+        }
         self.staged.event_ids.push(event_id.clone());
         Ok(event_id)
-    }
-
-    /// Inbox apply. `counterpart_entity_id` must equal `entity.id` before the
-    /// §3.9 hash compare. The caller stages the counterpart event with `stage_event`.
-    pub fn apply_inbox(&mut self, apply: InboxApply) -> Result<(), Error> {
-        self.ensure_open()?;
-        if apply.idempotency_key.is_empty() || apply.idempotency_key.contains('\n') {
-            return Err(self.fail(Error::new(Code::InvalidShape, &[], vec![])));
-        }
-        require_ulid(&apply.recipe_instance_id).map_err(|e| self.fail(e))?;
-        require_ulid(&apply.source_party_id).map_err(|e| self.fail(e))?;
-        require_ulid(&apply.counterpart_entity_id).map_err(|e| self.fail(e))?;
-        require_positive(apply.amount_minor).map_err(|e| self.fail(e))?;
-        require_currency(&apply.currency).map_err(|e| self.fail(e))?;
-        let entity_id = self.singleton_entity()?;
-        if entity_id.as_deref() != Some(apply.counterpart_entity_id.as_str()) {
-            return Err(self.fail(Error::new(
-                Code::EntityMismatch,
-                &["ADR 0004"],
-                vec![apply.counterpart_entity_id],
-            )));
-        }
-        let incoming = inbox_payload_hash(
-            &apply.recipe_instance_id,
-            &apply.source_party_id,
-            apply.action.as_str(),
-            apply.amount_minor,
-            &apply.currency,
-        )
-        .map_err(|e| self.fail(e))?;
-        if let Some(stored) = self.inbox_row(&apply.idempotency_key)? {
-            let stored_hash = inbox_payload_hash(
-                &stored.recipe_instance_id,
-                &stored.source_party_id,
-                &stored.action,
-                stored.amount_minor,
-                &stored.currency,
-            )
-            .map_err(|e| self.fail(e))?;
-            if stored_hash != incoming {
-                return Err(self.fail(Error::new(
-                    Code::IdempotencyConflict,
-                    &["ADR 0004"],
-                    vec![apply.idempotency_key, apply.recipe_instance_id],
-                )));
-            }
-            let seq = self.seq_of(&stored.commit_id)?;
-            self.staged.subjects.push(Subject::IdempotencyKey {
-                idempotency_key: apply.idempotency_key,
-                commit_id: stored.commit_id,
-                seq,
-            });
-            return Ok(());
-        }
-        let Some(event_id) = apply.event_id else {
-            return Err(self.fail(Error::new(Code::UnknownTarget, &[], vec![])));
-        };
-        require_ulid(&event_id).map_err(|e| self.fail(e))?;
-        if !self.staged.event_ids.iter().any(|id| id == &event_id) {
-            return Err(self.fail(Error::new(Code::UnknownTarget, &[], vec![event_id])));
-        }
-        if self.count(
-            "SELECT count(*) FROM parties WHERE id = ?1",
-            &[apply.source_party_id.as_str()],
-        )? == 0
-        {
-            return Err(self.fail(Error::new(
-                Code::UnknownTarget,
-                &[],
-                vec![apply.source_party_id],
-            )));
-        }
-        let recorded_at = self.recorded_at.clone();
-        let commit_id = self.commit_id.clone();
-        self.exec(
-            "INSERT INTO cross_entity_inbox(
-                idempotency_key, recipe_instance_id, source_party_id, action, amount_minor,
-                currency, event_id, commit_id, recorded_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                apply.idempotency_key,
-                apply.recipe_instance_id,
-                apply.source_party_id,
-                apply.action.as_str(),
-                apply.amount_minor,
-                apply.currency,
-                event_id,
-                commit_id,
-                recorded_at
-            ],
-        )?;
-        self.staged.new_rows += 1;
-        self.staged.inbox_new += 1;
-        Ok(())
     }
 
     pub fn commit(mut self) -> Result<CommitResult, Error> {
@@ -1386,7 +1462,9 @@ impl Transaction<'_> {
                 subjects: std::mem::take(&mut self.staged.subjects),
             });
         }
-        let kind = if self.staged.inbox_new > 0 {
+        let kind = if self.staged.correcting {
+            "correct"
+        } else if self.staged.cross_entity {
             "cross_entity"
         } else if !self.staged.event_ids.is_empty() {
             "interpret"
@@ -1528,33 +1606,177 @@ impl Transaction<'_> {
         Ok(self.count(sql, &[id])? > 0)
     }
 
-    fn inbox_row(&mut self, key: &str) -> Result<Option<InboxRow>, Error> {
-        match self
-            .kernel
-            .conn
-            .query_row(
-                "SELECT idempotency_key, recipe_instance_id, source_party_id, action, amount_minor,
-                        currency, event_id, commit_id
-                 FROM cross_entity_inbox WHERE idempotency_key = ?1",
-                [key],
-                |row| {
-                    Ok(InboxRow {
-                        idempotency_key: row.get(0)?,
-                        recipe_instance_id: row.get(1)?,
-                        source_party_id: row.get(2)?,
-                        action: row.get(3)?,
-                        amount_minor: row.get(4)?,
-                        currency: row.get(5)?,
-                        event_id: row.get(6)?,
-                        commit_id: row.get(7)?,
-                    })
-                },
-            )
-            .optional()
-        {
-            Ok(value) => Ok(value),
+    fn recipe_half(&mut self, new: &NewEvent) -> Result<Option<RecipeHalf>, Error> {
+        let present = [
+            new.recipe_instance_id.is_some(),
+            new.counterpart_entity_id.is_some(),
+            new.counterpart_expected_amount_minor.is_some(),
+            new.counterpart_currency.is_some(),
+        ];
+        if present.iter().all(|flag| !flag) {
+            return Ok(None);
+        }
+        if present.iter().any(|flag| !flag) {
+            return Err(self.fail(shape("recipe_fields")));
+        }
+        let recipe_instance_id = new.recipe_instance_id.clone().expect("present");
+        let counterpart_entity_id = new.counterpart_entity_id.clone().expect("present");
+        let amount = new.counterpart_expected_amount_minor.expect("present");
+        let currency = new.counterpart_currency.clone().expect("present");
+        require_ulid(&recipe_instance_id).map_err(|e| self.fail(e))?;
+        require_ulid(&counterpart_entity_id).map_err(|e| self.fail(e))?;
+        require_positive(amount).map_err(|e| self.fail(e))?;
+        require_currency(&currency).map_err(|e| self.fail(e))?;
+        let Some(entity_id) = self.singleton_entity()? else {
+            return Err(self.fail(Error::new(
+                Code::DatabaseUninitialized,
+                &["ADR 0004"],
+                vec![],
+            )));
+        };
+        if counterpart_entity_id == entity_id {
+            return Err(self.fail(shape("counterpart_self")));
+        }
+        Ok(Some(RecipeHalf {
+            recipe_instance_id,
+            counterpart_entity_id,
+            counterpart_expected_amount_minor: amount,
+            counterpart_currency: currency,
+        }))
+    }
+
+    fn current_half(&mut self, instance: &str) -> Result<Option<StoredHalf>, Error> {
+        self.load_half(
+            "SELECT id, commit_id, recipe_id, recipe_version, effective_date, description,
+                    recipe_instance_id, counterpart_entity_id, counterpart_expected_amount_minor,
+                    counterpart_currency
+             FROM accounting_events
+             WHERE recipe_instance_id = ?1 AND superseded_by IS NULL",
+            instance,
+        )
+    }
+
+    fn current_half_by_id(&mut self, id: &str) -> Result<Option<StoredHalf>, Error> {
+        self.load_half(
+            "SELECT id, commit_id, recipe_id, recipe_version, effective_date, description,
+                    recipe_instance_id, counterpart_entity_id, counterpart_expected_amount_minor,
+                    counterpart_currency
+             FROM accounting_events
+             WHERE id = ?1 AND superseded_by IS NULL AND reverses_id IS NULL
+               AND recipe_instance_id IS NOT NULL",
+            id,
+        )
+    }
+
+    fn load_half(&mut self, sql: &str, key: &str) -> Result<Option<StoredHalf>, Error> {
+        match self.kernel.conn.query_row(sql, [key], |row| {
+            Ok(StoredHalf {
+                id: row.get(0)?,
+                commit_id: row.get(1)?,
+                recipe_id: row.get(2)?,
+                recipe_version: row.get(3)?,
+                effective_date: row.get(4)?,
+                description: row.get(5)?,
+                recipe_instance_id: row.get(6)?,
+                counterpart_entity_id: row.get(7)?,
+                counterpart_expected_amount_minor: row.get(8)?,
+                counterpart_currency: row.get(9)?,
+            })
+        }) {
+            Ok(row) => Ok(Some(row)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(err) => Err(self.fail(map_sql(err, SqlSite::Read))),
         }
+    }
+
+    fn retired_event(&mut self, instance: &str) -> Result<Option<String>, Error> {
+        match self.kernel.conn.query_row(
+            "SELECT id FROM accounting_events WHERE recipe_instance_id = ?1 LIMIT 1",
+            [instance],
+            |row| row.get(0),
+        ) {
+            Ok(id) => Ok(Some(id)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(err) => Err(self.fail(map_sql(err, SqlSite::Read))),
+        }
+    }
+
+    fn event_postings(&mut self, event_id: &str) -> Result<Vec<StoredPosting>, Error> {
+        let outcome = (|| {
+            let mut stmt = self.kernel.conn.prepare(
+                "SELECT ledger_account_id, currency, side, amount_minor, party_id, memo
+                 FROM journal_postings WHERE event_id = ?1 ORDER BY id",
+            )?;
+            let rows = stmt.query_map([event_id], |row| {
+                Ok(StoredPosting {
+                    ledger_account_id: row.get(0)?,
+                    currency: row.get(1)?,
+                    side: row.get(2)?,
+                    amount_minor: row.get(3)?,
+                    party_id: row.get(4)?,
+                    memo: row.get(5)?,
+                })
+            })?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })();
+        outcome.map_err(|err| self.fail(map_sql(err, SqlSite::Read)))
+    }
+
+    fn same_recipe_payload(
+        &mut self,
+        new: &NewEvent,
+        half: &RecipeHalf,
+        existing: &StoredHalf,
+    ) -> Result<bool, Error> {
+        if new.recipe_id != existing.recipe_id
+            || new.recipe_version != existing.recipe_version
+            || new.effective_date != existing.effective_date
+            || !existing.description.is_empty()
+            || half.recipe_instance_id != existing.recipe_instance_id
+            || half.counterpart_entity_id != existing.counterpart_entity_id
+            || half.counterpart_expected_amount_minor != existing.counterpart_expected_amount_minor
+            || half.counterpart_currency != existing.counterpart_currency
+        {
+            return Ok(false);
+        }
+        let stored = self.event_postings(&existing.id)?;
+        if stored.len() != new.postings.len() {
+            return Ok(false);
+        }
+        let mut left: Vec<_> = stored
+            .iter()
+            .map(|row| {
+                (
+                    row.ledger_account_id.clone(),
+                    row.currency.clone(),
+                    row.side.clone(),
+                    row.amount_minor,
+                    row.party_id.clone(),
+                    row.memo.clone(),
+                )
+            })
+            .collect();
+        let mut right: Vec<_> = new
+            .postings
+            .iter()
+            .map(|row| {
+                (
+                    row.ledger_account_id.clone(),
+                    row.currency.clone(),
+                    row.side.as_str().to_string(),
+                    row.amount_minor,
+                    row.party_id.clone(),
+                    String::new(),
+                )
+            })
+            .collect();
+        left.sort();
+        right.sort();
+        Ok(left == right)
     }
 
     fn seq_of(&mut self, commit_id: &str) -> Result<i64, Error> {
@@ -1576,42 +1798,6 @@ impl Drop for Transaction<'_> {
             self.kernel.write_open = false;
         }
     }
-}
-
-pub fn inbox_payload_hash(
-    recipe_instance_id: &str,
-    source_party_id: &str,
-    action: &str,
-    amount_minor: i64,
-    currency: &str,
-) -> Result<String, Error> {
-    let amount = crate::v2::types::canonical_amount(amount_minor)?;
-    let fields = [
-        recipe_instance_id,
-        source_party_id,
-        action,
-        amount.as_str(),
-        currency,
-    ];
-    if fields.iter().any(|field| field.contains('\n')) {
-        return Err(Error::new(Code::InvalidShape, &[], vec![]));
-    }
-    let mut bytes = String::new();
-    for field in fields {
-        bytes.push_str(field);
-        bytes.push('\n');
-    }
-    Ok(hex_encode(&Sha256::digest(bytes.as_bytes())))
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0xf) as usize] as char);
-    }
-    out
 }
 
 fn ensure_schema(conn: &Connection) -> Result<(), Error> {

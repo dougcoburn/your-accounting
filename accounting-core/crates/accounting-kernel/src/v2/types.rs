@@ -105,12 +105,6 @@ pub fn require_positive(amount: i64) -> Result<(), Error> {
     }
 }
 
-/// Canonical decimal for the inbox payload hash: no sign, no leading zeros.
-pub fn canonical_amount(amount: i64) -> Result<String, Error> {
-    require_positive(amount)?;
-    Ok(amount.to_string())
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountType {
     Asset,
@@ -374,35 +368,6 @@ impl Side {
             "debit" => Ok(Self::Debit),
             "credit" => Ok(Self::Credit),
             _ => Err(Error::new(Code::InvalidShape, &[], vec![]).with_token("posting_side")),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InboxAction {
-    Leg,
-    PartialSettlement,
-    Forgiveness,
-    Correction,
-}
-
-impl InboxAction {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Leg => "leg",
-            Self::PartialSettlement => "partial_settlement",
-            Self::Forgiveness => "forgiveness",
-            Self::Correction => "correction",
-        }
-    }
-
-    pub fn parse(value: &str) -> Result<Self, Error> {
-        match value {
-            "leg" => Ok(Self::Leg),
-            "partial_settlement" => Ok(Self::PartialSettlement),
-            "forgiveness" => Ok(Self::Forgiveness),
-            "correction" => Ok(Self::Correction),
-            _ => Err(Error::new(Code::InvalidShape, &[], vec![]).with_token("outbox_action")),
         }
     }
 }

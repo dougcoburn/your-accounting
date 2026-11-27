@@ -7,4 +7,3 @@ description = "Pure DDD Core Kernel & Port Traits for Double-Entry Accounting"
 
 [dependencies]
 rusqlite = { workspace = true }
-sha2 = "0.10"

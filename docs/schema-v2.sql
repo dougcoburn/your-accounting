@@ -15,7 +15,8 @@
 --                         no entities.visibility, no parties.opaque_entity_id
 --   ADR 0004              one database per entity (this file is ONE entity's
 --                         database); globally unique ULID ids; cross-entity
---                         outbox/inbox; evidence per entity database
+--                         recipe halves on accounting_events (rewritten
+--                         2026-11-26: no outbox/inbox); evidence per entity database
 --   ADR 0005              tracking mode per financial account; valuation
 --                         snapshots on non-cash asset accounts only
 --   ADR 0006              settlement exclusivity per posting; drafts never post
@@ -223,7 +224,13 @@ CREATE TABLE accounting_events (
     commit_id          TEXT NOT NULL REFERENCES commits(id) DEFERRABLE INITIALLY DEFERRED,
     recipe_id          TEXT NOT NULL,
     recipe_version     TEXT NOT NULL,
-    recipe_instance_id TEXT CHECK (recipe_instance_id IS NULL OR (length(recipe_instance_id) = 26 AND recipe_instance_id NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*')),  -- ADR 0004 outbox pairing
+    -- ADR 0004 (rewritten 2026-11-26): one half of a cross-entity recipe. The
+    -- application writes both halves; recipe_instance_id links them. recipe_id
+    -- above stays the recipe code. All four are NULL or all four are set.
+    recipe_instance_id TEXT CHECK (recipe_instance_id IS NULL OR (length(recipe_instance_id) = 26 AND recipe_instance_id NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*')),
+    counterpart_entity_id TEXT CHECK (counterpart_entity_id IS NULL OR (length(counterpart_entity_id) = 26 AND counterpart_entity_id NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*')),
+    counterpart_expected_amount_minor INTEGER CHECK (counterpart_expected_amount_minor IS NULL OR counterpart_expected_amount_minor > 0),
+    counterpart_currency TEXT CHECK (counterpart_currency IS NULL OR (length(counterpart_currency) = 3 AND counterpart_currency NOT GLOB '*[^A-Z]*')),
     effective_date     TEXT NOT NULL CHECK (date(effective_date) IS effective_date),
     description        TEXT NOT NULL DEFAULT '',
     recorded_at        TEXT NOT NULL CHECK (recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z' AND julianday(recorded_at) IS NOT NULL),
@@ -231,7 +238,11 @@ CREATE TABLE accounting_events (
     superseded_by      TEXT REFERENCES accounting_events(id),
     FOREIGN KEY (recipe_id, recipe_version) REFERENCES recipes(id, version),
     CHECK (reverses_id IS NULL OR reverses_id <> id),
-    CHECK (superseded_by IS NULL OR superseded_by <> id)
+    CHECK (superseded_by IS NULL OR superseded_by <> id),
+    CHECK ((recipe_instance_id IS NULL) = (counterpart_entity_id IS NULL)
+       AND (recipe_instance_id IS NULL) = (counterpart_expected_amount_minor IS NULL)
+       AND (recipe_instance_id IS NULL) = (counterpart_currency IS NULL)),   -- ADR 0004: all-or-none
+    CHECK (reverses_id IS NULL OR recipe_instance_id IS NULL)               -- ADR 0004: a reversal carries no recipe fields
 ) STRICT;
 -- ADR 0002: an event is reversed at most once.
 CREATE UNIQUE INDEX accounting_events_reverses ON accounting_events(reverses_id) WHERE reverses_id IS NOT NULL;
@@ -239,6 +250,10 @@ CREATE UNIQUE INDEX accounting_events_reverses ON accounting_events(reverses_id)
 CREATE INDEX accounting_events_register ON accounting_events(effective_date) WHERE superseded_by IS NULL AND reverses_id IS NULL;
 CREATE INDEX accounting_events_commit ON accounting_events(commit_id);
 CREATE INDEX accounting_events_recipe_instance ON accounting_events(recipe_instance_id) WHERE recipe_instance_id IS NOT NULL;
+-- ADR 0004: at most one CURRENT half per recipe instance in this database. A
+-- correction sets superseded_by on the target before inserting the replacement
+-- that keeps the id, so the two are never current together.
+CREATE UNIQUE INDEX accounting_events_recipe_instance_current ON accounting_events(recipe_instance_id) WHERE recipe_instance_id IS NOT NULL AND superseded_by IS NULL;
 
 -- INV-002: one ledger account, currency, positive magnitude, explicit side. No
 -- entity_id: the database is the entity (ADR 0004 amendment 2026-11-26).
@@ -426,7 +441,7 @@ CREATE TABLE settlement_postings (
 ) STRICT;
 
 -- -----------------------------------------------------------------------------
--- 8. Obligations / reimbursement claims (ADR 0001), cross-entity outbox (ADR 0004)
+-- 8. Obligations / reimbursement claims (ADR 0001)
 -- -----------------------------------------------------------------------------
 -- The counterparty is always a party (ADR 0003), including another entity.
 -- Remaining amount is derived: original - sum(current settlements).
@@ -457,37 +472,6 @@ CREATE TABLE obligation_settlements (
     amount_minor  INTEGER NOT NULL CHECK (amount_minor > 0),
     commit_id     TEXT NOT NULL REFERENCES commits(id) DEFERRABLE INITIALLY DEFERRED,
     recorded_at   TEXT NOT NULL CHECK (recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z')
-) STRICT;
-
--- ADR 0004 outbox: written in the same commit as the first leg. The counterpart
--- database applies it idempotently and records it in its inbox. doctor pairs
--- outbox rows with counterpart inbox rows (missing, duplicate, mismatch).
-CREATE TABLE cross_entity_outbox (
-    id                   TEXT PRIMARY KEY CHECK (length(id) = 26 AND id NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
-    recipe_instance_id   TEXT NOT NULL CHECK (length(recipe_instance_id) = 26 AND recipe_instance_id NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
-    idempotency_key      TEXT NOT NULL UNIQUE CHECK (length(idempotency_key) > 0),
-    counterpart_party_id TEXT NOT NULL REFERENCES parties(id),
-    action               TEXT NOT NULL CHECK (action IN ('leg','partial_settlement','forgiveness','correction')),
-    amount_minor         INTEGER NOT NULL CHECK (amount_minor > 0),
-    currency             TEXT NOT NULL CHECK (length(currency) = 3 AND currency NOT GLOB '*[^A-Z]*'),
-    event_id             TEXT NOT NULL REFERENCES accounting_events(id),
-    commit_id            TEXT NOT NULL REFERENCES commits(id) DEFERRABLE INITIALLY DEFERRED,
-    recorded_at          TEXT NOT NULL CHECK (recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z')
-) STRICT;
--- Idempotent apply: the PRIMARY KEY on idempotency_key makes a retry a no-op.
--- No target-entity column. Whether one is added, with a CHECK against entity,
--- and whether it matches entity.id or entity.party_id, is open. The kernel
--- checks the apply argument against entity.id.
-CREATE TABLE cross_entity_inbox (
-    idempotency_key    TEXT PRIMARY KEY CHECK (length(idempotency_key) > 0),
-    recipe_instance_id TEXT NOT NULL CHECK (length(recipe_instance_id) = 26 AND recipe_instance_id NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
-    source_party_id    TEXT NOT NULL REFERENCES parties(id),
-    action             TEXT NOT NULL CHECK (action IN ('leg','partial_settlement','forgiveness','correction')),
-    amount_minor       INTEGER NOT NULL CHECK (amount_minor > 0),
-    currency           TEXT NOT NULL CHECK (length(currency) = 3 AND currency NOT GLOB '*[^A-Z]*'),
-    event_id           TEXT NOT NULL REFERENCES accounting_events(id),
-    commit_id          TEXT NOT NULL REFERENCES commits(id) DEFERRABLE INITIALLY DEFERRED,
-    recorded_at        TEXT NOT NULL CHECK (recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z')
 ) STRICT;
 
 -- -----------------------------------------------------------------------------
@@ -653,10 +637,6 @@ CREATE TRIGGER obligation_postings_no_update BEFORE UPDATE ON obligation_posting
 CREATE TRIGGER obligation_postings_no_delete BEFORE DELETE ON obligation_postings BEGIN SELECT RAISE(ABORT, 'ADR 0001/0002 append-only: obligation_postings rows are never deleted'); END;
 CREATE TRIGGER obligation_settlements_no_update BEFORE UPDATE ON obligation_settlements BEGIN SELECT RAISE(ABORT, 'ADR 0001/0002 append-only: obligation_settlements rows are never updated'); END;
 CREATE TRIGGER obligation_settlements_no_delete BEFORE DELETE ON obligation_settlements BEGIN SELECT RAISE(ABORT, 'ADR 0001/0002 append-only: obligation_settlements rows are never deleted'); END;
-CREATE TRIGGER cross_entity_outbox_no_update BEFORE UPDATE ON cross_entity_outbox BEGIN SELECT RAISE(ABORT, 'ADR 0004/0002 append-only: cross_entity_outbox rows are never updated'); END;
-CREATE TRIGGER cross_entity_outbox_no_delete BEFORE DELETE ON cross_entity_outbox BEGIN SELECT RAISE(ABORT, 'ADR 0004/0002 append-only: cross_entity_outbox rows are never deleted'); END;
-CREATE TRIGGER cross_entity_inbox_no_update BEFORE UPDATE ON cross_entity_inbox BEGIN SELECT RAISE(ABORT, 'ADR 0004/0002 append-only: cross_entity_inbox rows are never updated'); END;
-CREATE TRIGGER cross_entity_inbox_no_delete BEFORE DELETE ON cross_entity_inbox BEGIN SELECT RAISE(ABORT, 'ADR 0004/0002 append-only: cross_entity_inbox rows are never deleted'); END;
 CREATE TRIGGER statements_no_update BEFORE UPDATE ON statements BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: statements rows are never updated'); END;
 CREATE TRIGGER statements_no_delete BEFORE DELETE ON statements BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: statements rows are never deleted'); END;
 CREATE TRIGGER balance_assertions_no_update BEFORE UPDATE ON balance_assertions BEGIN SELECT RAISE(ABORT, 'INV-011 append-only: balance_assertions rows are never updated'); END;
@@ -678,8 +658,6 @@ CREATE TRIGGER settlement_group_states_open_commit BEFORE INSERT ON settlement_g
 CREATE TRIGGER settlement_postings_open_commit BEFORE INSERT ON settlement_postings WHEN EXISTS (SELECT 1 FROM commits WHERE id = NEW.commit_id) BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed'); END;
 CREATE TRIGGER obligations_open_commit BEFORE INSERT ON obligations WHEN EXISTS (SELECT 1 FROM commits WHERE id = NEW.commit_id) BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed'); END;
 CREATE TRIGGER obligation_settlements_open_commit BEFORE INSERT ON obligation_settlements WHEN EXISTS (SELECT 1 FROM commits WHERE id = NEW.commit_id) BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed'); END;
-CREATE TRIGGER cross_entity_outbox_open_commit BEFORE INSERT ON cross_entity_outbox WHEN EXISTS (SELECT 1 FROM commits WHERE id = NEW.commit_id) BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed'); END;
-CREATE TRIGGER cross_entity_inbox_open_commit BEFORE INSERT ON cross_entity_inbox WHEN EXISTS (SELECT 1 FROM commits WHERE id = NEW.commit_id) BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed'); END;
 CREATE TRIGGER statements_open_commit BEFORE INSERT ON statements WHEN EXISTS (SELECT 1 FROM commits WHERE id = NEW.commit_id) BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed'); END;
 CREATE TRIGGER balance_assertions_open_commit BEFORE INSERT ON balance_assertions WHEN EXISTS (SELECT 1 FROM commits WHERE id = NEW.commit_id) BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed'); END;
 CREATE TRIGGER valuation_snapshots_open_commit BEFORE INSERT ON valuation_snapshots WHEN EXISTS (SELECT 1 FROM commits WHERE id = NEW.commit_id) BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed'); END;
@@ -732,6 +710,10 @@ BEGIN SELECT RAISE(ABORT, 'ADR 0002: a reversal targets a current non-reversal e
 CREATE TRIGGER accounting_events_insert_current BEFORE INSERT ON accounting_events
 WHEN NEW.superseded_by IS NOT NULL
 BEGIN SELECT RAISE(ABORT, 'ADR 0002 amendment: an event is inserted current; its reversal sets superseded_by'); END;
+-- ADR 0004: a recipe half's counterpart is another entity, never this database's.
+CREATE TRIGGER accounting_events_counterpart_not_self BEFORE INSERT ON accounting_events
+WHEN NEW.counterpart_entity_id IS NOT NULL AND NEW.counterpart_entity_id = (SELECT id FROM entity)
+BEGIN SELECT RAISE(ABORT, 'ADR 0004: counterpart_entity_id must be another entity'); END;
 
 -- INV-003 / ADR 0008: income/expense postings use a leaf category.
 CREATE TRIGGER journal_postings_category_leaf BEFORE INSERT ON journal_postings
@@ -981,8 +963,6 @@ UNION ALL SELECT 'settlement_group_states' AS table_name, t.rowid AS row_id, t.c
 UNION ALL SELECT 'settlement_postings' AS table_name, t.rowid AS row_id, t.commit_id FROM settlement_postings t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
 UNION ALL SELECT 'obligations' AS table_name, t.rowid AS row_id, t.commit_id FROM obligations t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
 UNION ALL SELECT 'obligation_settlements' AS table_name, t.rowid AS row_id, t.commit_id FROM obligation_settlements t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
-UNION ALL SELECT 'cross_entity_outbox' AS table_name, t.rowid AS row_id, t.commit_id FROM cross_entity_outbox t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
-UNION ALL SELECT 'cross_entity_inbox' AS table_name, t.rowid AS row_id, t.commit_id FROM cross_entity_inbox t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
 UNION ALL SELECT 'statements' AS table_name, t.rowid AS row_id, t.commit_id FROM statements t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
 UNION ALL SELECT 'balance_assertions' AS table_name, t.rowid AS row_id, t.commit_id FROM balance_assertions t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
 UNION ALL SELECT 'valuation_snapshots' AS table_name, t.rowid AS row_id, t.commit_id FROM valuation_snapshots t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
@@ -1019,7 +999,8 @@ GROUP BY po.observation_id HAVING count(*) > 1;
 -- * INV-013 transitive validation of corrections (groups, obligations, refunds).
 -- * INV-008 group completeness under its recipe (required roles present).
 -- * INV-010 statement reconciliation (exact agreement after in-flight items).
--- * ADR 0004 cross-database pairing of outbox/inbox rows; evidence hash checks (doctor).
+-- * ADR 0004 cross-database pairing of recipe halves (application recipe check);
+--   evidence hash checks (doctor).
 -- * INV-016/018/019 reporting and MCP rules (MCP tables deferred past month 1).
 -- * Reporting groups / consolidation span databases and live in application config.
 -- * Account ownership transfer between entities (v0.2 open decision 7, deferred).
