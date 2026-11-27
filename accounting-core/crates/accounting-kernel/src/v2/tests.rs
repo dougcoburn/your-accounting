@@ -3,6 +3,7 @@
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection};
@@ -1801,15 +1802,6 @@ fn parsers_reject_contra_and_unknown_labels() {
         shown.to_string(),
         "code=StaleRevision class=user refs=AT-032"
     );
-    match (Subject::Observation {
-        feed_id: "feed".to_string(),
-        external_id: "ext".to_string(),
-        commit_id: uid("CMT1"),
-        seq: 2,
-    }) {
-        Subject::Observation { seq, .. } => assert_eq!(seq, 2),
-        Subject::RecipeInstance { .. } => panic!("observation subject"),
-    }
 }
 
 #[test]
@@ -3100,4 +3092,544 @@ fn empty_database_doctor_exits_zero() {
     assert_eq!(report.exit_status, 0);
     assert!(report.findings.is_empty());
     assert_eq!(kernel.commit_count().expect("count"), 0);
+}
+
+#[derive(Clone)]
+enum ProbeAction {
+    Record,
+    InsertFeed,
+    FailStage(Code),
+    FailValidate(Code),
+    WriteParties,
+    UpdateFeed,
+    InsertOnValidate,
+    NoteSubject,
+}
+
+struct Probe {
+    id: &'static str,
+    tables: &'static [&'static str],
+    codes: &'static [Code],
+    action: ProbeAction,
+    log: Arc<Mutex<Vec<String>>>,
+}
+
+impl Probe {
+    fn new(id: &'static str, action: ProbeAction) -> Self {
+        let codes: &'static [Code] = match action {
+            ProbeAction::FailStage(Code::ImportConflict)
+            | ProbeAction::FailValidate(Code::ImportConflict) => &[Code::ImportConflict],
+            _ => &[],
+        };
+        Self {
+            id,
+            tables: &["feeds"],
+            codes,
+            action,
+            log: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn boxed(self) -> Box<dyn ContextParticipant> {
+        Box::new(self)
+    }
+}
+
+impl ContextParticipant for Probe {
+    fn id(&self) -> &str {
+        self.id
+    }
+    fn owned_tables(&self) -> &'static [&'static str] {
+        self.tables
+    }
+    fn declared_codes(&self) -> &'static [Code] {
+        self.codes
+    }
+    fn stage(
+        &self,
+        tx: &mut ContextTx<'_>,
+        staged: &KernelStaged,
+        payload: Option<&ParticipantPayload>,
+    ) -> Result<StageOutcome, Error> {
+        let op = match staged.op {
+            StageOp::Append => "append",
+            StageOp::Correct => "correct",
+        };
+        let hint = payload
+            .and_then(|item| item.downcast_ref::<String>())
+            .cloned()
+            .unwrap_or_default();
+        self.log.lock().expect("log").push(format!(
+            "{}:{op}:{}:{}:{}:{hint}",
+            self.id,
+            staged.event_id,
+            staged.line_ids.join(","),
+            staged.target_event_id.as_deref().unwrap_or("")
+        ));
+        match self.action {
+            ProbeAction::FailStage(code) => Err(Error::new(code, &[], vec![])),
+            ProbeAction::WriteParties => {
+                tx.execute(
+                    "INSERT INTO parties(id, name, label, created_at) VALUES (?1, 'Nope', 'person', ?2)",
+                    params![uid("NP01"), staged.recorded_at],
+                )?;
+                Ok(StageOutcome::empty())
+            }
+            ProbeAction::UpdateFeed => {
+                tx.execute("UPDATE feeds SET name = 'changed'", [])?;
+                Ok(StageOutcome::empty())
+            }
+            ProbeAction::InsertFeed | ProbeAction::InsertOnValidate => {
+                let id = uid("FEED");
+                tx.insert_row(
+                    "feeds",
+                    &id,
+                    "INSERT INTO feeds(id, kind, name) VALUES (?1, 'manual', ?2)",
+                    params![id, "Synthetic feed"],
+                )?;
+                Ok(StageOutcome {
+                    rows_staged: 1,
+                    subjects: Vec::new(),
+                })
+            }
+            ProbeAction::NoteSubject => Ok(StageOutcome {
+                rows_staged: 0,
+                subjects: vec![Subject::Observation {
+                    feed_id: uid("FEED"),
+                    external_id: "ext-1".to_string(),
+                    commit_id: uid("CMT1"),
+                    seq: 2,
+                }],
+            }),
+            ProbeAction::Record | ProbeAction::FailValidate(_) => Ok(StageOutcome::empty()),
+        }
+    }
+    fn validate(&self, tx: &ContextTx<'_>, set: &CommitStagedSet) -> Result<(), Error> {
+        self.log.lock().expect("log").push(format!(
+            "{}:validate:{}:{}",
+            self.id,
+            set.events.len(),
+            set.own_rows.len()
+        ));
+        match self.action {
+            ProbeAction::FailValidate(code) if !set.events.is_empty() => {
+                Err(Error::new(code, &[], vec![]))
+            }
+            ProbeAction::InsertOnValidate if !set.events.is_empty() => {
+                let id = uid("FED2");
+                tx.execute(
+                    "INSERT INTO feeds(id, kind, name) VALUES (?1, 'manual', ?2)",
+                    params![id, "Second feed"],
+                )?;
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+fn open_probe(path: &Path, probe: Probe) -> Kernel {
+    Kernel::open_with(
+        path,
+        clock(),
+        Box::new(SequenceIds::new()),
+        "u22",
+        vec![probe.boxed()],
+    )
+    .expect("open")
+}
+
+fn count_table(kernel: &Kernel, table: &str) -> i64 {
+    kernel
+        .connection()
+        .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
+        .expect("count")
+}
+
+#[test]
+fn participant_link_commits_with_the_event() {
+    let tmp = Tmp::new("hook-ok");
+    let probe = Probe::new("feeds", ProbeAction::InsertFeed);
+    let log = Arc::clone(&probe.log);
+    let mut kernel = open_probe(&tmp.db(), probe);
+    let books = chart(&mut kernel);
+    let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
+    let mut payloads = ParticipantPayloads::new();
+    payloads.insert("feeds", ParticipantPayload::new("hint".to_string()));
+    let event_id = tx
+        .append_event_with(
+            purchase(&books, "PS01", "PS02", &books.groceries, MINOR, "USD"),
+            payloads,
+        )
+        .expect("event");
+    let sealed = tx.commit().expect("commit");
+    assert!(!sealed.noop);
+    assert_eq!(sealed.seq, 2);
+    assert_eq!(
+        kernel.commit_at_seq(2).expect("row").expect("info").kind,
+        "interpret"
+    );
+    assert_eq!(count_table(&kernel, "accounting_events"), 1);
+    assert_eq!(count_table(&kernel, "feeds"), 1);
+    let entries = log.lock().expect("log").clone();
+    let staged = entries
+        .iter()
+        .find(|line| line.contains(":append:"))
+        .expect("stage");
+    assert!(staged.contains(&event_id));
+    assert!(staged.contains(&uid("PS01")));
+    assert!(staged.contains(&uid("PS02")));
+    assert!(staged.contains("hint"));
+    assert!(entries.iter().any(|line| line.contains(":validate:")));
+}
+
+#[test]
+fn stage_or_validate_error_rolls_back_the_event_and_the_link() {
+    let tmp = Tmp::new("hook-stage");
+    let mut kernel = open_probe(
+        &tmp.db(),
+        Probe::new("feeds", ProbeAction::FailStage(Code::ImportConflict)),
+    );
+    let books = chart(&mut kernel);
+    let err = {
+        let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
+        tx.append_event(purchase(
+            &books,
+            "PS01",
+            "PS02",
+            &books.groceries,
+            MINOR,
+            "USD",
+        ))
+        .expect_err("stage")
+    };
+    let err = code_of(err, Code::ImportConflict);
+    assert!(err.refs.iter().any(|r| r == "ADR 0011"));
+    assert_eq!(err.class, Class::Import);
+    assert_eq!(count_table(&kernel, "accounting_events"), 0);
+    assert_eq!(count_table(&kernel, "feeds"), 0);
+    assert!(kernel.freeze().expect("freeze").is_none());
+    assert_eq!(kernel.revision().expect("rev"), 1);
+
+    let tmp = Tmp::new("hook-validate");
+    let mut kernel = open_probe(
+        &tmp.db(),
+        Probe::new("feeds", ProbeAction::FailValidate(Code::ImportConflict)),
+    );
+    let books = chart(&mut kernel);
+    let err = {
+        let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
+        tx.append_event(purchase(
+            &books,
+            "PS01",
+            "PS02",
+            &books.groceries,
+            MINOR,
+            "USD",
+        ))
+        .expect("staged");
+        tx.commit().expect_err("validate")
+    };
+    let err = code_of(err, Code::ImportConflict);
+    assert!(err.refs.iter().any(|r| r == "ADR 0011"));
+    assert_eq!(count_table(&kernel, "accounting_events"), 0);
+    assert_eq!(count_table(&kernel, "feeds"), 0);
+    assert!(kernel.freeze().expect("freeze").is_none());
+}
+
+#[test]
+fn undeclared_participant_code_is_unmapped_and_authorizer_denies_kernel_writes() {
+    let tmp = Tmp::new("hook-undeclared");
+    let mut kernel = open_probe(
+        &tmp.db(),
+        Probe::new("feeds", ProbeAction::FailStage(Code::RefundCapExceeded)),
+    );
+    let books = chart(&mut kernel);
+    let err = {
+        let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
+        tx.append_event(purchase(
+            &books,
+            "PS01",
+            "PS02",
+            &books.groceries,
+            MINOR,
+            "USD",
+        ))
+        .expect_err("code")
+    };
+    let err = code_of(err, Code::UnmappedStorageError);
+    assert_eq!(err.refs, vec!["ADR 0011".to_string()]);
+    assert_eq!(count_table(&kernel, "accounting_events"), 0);
+    assert!(kernel.freeze().expect("freeze").is_some());
+
+    let tmp = Tmp::new("hook-auth");
+    let mut kernel = open_probe(&tmp.db(), Probe::new("feeds", ProbeAction::WriteParties));
+    let books = chart(&mut kernel);
+    let err = {
+        let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
+        tx.append_event(purchase(
+            &books,
+            "PS01",
+            "PS02",
+            &books.groceries,
+            MINOR,
+            "USD",
+        ))
+        .expect_err("parties")
+    };
+    let err = code_of(err, Code::UnmappedStorageError);
+    assert_eq!(err.refs, vec!["ADR 0011".to_string()]);
+    assert_eq!(count_table(&kernel, "accounting_events"), 0);
+    assert_eq!(count_table(&kernel, "parties"), 1);
+
+    let tmp = Tmp::new("hook-update");
+    let mut kernel = open_probe(&tmp.db(), Probe::new("feeds", ProbeAction::UpdateFeed));
+    let books = chart(&mut kernel);
+    let err = {
+        let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
+        tx.append_event(purchase(
+            &books,
+            "PS01",
+            "PS02",
+            &books.groceries,
+            MINOR,
+            "USD",
+        ))
+        .expect_err("update")
+    };
+    assert_eq!(err.code, Code::UnmappedStorageError);
+    assert_eq!(count_table(&kernel, "accounting_events"), 0);
+
+    let tmp = Tmp::new("hook-ro");
+    let mut kernel = open_probe(
+        &tmp.db(),
+        Probe::new("feeds", ProbeAction::InsertOnValidate),
+    );
+    let books = chart(&mut kernel);
+    let err = {
+        let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
+        tx.append_event(purchase(
+            &books,
+            "PS01",
+            "PS02",
+            &books.groceries,
+            MINOR,
+            "USD",
+        ))
+        .expect("event");
+        tx.commit().expect_err("validate insert")
+    };
+    assert_eq!(err.code, Code::UnmappedStorageError);
+    assert_eq!(count_table(&kernel, "accounting_events"), 0);
+    assert_eq!(count_table(&kernel, "feeds"), 0);
+}
+
+#[test]
+fn correct_stages_participants_once_after_the_replacement() {
+    let tmp = Tmp::new("hook-correct");
+    let probe = Probe::new("feeds", ProbeAction::Record);
+    let log = Arc::clone(&probe.log);
+    let mut kernel = open_probe(&tmp.db(), probe);
+    let books = chart(&mut kernel);
+    let original = {
+        let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
+        let id = tx
+            .append_event(purchase(
+                &books,
+                "PS01",
+                "PS02",
+                &books.groceries,
+                MINOR,
+                "USD",
+            ))
+            .expect("event");
+        tx.commit().expect("commit");
+        id
+    };
+    log.lock().expect("log").clear();
+    let replacement_id = {
+        let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
+        let id = tx
+            .correct_event(
+                &original,
+                Some(event(
+                    "EV02",
+                    vec![
+                        posting("PS03", &books.groceries, Side::Debit, MINOR, "USD"),
+                        posting("PS04", &books.card, Side::Credit, MINOR, "USD"),
+                    ],
+                )),
+            )
+            .expect("correct")
+            .expect("replacement");
+        tx.commit().expect("commit");
+        id
+    };
+    let entries = log.lock().expect("log").clone();
+    let staged: Vec<_> = entries
+        .iter()
+        .filter(|line| line.contains(":correct:"))
+        .collect();
+    assert_eq!(staged.len(), 1);
+    assert!(staged[0].contains(&replacement_id));
+    assert!(staged[0].contains(&uid("PS03")));
+    assert!(staged[0].contains(&original));
+    assert!(entries.iter().any(|line| line.contains(":validate:")));
+}
+
+#[test]
+fn identical_retry_is_a_noop_only_when_participants_stage_nothing() {
+    let tmp = Tmp::new("hook-noop");
+    let mut kernel = open_probe(&tmp.db(), Probe::new("feeds", ProbeAction::NoteSubject));
+    let books = chart(&mut kernel);
+    let first = {
+        let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
+        let id = tx
+            .append_event(recipe_half(&books, "EV20", "PS20", "PS21", MINOR, MINOR))
+            .expect("event");
+        let sealed = tx.commit().expect("commit");
+        assert!(!sealed.noop);
+        id
+    };
+    let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
+    let again = tx
+        .append_event(recipe_half(&books, "EV20", "PS20", "PS21", MINOR, MINOR))
+        .expect("retry");
+    assert_eq!(again, first);
+    let sealed = tx.commit().expect("noop");
+    assert!(sealed.noop);
+    assert_eq!(sealed.seq, 2);
+    assert!(sealed.commit_id.is_none());
+    assert!(sealed
+        .subjects
+        .iter()
+        .any(|subject| matches!(subject, Subject::RecipeInstance { .. })));
+    assert!(sealed
+        .subjects
+        .iter()
+        .any(|subject| matches!(subject, Subject::Observation { seq: 2, .. })));
+    assert_eq!(kernel.commit_count().expect("count"), 2);
+}
+
+#[test]
+fn context_operation_writes_in_the_open_transaction() {
+    let tmp = Tmp::new("hook-direct");
+    let mut kernel = open_probe(&tmp.db(), Probe::new("feeds", ProbeAction::Record));
+    let _books = chart(&mut kernel);
+    let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
+    tx.note_subject(Subject::Observation {
+        feed_id: uid("FEED"),
+        external_id: "ext-direct".to_string(),
+        commit_id: uid("CMT1"),
+        seq: 1,
+    })
+    .expect("subject");
+    let noop = tx.commit().expect("noop");
+    assert!(noop.noop);
+    assert!(matches!(
+        noop.subjects.as_slice(),
+        [Subject::Observation { seq: 1, .. }]
+    ));
+
+    let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
+    tx.with_participant("feeds", true, |ctx| {
+        let id = uid("FD01");
+        ctx.insert_row(
+            "feeds",
+            &id,
+            "INSERT INTO feeds(id, kind, name) VALUES (?1, 'manual', ?2)",
+            params![id, "Direct feed"],
+        )?;
+        Ok(())
+    })
+    .expect("insert");
+    let sealed = tx.commit().expect("commit");
+    assert!(!sealed.noop);
+    assert_eq!(
+        kernel
+            .commit_at_seq(sealed.seq)
+            .expect("row")
+            .expect("info")
+            .kind,
+        "import"
+    );
+    assert_eq!(count_table(&kernel, "feeds"), 1);
+}
+
+#[test]
+fn participants_run_in_registration_order_and_open_rejects_duplicates() {
+    let tmp = Tmp::new("hook-order");
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut kernel = Kernel::open_with(
+        tmp.db(),
+        clock(),
+        Box::new(SequenceIds::new()),
+        "u22",
+        vec![
+            Box::new(Probe {
+                id: "alpha",
+                tables: &["feeds"],
+                codes: &[],
+                action: ProbeAction::Record,
+                log: Arc::clone(&log),
+            }),
+            Box::new(Probe {
+                id: "beta",
+                tables: &["tags"],
+                codes: &[],
+                action: ProbeAction::Record,
+                log: Arc::clone(&log),
+            }),
+        ],
+    )
+    .expect("open");
+    let books = chart(&mut kernel);
+    let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
+    tx.append_event(purchase(
+        &books,
+        "PS01",
+        "PS02",
+        &books.groceries,
+        MINOR,
+        "USD",
+    ))
+    .expect("event");
+    tx.commit().expect("commit");
+    let entries = log.lock().expect("log").clone();
+    let staged: Vec<_> = entries
+        .iter()
+        .filter(|line| line.contains(":append:"))
+        .collect();
+    assert_eq!(staged.len(), 2);
+    assert!(staged[0].starts_with("alpha:"));
+    assert!(staged[1].starts_with("beta:"));
+
+    let dup = Kernel::open_with(
+        tmp.db(),
+        clock(),
+        Box::new(SequenceIds::new()),
+        "u22",
+        vec![
+            Probe::new("feeds", ProbeAction::Record).boxed(),
+            Probe::new("feeds", ProbeAction::Record).boxed(),
+        ],
+    )
+    .expect_err("dup");
+    assert_eq!(dup.code, Code::InvalidShape);
+    assert!(dup.refs.iter().any(|r| r == "ADR 0011"));
+
+    let overlap = Kernel::open_with(
+        tmp.db(),
+        clock(),
+        Box::new(SequenceIds::new()),
+        "u22",
+        vec![
+            Probe::new("one", ProbeAction::Record).boxed(),
+            Probe::new("two", ProbeAction::Record).boxed(),
+        ],
+    )
+    .expect_err("overlap");
+    assert_eq!(overlap.code, Code::InvalidShape);
 }
