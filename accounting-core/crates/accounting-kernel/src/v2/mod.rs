@@ -1,11 +1,12 @@
-//! v2 kernel surface for U17: typed ledger accounts, parties, and the write protocol.
+//! v2 kernel surface: typed ledger accounts, parties, and append-only events.
 //!
-//! `stage_event` is the minimum stub INV-003 and recipe-half idempotency need.
-//! U18 replaces it with `append_event`. An identical recipe retry returns the
-//! existing event id and stages nothing. `correct_event` writes the reversal,
-//! sets `superseded_by`, then writes the replacement. `doctor` is not
-//! implemented (U21). `clear_write_freeze` runs the in-database bugcheck views
-//! plus integrity and foreign-key checks, which is the part of that
+//! `append_event` stages one current event and its postings. `recorded_at` and
+//! kernel-allocated ids come from the clock and id source injected at `open`.
+//! An identical recipe retry returns the existing event id and stages nothing.
+//! `correct_event` writes the reversal, sets `superseded_by` once, then writes
+//! the replacement. That update is the only one the schema accepts. `doctor`
+//! is not implemented (U21). `clear_write_freeze` runs the in-database bugcheck
+//! views plus integrity and foreign-key checks, which is the part of that
 //! precondition this unit can see.
 
 mod error;

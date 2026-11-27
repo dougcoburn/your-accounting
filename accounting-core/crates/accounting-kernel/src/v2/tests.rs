@@ -1,4 +1,4 @@
-//! Synthetic U17 fixtures. Amounts and names are examples, not records.
+//! Synthetic U17 and U18 fixtures. Amounts and names are examples, not records.
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::params;
 
 use super::error::persists_freeze;
-use super::sqlmap::{map_message, SqlSite};
+use super::sqlmap::{map_message, map_sql, SqlSite};
 use super::types::is_ulid;
 use super::*;
 
@@ -155,6 +155,7 @@ fn event(id: &str, postings: Vec<NewPosting>) -> NewEvent {
         recipe_id: "u17_probe".to_string(),
         recipe_version: "1".to_string(),
         effective_date: "2026-01-02".to_string(),
+        description: String::new(),
         postings,
         recipe_instance_id: None,
         counterpart_entity_id: None,
@@ -747,7 +748,7 @@ fn recipe_retry_is_a_noop_and_a_different_payload_conflicts() {
     let event_id = {
         let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
         let event_id = tx
-            .stage_event(recipe_half(&books, "EV20", "PS20", "PS21", MINOR, MINOR))
+            .append_event(recipe_half(&books, "EV20", "PS20", "PS21", MINOR, MINOR))
             .expect("event");
         let sealed = tx.commit().expect("commit");
         assert!(!sealed.noop);
@@ -772,7 +773,7 @@ fn recipe_retry_is_a_noop_and_a_different_payload_conflicts() {
     let retry = {
         let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
         let returned = tx
-            .stage_event(recipe_half(&books, "EV21", "PS22", "PS23", MINOR, MINOR))
+            .append_event(recipe_half(&books, "EV21", "PS22", "PS23", MINOR, MINOR))
             .expect("retry");
         assert_eq!(returned, event_id);
         tx.commit().expect("noop")
@@ -802,7 +803,7 @@ fn recipe_retry_is_a_noop_and_a_different_payload_conflicts() {
         let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
         tx.create_party(party(&uid("VND2"), "Example Grocer", PartyLabel::Vendor))
             .expect("party");
-        tx.stage_event(recipe_half(
+        tx.append_event(recipe_half(
             &books,
             "EV22",
             "PS24",
@@ -830,7 +831,7 @@ fn recipe_retry_is_a_noop_and_a_different_payload_conflicts() {
 
     let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
     let returned = tx
-        .stage_event(recipe_half(&books, "EV21", "PS22", "PS23", MINOR, MINOR))
+        .append_event(recipe_half(&books, "EV21", "PS22", "PS23", MINOR, MINOR))
         .expect("retry");
     assert_eq!(returned, event_id);
     tx.create_party(party(&uid("VND1"), "Example Grocer", PartyLabel::Vendor))
@@ -856,7 +857,7 @@ fn recipe_fields_are_all_or_none_and_the_counterpart_is_not_self() {
         let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
         let mut new = recipe_half(&books, "EV20", "PS20", "PS21", MINOR, MINOR);
         new.counterpart_entity_id = None;
-        tx.stage_event(new).expect_err("partial")
+        tx.append_event(new).expect_err("partial")
     };
     assert_eq!(
         code_of(partial, Code::InvalidShape).token,
@@ -868,7 +869,7 @@ fn recipe_fields_are_all_or_none_and_the_counterpart_is_not_self() {
         let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
         let mut new = recipe_half(&books, "EV20", "PS20", "PS21", MINOR, MINOR);
         new.counterpart_entity_id = Some(books.entity.clone());
-        tx.stage_event(new).expect_err("self")
+        tx.append_event(new).expect_err("self")
     };
     let itself = code_of(itself, Code::InvalidShape);
     assert_eq!(itself.token, Some("counterpart_self"));
@@ -950,7 +951,7 @@ fn recipe_expectations_are_a_set_and_intercompany_postings_name_a_party() {
     let event_id = {
         let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
         let id = tx
-            .stage_event(half(
+            .append_event(half(
                 "EV40",
                 "PS40",
                 "PS41",
@@ -975,7 +976,7 @@ fn recipe_expectations_are_a_set_and_intercompany_postings_name_a_party() {
     let retry = {
         let mut tx = kernel.begin_transaction(Some(3)).expect("begin");
         let returned = tx
-            .stage_event(half(
+            .append_event(half(
                 "EV41",
                 "PS42",
                 "PS43",
@@ -992,7 +993,7 @@ fn recipe_expectations_are_a_set_and_intercompany_postings_name_a_party() {
 
     let changed = {
         let mut tx = kernel.begin_transaction(Some(3)).expect("begin");
-        tx.stage_event(half(
+        tx.append_event(half(
             "EV42",
             "PS44",
             "PS45",
@@ -1016,7 +1017,7 @@ fn recipe_expectations_are_a_set_and_intercompany_postings_name_a_party() {
     let mut reject = |new: NewEvent, code: Code| {
         let err = {
             let mut tx = kernel.begin_transaction(Some(3)).expect("begin");
-            tx.stage_event(new).expect_err("shape")
+            tx.append_event(new).expect_err("shape")
         };
         assert_eq!(kernel.revision().expect("rev"), 3);
         code_of(err, code)
@@ -1095,7 +1096,7 @@ fn recipe_expectations_are_a_set_and_intercompany_postings_name_a_party() {
     named.postings[0].party_id = Some(books.employer.clone());
     let named_id = {
         let mut tx = kernel.begin_transaction(Some(3)).expect("begin");
-        let id = tx.stage_event(named).expect("party set");
+        let id = tx.append_event(named).expect("party set");
         let sealed = tx.commit().expect("commit");
         assert_eq!(sealed.seq, 4);
         id
@@ -1126,7 +1127,7 @@ fn correction_supersedes_before_the_replacement_and_a_retired_instance_conflicts
     let original = {
         let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
         let id = tx
-            .stage_event(recipe_half(&books, "EV20", "PS20", "PS21", MINOR, MINOR))
+            .append_event(recipe_half(&books, "EV20", "PS20", "PS21", MINOR, MINOR))
             .expect("half");
         tx.commit().expect("commit");
         id
@@ -1176,7 +1177,7 @@ fn correction_supersedes_before_the_replacement_and_a_retired_instance_conflicts
         let original = {
             let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
             let id = tx
-                .stage_event(recipe_half(&books, "EV20", "PS20", "PS21", MINOR, MINOR))
+                .append_event(recipe_half(&books, "EV20", "PS20", "PS21", MINOR, MINOR))
                 .expect("half");
             tx.commit().expect("commit");
             id
@@ -1188,7 +1189,7 @@ fn correction_supersedes_before_the_replacement_and_a_retired_instance_conflicts
         }
         let err = {
             let mut tx = kernel.begin_transaction(Some(3)).expect("begin");
-            tx.stage_event(recipe_half(&books, "EV24", "PS32", "PS33", MINOR, MINOR))
+            tx.append_event(recipe_half(&books, "EV24", "PS32", "PS33", MINOR, MINOR))
                 .expect_err("retired")
         };
         let err = code_of(err, Code::IdempotencyConflict);
@@ -1208,7 +1209,7 @@ fn posting_rejections_and_leaf_success() {
     let reject = |kernel: &mut Kernel, new: NewEvent, code: Code| {
         let err = {
             let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
-            tx.stage_event(new).expect_err("stage")
+            tx.append_event(new).expect_err("stage")
         };
         let err = code_of(err, code);
         assert_eq!(kernel.posting_count().expect("count"), 0);
@@ -1274,7 +1275,7 @@ fn posting_rejections_and_leaf_success() {
     reject(&mut kernel, missing, Code::UnknownTarget);
 
     let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
-    tx.stage_event(purchase(
+    tx.append_event(purchase(
         &books,
         "PS01",
         "PS02",
@@ -1956,4 +1957,639 @@ fn bad_clock_writes_nothing() {
     assert!(err.ids.is_empty());
     assert_eq!(kernel.revision().expect("rev"), 0);
     assert_eq!(kernel.commit_count().expect("count"), 0);
+}
+
+fn exec_code(kernel: &Kernel, sql: &str, params: impl rusqlite::Params) -> Code {
+    let err = kernel
+        .connection()
+        .execute(sql, params)
+        .expect_err("storage accepted a forbidden write");
+    map_sql(err, SqlSite::Staging).code
+}
+
+fn i64_sql(kernel: &Kernel, sql: &str) -> i64 {
+    kernel
+        .connection()
+        .query_row(sql, [], |row| row.get(0))
+        .expect("scalar")
+}
+
+fn i64_cell(kernel: &Kernel, sql: &str, id: &str) -> i64 {
+    kernel
+        .connection()
+        .query_row(sql, [id], |row| row.get(0))
+        .expect("scalar")
+}
+
+fn register_ids(kernel: &Kernel) -> Vec<String> {
+    let mut stmt = kernel
+        .connection()
+        .prepare("SELECT id FROM register_events ORDER BY id")
+        .expect("register");
+    stmt.query_map([], |row| row.get(0))
+        .expect("rows")
+        .map(|row| row.expect("id"))
+        .collect()
+}
+
+fn index_sql(kernel: &Kernel, name: &str) -> String {
+    kernel
+        .connection()
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1",
+            [name],
+            |row| row.get(0),
+        )
+        .expect("index")
+}
+
+struct Rollback<'a>(&'a rusqlite::Connection);
+
+impl Drop for Rollback<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.execute_batch("ROLLBACK");
+    }
+}
+
+/// U18 acceptance: the only accepted update is `superseded_by`, set once, to the
+/// reversing event, inside that reversal's still-open commit. Every other update
+/// and every delete raises.
+#[test]
+fn append_only_trigger_rejects_every_other_update() {
+    let tmp = Tmp::new("u18-trigger");
+    let mut kernel = open_at(&tmp.db());
+    let books = chart(&mut kernel);
+    let event_id = {
+        let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
+        let id = tx
+            .append_event(purchase(
+                &books,
+                "PS01",
+                "PS02",
+                &books.groceries,
+                MINOR,
+                "USD",
+            ))
+            .expect("event");
+        tx.commit().expect("commit");
+        id
+    };
+    let posting_id = uid("PS01");
+    let commit_id = kernel.commit_at_seq(2).expect("read").expect("commit").id;
+    assert_eq!(kernel.revision().expect("rev"), 2);
+    assert!(event_field(&kernel, "superseded_by", &event_id).is_none());
+
+    let other = uid("EV99");
+    let other_commit = uid("C099");
+    let instance = uid("RR99");
+    let counterpart = uid("XENT");
+    let paired = [
+        (
+            "UPDATE accounting_events SET id = ?1 WHERE id = ?2",
+            other.as_str(),
+        ),
+        (
+            "UPDATE accounting_events SET commit_id = ?1 WHERE id = ?2",
+            other_commit.as_str(),
+        ),
+        (
+            "UPDATE accounting_events SET recipe_instance_id = ?1 WHERE id = ?2",
+            instance.as_str(),
+        ),
+        (
+            "UPDATE accounting_events SET counterpart_entity_id = ?1 WHERE id = ?2",
+            counterpart.as_str(),
+        ),
+    ];
+    for (sql, value) in paired {
+        assert_eq!(
+            exec_code(&kernel, sql, params![value, event_id]),
+            Code::SupersedeInvalid,
+            "{sql}"
+        );
+    }
+    let fact_updates = [
+        "UPDATE accounting_events SET recipe_id = 'other' WHERE id = ?1",
+        "UPDATE accounting_events SET recipe_version = '9' WHERE id = ?1",
+        "UPDATE accounting_events SET effective_date = '2026-01-03' WHERE id = ?1",
+        "UPDATE accounting_events SET description = 'edited' WHERE id = ?1",
+        "UPDATE accounting_events SET recorded_at = '2026-01-03T00:00:00Z' WHERE id = ?1",
+        "UPDATE accounting_events SET description = description WHERE id = ?1",
+        "UPDATE accounting_events SET superseded_by = NULL WHERE id = ?1",
+    ];
+    for sql in fact_updates {
+        assert_eq!(
+            exec_code(&kernel, sql, params![event_id]),
+            Code::SupersedeInvalid,
+            "{sql}"
+        );
+    }
+    assert_eq!(
+        exec_code(
+            &kernel,
+            "UPDATE accounting_events SET reverses_id = ?1 WHERE id = ?2",
+            params![other, event_id]
+        ),
+        Code::SupersedeInvalid
+    );
+    assert_eq!(
+        exec_code(
+            &kernel,
+            "UPDATE accounting_events SET superseded_by = ?1 WHERE id = ?1",
+            params![event_id]
+        ),
+        Code::SupersedeInvalid
+    );
+    assert_eq!(
+        exec_code(
+            &kernel,
+            "DELETE FROM accounting_events WHERE id = ?1",
+            params![event_id]
+        ),
+        Code::AppendOnlyViolation
+    );
+    assert_eq!(
+        exec_code(
+            &kernel,
+            "UPDATE journal_postings SET memo = 'edited' WHERE id = ?1",
+            params![posting_id]
+        ),
+        Code::AppendOnlyViolation
+    );
+    assert_eq!(
+        exec_code(
+            &kernel,
+            "DELETE FROM journal_postings WHERE id = ?1",
+            params![posting_id]
+        ),
+        Code::AppendOnlyViolation
+    );
+    assert_eq!(
+        exec_code(
+            &kernel,
+            "INSERT INTO journal_postings(
+                id, event_id, ledger_account_id, currency, side, amount_minor
+             ) VALUES (?1, ?2, ?3, 'USD', 'debit', 1)",
+            params![uid("PSX1"), event_id, uid("GRC1")]
+        ),
+        Code::CommitSealed
+    );
+    assert_eq!(
+        exec_code(
+            &kernel,
+            "INSERT INTO accounting_events(
+                id, commit_id, recipe_id, recipe_version, effective_date, recorded_at
+             ) VALUES (?1, ?2, 'u17_probe', '1', '2026-01-02', ?3)",
+            params![uid("EV98"), commit_id, WHEN]
+        ),
+        Code::CommitSealed
+    );
+    assert_eq!(
+        event_field(&kernel, "description", &event_id),
+        Some(String::new())
+    );
+    assert_eq!(kernel.revision().expect("rev"), 2);
+    assert_eq!(kernel.posting_count().expect("count"), 2);
+
+    let conn = kernel.connection();
+    conn.execute_batch("BEGIN").expect("begin");
+    let rollback = Rollback(conn);
+    let reversal = uid("EV02");
+    let open_commit = uid("C003");
+    assert_eq!(
+        exec_code(
+            &kernel,
+            "INSERT INTO accounting_events(
+                id, commit_id, recipe_id, recipe_version, effective_date, recorded_at, reverses_id
+             ) VALUES (?1, ?2, 'u17_probe', '1', '2026-02-02', ?3, ?4)",
+            params![uid("EV05"), open_commit, WHEN, event_id]
+        ),
+        Code::ReversalTargetInvalid
+    );
+    assert_eq!(
+        exec_code(
+            &kernel,
+            "INSERT INTO accounting_events(
+                id, commit_id, recipe_id, recipe_version, effective_date, recorded_at, superseded_by
+             ) VALUES (?1, ?2, 'u17_probe', '1', '2026-01-02', ?3, ?4)",
+            params![uid("EV06"), open_commit, WHEN, event_id]
+        ),
+        Code::EventInsertedSuperseded
+    );
+    kernel
+        .connection()
+        .execute(
+            "INSERT INTO accounting_events(
+                id, commit_id, recipe_id, recipe_version, effective_date, recorded_at, reverses_id
+             ) VALUES (?1, ?2, 'u17_probe', '1', '2026-01-02', ?3, ?4)",
+            params![reversal, open_commit, WHEN, event_id],
+        )
+        .expect("reversal");
+    kernel
+        .connection()
+        .execute(
+            "INSERT INTO journal_postings(
+                id, event_id, ledger_account_id, currency, side, amount_minor
+             ) VALUES (?1, ?2, ?3, 'USD', 'credit', ?4)",
+            params![uid("PS03"), reversal, uid("GRC1"), MINOR],
+        )
+        .expect("reversal category");
+    kernel
+        .connection()
+        .execute(
+            "INSERT INTO journal_postings(
+                id, event_id, ledger_account_id, currency, side, amount_minor
+             ) VALUES (?1, ?2, ?3, 'USD', 'debit', ?4)",
+            params![uid("PS04"), reversal, uid("CRD1"), MINOR],
+        )
+        .expect("reversal card");
+    assert_eq!(
+        exec_code(
+            &kernel,
+            "INSERT INTO accounting_events(
+                id, commit_id, recipe_id, recipe_version, effective_date, recorded_at, reverses_id
+             ) VALUES (?1, ?2, 'u17_probe', '1', '2026-01-02', ?3, ?4)",
+            params![uid("EV07"), open_commit, WHEN, reversal]
+        ),
+        Code::ReversalTargetInvalid
+    );
+    kernel
+        .connection()
+        .execute(
+            "UPDATE accounting_events SET superseded_by = ?1 WHERE id = ?2",
+            params![reversal, event_id],
+        )
+        .expect("set once");
+    assert_eq!(
+        event_field(&kernel, "superseded_by", &event_id),
+        Some(reversal.clone())
+    );
+    assert_eq!(
+        exec_code(
+            &kernel,
+            "UPDATE accounting_events SET superseded_by = ?1 WHERE id = ?2",
+            params![uid("EV07"), event_id]
+        ),
+        Code::SupersedeInvalid
+    );
+    assert_eq!(
+        exec_code(
+            &kernel,
+            "UPDATE accounting_events SET superseded_by = NULL WHERE id = ?1",
+            params![event_id]
+        ),
+        Code::SupersedeInvalid
+    );
+    assert_eq!(
+        exec_code(
+            &kernel,
+            "UPDATE accounting_events SET description = 'edited', superseded_by = ?1 WHERE id = ?2",
+            params![reversal, event_id]
+        ),
+        Code::SupersedeInvalid
+    );
+    assert_eq!(
+        exec_code(
+            &kernel,
+            "DELETE FROM accounting_events WHERE id = ?1",
+            params![event_id]
+        ),
+        Code::AppendOnlyViolation
+    );
+    drop(rollback);
+    assert!(event_field(&kernel, "superseded_by", &event_id).is_none());
+    assert_eq!(
+        i64_cell(
+            &kernel,
+            "SELECT count(*) FROM accounting_events WHERE id = ?1",
+            &reversal
+        ),
+        0
+    );
+    assert_eq!(kernel.revision().expect("rev"), 2);
+}
+
+#[test]
+fn correction_sets_superseded_by_once_and_a_second_correction_reverses_the_replacement() {
+    let tmp = Tmp::new("u18-correct");
+    let mut kernel = open_at(&tmp.db());
+    let books = chart(&mut kernel);
+    let original = {
+        let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
+        let id = tx
+            .append_event(purchase(
+                &books,
+                "PS01",
+                "PS02",
+                &books.groceries,
+                MINOR,
+                "USD",
+            ))
+            .expect("event");
+        tx.commit().expect("commit");
+        id
+    };
+
+    let unbalanced = {
+        let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
+        let mut next = purchase(&books, "PS03", "PS04", &books.groceries, MINOR, "USD");
+        next.id = Some(uid("EV09"));
+        next.postings[1].amount_minor = MINOR - 50;
+        tx.correct_event(&original, Some(next))
+            .expect_err("unbalanced replacement")
+    };
+    let unbalanced = code_of(unbalanced, Code::Unbalanced);
+    assert_eq!(unbalanced.refs, vec!["INV-001".to_string()]);
+    assert!(event_field(&kernel, "superseded_by", &original).is_none());
+    assert_eq!(kernel.revision().expect("rev"), 2);
+    assert_eq!(kernel.commit_count().expect("count"), 2);
+
+    let missing = {
+        let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
+        tx.correct_event(&uid("EV99"), None).expect_err("missing")
+    };
+    let missing = code_of(missing, Code::UnknownTarget);
+    assert_eq!(missing.ids, vec![uid("EV99")]);
+
+    let replacement = {
+        let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
+        let mut next = purchase(&books, "PS05", "PS06", &books.groceries, MINOR - 100, "USD");
+        next.id = Some(uid("EV03"));
+        next.effective_date = "2026-01-03".to_string();
+        let id = tx
+            .correct_event(&original, Some(next))
+            .expect("correct")
+            .expect("replacement");
+        let sealed = tx.commit().expect("commit");
+        assert_eq!(sealed.seq, 3);
+        let info = kernel.commit_at_seq(3).expect("read").expect("row");
+        assert_eq!(info.kind, "correct");
+        assert_eq!(info.recorded_at, WHEN);
+        assert_eq!(info.expected_revision, 2);
+        id
+    };
+    let reversal = event_field(&kernel, "superseded_by", &original).expect("flag");
+    assert_ne!(reversal, replacement);
+    assert_eq!(
+        event_field(&kernel, "reverses_id", &reversal),
+        Some(original.clone())
+    );
+    assert_eq!(
+        event_field(&kernel, "effective_date", &reversal),
+        Some("2026-01-02".to_string())
+    );
+    assert_eq!(
+        event_field(&kernel, "effective_date", &replacement),
+        Some("2026-01-03".to_string())
+    );
+    assert_eq!(
+        event_field(&kernel, "recorded_at", &reversal),
+        Some(WHEN.to_string())
+    );
+    assert_eq!(
+        event_field(&kernel, "recorded_at", &replacement),
+        Some(WHEN.to_string())
+    );
+    assert!(event_field(&kernel, "recipe_instance_id", &reversal).is_none());
+    assert!(event_field(&kernel, "superseded_by", &reversal).is_none());
+    assert_eq!(register_ids(&kernel), vec![replacement.clone()]);
+
+    let again = {
+        let mut tx = kernel.begin_transaction(Some(3)).expect("begin");
+        tx.correct_event(&original, None)
+            .expect_err("already superseded")
+    };
+    let again = code_of(again, Code::ReversalTargetInvalid);
+    assert_eq!(again.refs, vec!["ADR 0002".to_string()]);
+    assert_eq!(again.ids, vec![original.clone()]);
+    let reverse_reversal = {
+        let mut tx = kernel.begin_transaction(Some(3)).expect("begin");
+        tx.correct_event(&reversal, None)
+            .expect_err("reversal is not a target")
+    };
+    let reverse_reversal = code_of(reverse_reversal, Code::ReversalTargetInvalid);
+    assert_eq!(reverse_reversal.ids, vec![reversal.clone()]);
+
+    let final_id = {
+        let mut tx = kernel.begin_transaction(Some(3)).expect("begin");
+        let mut next = purchase(&books, "PS07", "PS08", &books.groceries, MINOR - 200, "USD");
+        next.id = Some(uid("EV08"));
+        next.effective_date = "2026-01-04".to_string();
+        let id = tx
+            .correct_event(&replacement, Some(next))
+            .expect("correct the replacement")
+            .expect("final");
+        tx.commit().expect("commit");
+        id
+    };
+    let reversal_2 = event_field(&kernel, "superseded_by", &replacement).expect("flag");
+    assert_eq!(
+        event_field(&kernel, "reverses_id", &reversal_2),
+        Some(replacement.clone())
+    );
+    assert_eq!(
+        event_field(&kernel, "effective_date", &reversal_2),
+        Some("2026-01-03".to_string())
+    );
+    assert_ne!(reversal_2, reversal);
+    assert_eq!(register_ids(&kernel), vec![final_id.clone()]);
+    assert_eq!(
+        i64_sql(&kernel, "SELECT count(*) FROM accounting_events"),
+        5
+    );
+    assert_eq!(
+        i64_sql(&kernel, "SELECT count(*) FROM doctor_superseded_drift"),
+        0
+    );
+    assert_eq!(
+        i64_sql(
+            &kernel,
+            "SELECT coalesce(sum(CASE side WHEN 'debit' THEN amount_minor ELSE -amount_minor END), 0)
+             FROM journal_postings"
+        ),
+        0
+    );
+    assert_eq!(
+        i64_cell(
+            &kernel,
+            "SELECT balance_minor FROM account_balances WHERE ledger_account_id = ?1",
+            &books.groceries
+        ),
+        MINOR - 200
+    );
+    assert_eq!(
+        i64_cell(
+            &kernel,
+            "SELECT balance_minor FROM account_balances WHERE ledger_account_id = ?1",
+            &books.card
+        ),
+        MINOR - 200
+    );
+    let register_index = index_sql(&kernel, "accounting_events_register");
+    assert!(
+        register_index.contains("superseded_by IS NULL")
+            && register_index.contains("reverses_id IS NULL"),
+        "register partial index is missing its predicate"
+    );
+    let reverses_index = index_sql(&kernel, "accounting_events_reverses");
+    assert!(
+        reverses_index.contains("UNIQUE") && reverses_index.contains("reverses_id"),
+        "reversal partial index is missing"
+    );
+    assert_eq!(
+        exec_code(
+            &kernel,
+            "UPDATE accounting_events SET superseded_by = ?1 WHERE id = ?2",
+            params![reversal, original]
+        ),
+        Code::SupersedeInvalid
+    );
+    assert_eq!(
+        exec_code(
+            &kernel,
+            "UPDATE accounting_events SET superseded_by = NULL WHERE id = ?1",
+            params![original]
+        ),
+        Code::SupersedeInvalid
+    );
+    assert_eq!(kernel.revision().expect("rev"), 4);
+    assert_eq!(kernel.commit_count().expect("count"), 4);
+}
+
+#[test]
+fn recorded_at_and_ids_come_from_the_injected_sources() {
+    let tmp = Tmp::new("u18-clock");
+    let ticks = Rc::new(Cell::new(0));
+    let mut kernel = Kernel::open(
+        tmp.db(),
+        Box::new(TickClock { n: ticks.clone() }),
+        Box::new(SequenceIds::new()),
+        "u18",
+    )
+    .expect("open");
+    let books = chart(&mut kernel);
+    assert_eq!(ticks.get(), 1);
+
+    let (first, second) = {
+        let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
+        assert_eq!(ticks.get(), 2);
+        let mut earlier = purchase(&books, "PS01", "PS02", &books.groceries, MINOR, "USD");
+        earlier.id = None;
+        earlier.postings[0].id = None;
+        earlier.postings[1].id = None;
+        earlier.description = "synthetic memo".to_string();
+        let first = tx.append_event(earlier).expect("allocated");
+        let mut later = purchase(&books, "PS03", "PS04", &books.groceries, MINOR, "USD");
+        later.id = Some(uid("EV02"));
+        later.effective_date = "2026-01-05".to_string();
+        let second = tx.append_event(later).expect("supplied");
+        assert_eq!(ticks.get(), 2, "append must not read the clock again");
+        let sealed = tx.commit().expect("commit");
+        assert_eq!(sealed.seq, 2);
+        assert_eq!(ticks.get(), 2);
+        (first, second)
+    };
+    assert!(is_ulid(&first));
+    assert_ne!(first, uid("EV01"));
+    assert_eq!(second, uid("EV02"));
+    let recorded = kernel
+        .commit_at_seq(2)
+        .expect("read")
+        .expect("row")
+        .recorded_at;
+    assert_eq!(recorded, "2026-01-02T03:04:02Z");
+    assert_eq!(
+        event_field(&kernel, "recorded_at", &first),
+        Some(recorded.clone())
+    );
+    assert_eq!(event_field(&kernel, "recorded_at", &second), Some(recorded));
+    assert_eq!(
+        event_field(&kernel, "description", &first),
+        Some("synthetic memo".to_string())
+    );
+    let posting_ids: Vec<String> = {
+        let mut stmt = kernel
+            .connection()
+            .prepare("SELECT id FROM journal_postings WHERE event_id = ?1")
+            .expect("postings");
+        stmt.query_map([&first], |row| row.get(0))
+            .expect("rows")
+            .map(|row| row.expect("id"))
+            .collect()
+    };
+    assert_eq!(posting_ids.len(), 2);
+    assert!(posting_ids.iter().all(|id| is_ulid(id)));
+    assert_ne!(posting_ids[0], posting_ids[1]);
+    assert_eq!(register_ids(&kernel), {
+        let mut ids = vec![first.clone(), second];
+        ids.sort();
+        ids
+    });
+
+    let invalid = {
+        let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
+        let mut bad = purchase(&books, "PS05", "PS06", &books.groceries, MINOR, "USD");
+        bad.id = Some("not-a-ulid".to_string());
+        tx.append_event(bad).expect_err("id")
+    };
+    let invalid = code_of(invalid, Code::InvalidId);
+    assert!(
+        !invalid.to_string().contains("not-a-ulid"),
+        "invalid id was echoed"
+    );
+    assert_eq!(ticks.get(), 3);
+    assert_eq!(kernel.revision().expect("rev"), 2);
+
+    let duplicate = {
+        let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
+        let mut again = purchase(&books, "PS07", "PS08", &books.groceries, MINOR, "USD");
+        again.id = Some(first.clone());
+        tx.append_event(again).expect_err("duplicate")
+    };
+    let duplicate = code_of(duplicate, Code::DuplicateId);
+    assert_eq!(duplicate.ids, vec![first]);
+    assert_eq!(kernel.commit_count().expect("count"), 2);
+}
+
+#[test]
+fn description_is_part_of_the_recipe_payload() {
+    let tmp = Tmp::new("u18-desc");
+    let mut kernel = open_at(&tmp.db());
+    let books = chart(&mut kernel);
+    let mut original = recipe_half(&books, "EV20", "PS20", "PS21", MINOR, MINOR);
+    original.description = "synthetic memo".to_string();
+    let event_id = {
+        let mut tx = kernel.begin_transaction(Some(1)).expect("begin");
+        let id = tx.append_event(original).expect("half");
+        tx.commit().expect("commit");
+        id
+    };
+    let retry = {
+        let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
+        let mut same = recipe_half(&books, "EV21", "PS22", "PS23", MINOR, MINOR);
+        same.description = "synthetic memo".to_string();
+        let returned = tx.append_event(same).expect("retry");
+        assert_eq!(returned, event_id);
+        tx.commit().expect("noop")
+    };
+    assert!(retry.noop);
+    assert_eq!(kernel.revision().expect("rev"), 2);
+
+    let changed = {
+        let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
+        let mut other = recipe_half(&books, "EV22", "PS24", "PS25", MINOR, MINOR);
+        other.description = "other memo".to_string();
+        tx.append_event(other).expect_err("description")
+    };
+    let changed = code_of(changed, Code::IdempotencyConflict);
+    assert_eq!(changed.ids, vec![uid("RR01"), event_id.clone()]);
+    assert!(
+        !changed.to_string().contains("memo"),
+        "payload conflict leaked a description"
+    );
+    assert_eq!(
+        event_field(&kernel, "description", &event_id),
+        Some("synthetic memo".to_string())
+    );
+    assert_eq!(kernel.commit_count().expect("count"), 2);
 }
