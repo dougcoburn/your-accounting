@@ -50,7 +50,7 @@ This file lists what v2 changes in the v0.2 spec and why. Where this delta and `
 
 ### §2.3 Currency and amounts
 - Resolved: money is a **signed integer in minor units plus a currency code**. Magnitudes (postings, observations, settlements) are positive with an explicit side or direction. Only `balance_minor` and `value_minor` columns carry a sign.
-- **Proposed, post-month-1 (ADR 0009, Doug 2026-11-26):** every ledger account has one currency, except one multi-currency FX Clearing account, and every posting matches its account's currency. This replaces "categories are independent of currency" (pending ADR 0009 open question 2). The schema change is listed in section 6 of this delta and is not in `docs/schema-v2.sql` yet.
+- **Proposed, post-month-1 (ADR 0009, Doug 2026-11-26):** logical categories stay currency-independent, but every posting ledger account has one currency and is unique per (logical category, currency), for example Dining (USD) and Dining (EUR). Every posting matches its ledger account's currency. The one exception is a single multi-currency FX Clearing account per entity. No report adds a category across currencies: reports are per currency. This rewords SPEC §2.3 "categories (income/expense ledger accounts) are independent of currency" to "categories are logical and currency-independent; ledger accounts are (category, currency)". The schema change is listed in section 6 of this delta and is not in `docs/schema-v2.sql` yet.
 
 ### §2.5 Evidence, observations, movements
 - `CanonicalTransaction`, `AccountMovement` and `movement_observations` are removed. An observation is explained by the posting on its own financial account's ledger account, through `posting_observations`. That posting must match the observation's account, amount and currency, with inflow as debit and outflow as credit (INV-007, trigger).
@@ -108,7 +108,7 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
 - **AT-022, AT-023, AT-033:** use reversal plus replacement. The smoke check covers one reversal and a recategorization.
 - **AT-032:** covered by `commits.seq`.
 - **AT-027, AT-028:** MCP is deferred past month 1.
-- **AT-029 (FX transfer):** post-month-1. One event with bank legs in each currency and FX Clearing rows in the ADR 0009 shape. "Rate evidence" is the derived rate (credit total / debit total of the FX Clearing rows) plus the application's rate plausibility check (section 6 of this delta).
+- **AT-029 (FX transfer):** post-month-1. One event with bank legs in each currency and FX Clearing rows in the ADR 0009 shape. "Rate evidence" is the derived rate (credit total / debit total of the FX Clearing rows, 7 decimals half-even, never stored) plus the application's rate plausibility check (section 6 of this delta).
 
 ### §12 Definition of done
 "Empty and upgraded database" means the upgraded runs start from a v2 database (migration 1).
@@ -116,7 +116,7 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
 ### §13 Open decisions
 - **Resolved:** 1 (integer minor units), 3 (occurred date, with in-flight explanation), 8 (settlement exclusivity with no participation limits in month 1, ADR 0006), 9 (ADR 0002 closed-month invariant).
 - **Still open:** 2, 6, 7, 10, 11, 12.
-- **Decided for post-month-1 (ADR 0009):** 2 (FX journal model: single-currency accounts plus one FX Clearing account), and the native-currency part of 6 (each currency reported on its own, no single reporting currency, no revaluation). Retained-earnings presentation per currency stays open under 6.
+- **Decided for post-month-1 (ADR 0009):** 2 (FX journal model: single-currency ledger accounts plus one FX Clearing account per entity), and the native-currency part of 6 (isolated per-currency month-end reports, even within one entity; no single reporting currency, no revaluation). Retained-earnings presentation per currency stays open under 6. FX across recipe halves is an open decision in ADR 0009.
 
 ### §14 Architectural decisions
 - SPEC **ADR-003** (transparent and opaque entities) is superseded by docs/adr 0003 and 0004.
@@ -192,17 +192,18 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
 
 ## 6. Proposed: single-currency accounts and FX Clearing (ADR 0009, post-month-1)
 
-**Status:** Decided by Doug (2026-11-26). Not part of the month-1 plan. Nothing here is in `docs/schema-v2.sql` or the kernel yet. When the unit is scheduled, the schema, the smoke checks and `docs/KERNEL_INTERFACE_SPEC.md` §3.3, §4.1 and §4.3 change together (kernel spec §7). ADR 0009 has the full rules, the worked example and the open questions.
+**Status:** Decided by Doug (2026-11-26, including the PR 33 answers). One open decision remains in ADR 0009: FX across recipe halves (Architect recommends Option A). Not part of the month-1 plan. Nothing here is in `docs/schema-v2.sql` or the kernel yet. When the unit is scheduled, the schema, the smoke checks and `docs/KERNEL_INTERFACE_SPEC.md` §3.3, §4.1 and §4.3 change together (kernel spec §7). ADR 0009 has the full rules, the worked example and the open questions.
 
 **Schema delta (proposed):**
 
 | Object | Change |
 |---|---|
-| `ledger_accounts.currency` | New `TEXT` column, ISO format CHECK. `CHECK ((kind = 'fx_clearing') = (currency IS NULL))` |
+| `ledger_accounts.currency` | New `TEXT` column, ISO format CHECK. NULL only on the `fx_clearing` account and on logical category nodes (`InvalidShape` token `account_currency`) |
 | `ledger_accounts.kind` | Gains `fx_clearing`: asset type, no financial account, no parent. Distinct from the ADR 0006 `clearing` kind |
-| Partial UNIQUE index | At most one `fx_clearing` account per database (ADR 0009 open question 1) |
+| Partial UNIQUE index | At most one `fx_clearing` account per database (one per entity, ADR 0009 decision 3) |
 | New trigger | A financial-account-backed ledger account has its financial account's currency |
-| `ledger_accounts_parent_valid` | A child category has its parent's currency (if ADR 0009 open question 2 keeps currency on categories) |
+| Categories | Currency-free category nodes are the logical categories and take no postings. A posting category account has a currency, its parent is a logical leaf category, and a partial UNIQUE index on `(parent_id, currency)` keeps it unique per (category, currency). `ledger_accounts_parent_valid` follows |
+| `observations` | Optional `original_amount_minor` and `original_currency` from the feed (a card charge abroad). Feed facts only, never postings; used for an informational rate (ADR 0009 worked example 2) |
 | `journal_postings_currency_valid` | A posting's currency equals `ledger_accounts.currency`, unless the account is `fx_clearing` (widens INV-005) |
 | `commits_seal` | Per event: FX Clearing rows, if any, have exactly one debit currency and one different credit currency, each side with at least one row |
 | `doctor_fx_clearing_shape` | New view; the same rule over sealed history (`DoctorDrift`) |
@@ -217,5 +218,6 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
 | ADR 0009: ledger account currency present and consistent | CHECK, new trigger | `InvalidShape` token `account_currency`; `CurrencyMismatch` for the financial-account trigger |
 | ADR 0009: FX Clearing shape per event | `commits_seal` | U19 rejects first (`InvalidShape` token `fx_clearing`); `doctor_fx_clearing_shape` |
 | ADR 0009: effective balance zero | by construction from the shape rule | none needed |
-| ADR 0009: rate plausible for the date | none | application rate check, informational (rate source and tolerance open) |
+| ADR 0009: rate plausible for the date | none | application rate check behind a rate-source port; a finding is a warning-level to-do, information only, exit 0 |
+| ADR 0009: rate display | none | derived, never stored; 7 decimal places, half-even, after the minor-unit exponent adjustment |
 
