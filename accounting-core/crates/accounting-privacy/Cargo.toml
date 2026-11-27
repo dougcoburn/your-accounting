@@ -1,0 +1,6 @@
+[package]
+name = "accounting-privacy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Redacting logger so transaction text never reaches log output"

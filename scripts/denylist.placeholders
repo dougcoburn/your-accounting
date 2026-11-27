@@ -1,0 +1,5 @@
+# Synthetic placeholder terms for the denylist self-test.
+# Real identifying strings are not stored in this file.
+# Put real terms in private/denylist.txt, one per line, or in YA_DENYLIST.
+# Acme Corp is the allowed employer placeholder and is not a denylist term.
+PlaceholderForbiddenEmployer
