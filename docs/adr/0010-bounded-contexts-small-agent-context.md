@@ -1,6 +1,7 @@
 # ADR 0010: Bounded contexts with one-page interfaces, so a change loads a small context
 
 Status: **Accepted** (Doug, 2026-11-26; decisions on PR #73 relayed by Captain). Docs only. No code moves in this change.
+Amended by [ADR 0011](0011-kernel-stages-only-events-and-lines.md) (2026-11-26): observation import is no longer kernel-hosted. Tags and refund links are context-owned too. See the context map in [`docs/design/bounded-contexts.md`](../design/bounded-contexts.md) §4.
 
 ## Context
 

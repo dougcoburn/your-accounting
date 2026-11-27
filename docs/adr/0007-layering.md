@@ -61,3 +61,15 @@ Where this amendment and the 2026-11-25 amendment or the 2026-11-26 clarificatio
   - the application-level recipe check across databases (counterpart not visible, missing half, orphaned for 7 days with an offer to reverse, duplicate, mismatched counterpart, or a mismatched amount per currency on the intercompany account)
 - **Unchanged:** recipes (layer 2) still build each half's ChangeSet, and there is still no cross-database atomicity (ADR 0004).
 - **Invariants unchanged:** every kernel write goes through the commit protocol. Import is not matching (ADR 0006). The per-database `doctor` is read-only, apart from the separately committed `record_write_freeze` (clarification above).
+
+## Amendment (2026-11-26, Doug): the kernel stages only events and their lines (ADR 0011)
+Where this amendment and the earlier amendments or the clarification differ, this amendment wins.
+
+- **Out of layer 1:** `import_observations` and `void_observation`; storing feed, observation and tag rows; and observation, evidence and refund links. They move to the observation import context (observations, links, evidence), recipes (refund links) and the application (tags). Those tables stay in the same entity database and reference kernel events and lines by id. See [ADR 0011](0011-kernel-stages-only-events-and-lines.md).
+- **Layer 1 keeps:**
+  - the append-only journal (events and their lines), the commit seal and its numbered invariants;
+  - recipe-idempotent event writes;
+  - the `doctor` runner and the ledger-core checks (ADR 0010).
+- **Decided (Doug, 2026-11-26):** context rows commit in the kernel's transaction, through the participant hook `stage()`/`validate()` (ADR 0011 option (i); kernel interface spec §3.14).
+- **Unchanged:** every write still goes through the commit protocol. Import is still not matching. Doctor is still read-only.
+
