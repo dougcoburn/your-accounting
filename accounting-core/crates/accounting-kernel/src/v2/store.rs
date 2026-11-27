@@ -1156,11 +1156,14 @@ impl Transaction<'_> {
                 && matches!(account.kind.as_str(), "receivable" | "payable")
                 && posting.party_id.is_none()
             {
-                return Err(self.fail(Error::new(
-                    Code::InvalidShape,
-                    &["ADR 0004"],
-                    vec![posting.ledger_account_id.clone()],
-                )));
+                return Err(self.fail(
+                    Error::new(
+                        Code::InvalidShape,
+                        &["ADR 0004"],
+                        vec![posting.ledger_account_id.clone()],
+                    )
+                    .with_token("recipe_party"),
+                ));
             }
             if matches!(account.account_type.as_str(), "income" | "expense")
                 && self.count(
@@ -1357,11 +1360,14 @@ impl Transaction<'_> {
             if matches!(account.kind.as_str(), "receivable" | "payable")
                 && posting.party_id.is_none()
             {
-                return Err(self.fail(Error::new(
-                    Code::InvalidShape,
-                    &["ADR 0004"],
-                    vec![posting.ledger_account_id.clone()],
-                )));
+                return Err(self.fail(
+                    Error::new(
+                        Code::InvalidShape,
+                        &["ADR 0004"],
+                        vec![posting.ledger_account_id.clone()],
+                    )
+                    .with_token("recipe_party"),
+                ));
             }
             if matches!(account.account_type.as_str(), "income" | "expense")
                 && self.count(
