@@ -8,3 +8,6 @@ description = "Recipe Compilers and execution extension tables (Application Ring
 [dependencies]
 accounting-kernel = { workspace = true }
 rusqlite = { workspace = true }
+
+[lints]
+workspace = true

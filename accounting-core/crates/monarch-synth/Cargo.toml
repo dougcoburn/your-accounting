@@ -8,3 +8,6 @@ description = "Seeded generator for a synthetic Monarch Money transactions CSV"
 [[bin]]
 name = "monarch-synth"
 path = "src/main.rs"
+
+[lints]
+workspace = true
