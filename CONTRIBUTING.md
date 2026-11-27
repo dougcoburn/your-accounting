@@ -8,16 +8,7 @@ Real financial data stays out of git. Run every guard locally before opening a p
 bash scripts/check-privacy.sh
 ```
 
-That is the single command CI should call. There is no GitHub Actions workflow in this repository yet (U01). When one is added, include:
-
-```yaml
-- name: Privacy guards
-  run: bash scripts/check-privacy.sh
-  env:
-    YA_DENYLIST: ${{ secrets.YA_DENYLIST }}
-- name: Privacy guard self-test
-  run: bash scripts/test-privacy.sh
-```
+The `privacy` job in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs that script and then `bash scripts/test-privacy.sh` on every pull request and on every push to `main`, with `YA_DENYLIST` taken from the repository secret (it may be empty). If a script is not in the tree yet, that step prints a notice and is skipped.
 
 `bash scripts/test-privacy.sh` plants a synthetic violation for each guard and checks that the guard fails, then runs the same guard against the clean tree. `YA_DENYLIST` may be empty. Acme Corp is the employer placeholder in fixtures, docs, and tests.
 
@@ -69,3 +60,90 @@ A JSON value of at most six digits is also an amount when its key ends in `minor
 `accounting-privacy` is the redacting logger. `process_transaction` writes the id and replaces payee, description, and memo with `[redacted]`. The crate tests process a synthetic Acme Corp transaction and reject a planted log line that keeps that text.
 
 If `cargo` is not on `PATH`, or `accounting-core/crates/accounting-privacy/Cargo.toml` is missing, the guard prints `logs: SKIP` and exits 0. When the crate is present, a failing or missing redaction test is still a failure.
+
+## Data rules
+
+Real financial data must never be committed, opened in a PR, or printed in
+CI logs. The app reads Doug's local files only at runtime, through
+`YA_MONARCH_CSV` or a gitignored `local.config.json`. Committed CSV and JSON
+must be generated fixtures.
+
+A [data guard](scripts/data_guard.py) also runs as the `data-guard` CI job and
+as an optional pre-commit hook. It inspects tracked (CI) or staged (hook)
+files and fails if:
+
+- a CSV or JSON file is missing the synthetic marker
+- a CSV file sits outside a `fixtures/` directory
+- a line contains an account-number-like digit run longer than 4 digits
+  (last-4 values are allowed)
+
+Findings report file and line only; the matched text is never printed. This
+complements `scripts/check-privacy.sh`; both must pass.
+
+### Synthetic marker
+
+**CSV.** Put a comment line whose first token after `#` is `synthetic`,
+normally on the first line:
+
+```csv
+# synthetic
+Date,Merchant,Amount
+2025-10-01,Example Shop,1.00
+```
+
+The U14 placement guard also accepts `<!-- synthetic -->`.
+
+**JSON.** Prefer a top-level `"_synthetic": true` key so the file stays
+valid JSON:
+
+```json
+{
+  "_synthetic": true,
+  "rows": []
+}
+```
+
+JSON arrays cannot carry that key, so they (or any JSONC file) may start
+with a leading comment instead:
+
+```jsonc
+// # synthetic
+[]
+```
+
+The committed October fixture at `fixtures/monarch/october-2025-synthetic.csv`
+already follows this convention (first line `# synthetic`).
+
+### Pre-commit hook
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The hook runs `python3 scripts/data_guard.py` on staged files. CI runs the
+same script with `--all` over every tracked file, plus the guard's unit
+tests.
+
+### `.gitignore`
+
+`local.config.json`, `local/`, `data/`, `ya-private-data/`, `private-data/`,
+`private/`, `*.sqlite`, `*.db` and SQLite sidecar files are ignored. Keep
+real extracts outside the working tree (for example
+`/workspace/ya-private-data/`). Real denylist terms stay in
+`private/denylist.txt` or in `YA_DENYLIST`. Never commit them.
+
+## CI
+
+The GitHub Actions workflow in [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
+runs on pull requests and on pushes to `main`. It has five jobs:
+
+- **rust** operates in `accounting-core/` (the Cargo workspace) and runs
+  `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and
+  `cargo test` on the stable toolchain.
+- **smoke** runs `docs/schema-v2-smoke.sh` (synthetic data only).
+- **denylist** runs `scripts/check-denylist.sh`.
+- **data-guard** runs `scripts/data_guard.py --all` and the guard unit tests.
+- **privacy** runs `scripts/check-privacy.sh` and then
+  `scripts/test-privacy.sh`, with `YA_DENYLIST` taken from the
+  `YA_DENYLIST` repository secret (it may be empty). If a script is
+  not in the tree yet, that step prints a notice and is skipped.
