@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::params;
+use rusqlite::{params, Connection};
 
 use super::error::persists_freeze;
 use super::sqlmap::{map_message, map_sql, SqlSite};
@@ -2592,4 +2592,512 @@ fn description_is_part_of_the_recipe_payload() {
         Some("synthetic memo".to_string())
     );
     assert_eq!(kernel.commit_count().expect("count"), 2);
+}
+
+fn finding<'a>(report: &'a DoctorReport, check_id: &str) -> &'a Finding {
+    report
+        .findings
+        .iter()
+        .find(|finding| finding.check_id == check_id)
+        .unwrap_or_else(|| panic!("missing {check_id}"))
+}
+
+fn assert_quiet(report: &DoctorReport) {
+    let text = format!("{report:?}");
+    assert!(!text.contains("1500"), "doctor leaked an amount");
+    assert!(!text.contains("Acme"), "doctor leaked a name");
+    assert!(!text.contains("synthetic"), "doctor leaked a memo");
+}
+
+struct WarningCheck;
+
+impl DoctorCheck for WarningCheck {
+    fn id(&self) -> &'static str {
+        "example.note"
+    }
+    fn context(&self) -> &'static str {
+        "example"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Warning
+    }
+    fn scope(&self) -> Scope {
+        Scope::SingleDb
+    }
+    fn run(&self, _: &Connection) -> Result<Vec<Finding>, Error> {
+        Ok(vec![Finding {
+            check_id: "example.note",
+            severity: Severity::Warning,
+            code: Code::InvalidShape,
+            class: Class::User,
+            refs: vec!["example".to_string()],
+            ids: Vec::new(),
+        }])
+    }
+}
+
+struct ImportCheck;
+
+impl DoctorCheck for ImportCheck {
+    fn id(&self) -> &'static str {
+        "example.orphan"
+    }
+    fn context(&self) -> &'static str {
+        "example"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Import
+    }
+    fn scope(&self) -> Scope {
+        Scope::SingleDb
+    }
+    fn run(&self, _: &Connection) -> Result<Vec<Finding>, Error> {
+        Ok(vec![Finding {
+            check_id: "example.orphan",
+            severity: Severity::Import,
+            code: Code::OrphanEvidence,
+            class: Class::Import,
+            refs: Vec::new(),
+            ids: Vec::new(),
+        }])
+    }
+}
+
+struct RegisteredDrift;
+
+impl DoctorCheck for RegisteredDrift {
+    fn id(&self) -> &'static str {
+        "example.drift"
+    }
+    fn context(&self) -> &'static str {
+        "example"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Bugcheck
+    }
+    fn scope(&self) -> Scope {
+        Scope::SingleDb
+    }
+    fn run(&self, _: &Connection) -> Result<Vec<Finding>, Error> {
+        Ok(vec![Finding {
+            check_id: "example.drift",
+            severity: Severity::Bugcheck,
+            code: Code::DoctorDrift,
+            class: Class::Bugcheck,
+            refs: vec!["example".to_string()],
+            ids: vec![uid("DRF1")],
+        }])
+    }
+}
+
+struct RegistryCheck;
+
+impl DoctorCheck for RegistryCheck {
+    fn id(&self) -> &'static str {
+        "example.registry"
+    }
+    fn context(&self) -> &'static str {
+        "example"
+    }
+    fn severity(&self) -> Severity {
+        Severity::Bugcheck
+    }
+    fn scope(&self) -> Scope {
+        Scope::Registry
+    }
+    fn run(&self, _: &Connection) -> Result<Vec<Finding>, Error> {
+        panic!("registry checks are not run by the kernel doctor");
+    }
+}
+
+fn seal_purchase(kernel: &mut Kernel, books: &Books) -> String {
+    let rev = kernel.revision().expect("rev");
+    let mut tx = kernel.begin_transaction(Some(rev)).expect("begin");
+    let id = tx
+        .append_event(purchase(
+            books,
+            "PS01",
+            "PS02",
+            &books.groceries,
+            MINOR,
+            "USD",
+        ))
+        .expect("event");
+    tx.commit().expect("commit");
+    id
+}
+
+#[test]
+fn doctor_is_clean_on_a_sealed_event() {
+    let tmp = Tmp::new("doctor-clean");
+    let mut kernel = open_at(&tmp.db());
+    let books = chart(&mut kernel);
+    seal_purchase(&mut kernel, &books);
+    let before = kernel.commit_count().expect("count");
+    let report = kernel.doctor(None).expect("doctor");
+    assert!(report.findings.is_empty(), "{report:?}");
+    assert_eq!(report.exit_status, 0);
+    assert!(report.freeze.is_none());
+    assert!(report.persist_error.is_none());
+    assert_eq!(kernel.commit_count().expect("count"), before);
+    assert!(kernel.freeze().expect("read").is_none());
+    assert_quiet(&report);
+}
+
+#[test]
+fn doctor_reports_an_active_freeze_and_does_not_clear_it() {
+    let tmp = Tmp::new("doctor-freeze");
+    let mut kernel = open_at(&tmp.db());
+    let _books = chart(&mut kernel);
+    let frozen = kernel
+        .record_write_freeze(Some(1), "IntegrityFailed")
+        .expect("freeze");
+    let before = kernel.kernel_state_count().expect("count");
+    let rev = kernel.revision().expect("rev");
+    let report = kernel.doctor(None).expect("doctor");
+    assert_eq!(report.exit_status, 1);
+    assert!(report.freeze.is_none());
+    assert!(report.persist_error.is_none());
+    let found = finding(&report, CHECK_FREEZE);
+    assert_eq!(found.code, Code::WriteFrozen);
+    assert_eq!(found.class, Class::Bugcheck);
+    assert_eq!(found.severity, Severity::Bugcheck);
+    assert_eq!(found.refs, vec!["IntegrityFailed".to_string()]);
+    assert!(found.ids.contains(&frozen.row_id));
+    assert!(found.ids.contains(&frozen.commit_id));
+    assert_eq!(kernel.kernel_state_count().expect("count"), before);
+    assert_eq!(kernel.revision().expect("rev"), rev);
+    assert!(kernel.freeze().expect("read").expect("row").already_present);
+    assert_quiet(&report);
+}
+
+#[test]
+fn planted_unbalanced_event_is_drift_and_freezes() {
+    let tmp = Tmp::new("doctor-unbalanced");
+    let mut kernel = open_at(&tmp.db());
+    let books = chart(&mut kernel);
+    let event_id = seal_purchase(&mut kernel, &books);
+    kernel
+        .connection()
+        .execute_batch("DROP TRIGGER journal_postings_open_commit")
+        .expect("drop");
+    kernel
+        .connection()
+        .execute(
+            "INSERT INTO journal_postings(
+                id, event_id, ledger_account_id, currency, side, amount_minor
+             ) VALUES (?1, ?2, ?3, 'USD', 'debit', 1)",
+            params![uid("PS99"), event_id, books.groceries],
+        )
+        .expect("plant");
+    let postings = kernel.posting_count().expect("count");
+    let rev = kernel.revision().expect("rev");
+    let report = kernel.doctor(Some(rev)).expect("doctor");
+    assert_eq!(report.exit_status, 1);
+    let found = finding(&report, CHECK_UNBALANCED);
+    assert_eq!(found.code, Code::DoctorDrift);
+    assert_eq!(found.refs, vec!["INV-001".to_string()]);
+    assert_eq!(found.ids, vec![event_id.clone()]);
+    assert!(report.findings.iter().all(|f| f.check_id != CHECK_UNSEALED));
+    assert!(report
+        .findings
+        .iter()
+        .all(|f| f.check_id != CHECK_SUPERSEDED_DRIFT));
+    let freeze = report.freeze.as_ref().expect("persisted");
+    assert!(!freeze.already_present);
+    assert_eq!(freeze.code, "DoctorDrift");
+    assert_eq!(freeze.seq, rev + 1);
+    assert!(report.persist_error.is_none());
+    assert_eq!(kernel.posting_count().expect("count"), postings);
+    assert_eq!(event_field(&kernel, "superseded_by", &event_id), None);
+
+    let again = kernel.doctor(None).expect("again");
+    assert_eq!(again.exit_status, 1);
+    assert!(again.freeze.is_none());
+    assert!(again.persist_error.is_none());
+    assert_eq!(finding(&again, CHECK_UNBALANCED).ids, vec![event_id]);
+    let frozen = finding(&again, CHECK_FREEZE);
+    assert_eq!(frozen.refs, vec!["DoctorDrift".to_string()]);
+    assert_eq!(kernel.kernel_state_count().expect("count"), 1);
+    assert_quiet(&again);
+}
+
+#[test]
+fn planted_superseded_drift_is_not_repaired() {
+    let tmp = Tmp::new("doctor-supersede");
+    let mut kernel = open_at(&tmp.db());
+    let books = chart(&mut kernel);
+    let rev = kernel.revision().expect("rev");
+    let (first, second) = {
+        let mut tx = kernel.begin_transaction(Some(rev)).expect("begin");
+        let first = tx
+            .append_event(purchase(
+                &books,
+                "PS01",
+                "PS02",
+                &books.groceries,
+                MINOR,
+                "USD",
+            ))
+            .expect("first");
+        let mut other = purchase(&books, "PS03", "PS04", &books.groceries, MINOR, "USD");
+        other.id = Some(uid("EV02"));
+        let second = tx.append_event(other).expect("second");
+        tx.commit().expect("commit");
+        (first, second)
+    };
+    kernel
+        .connection()
+        .execute_batch("DROP TRIGGER accounting_events_only_supersede")
+        .expect("drop");
+    kernel
+        .connection()
+        .execute(
+            "UPDATE accounting_events SET superseded_by = ?1 WHERE id = ?2",
+            params![second, first],
+        )
+        .expect("plant");
+    let rev = kernel.revision().expect("rev");
+    let report = kernel.doctor(Some(0)).expect("doctor");
+    assert_eq!(report.exit_status, 1);
+    let found = finding(&report, CHECK_SUPERSEDED_DRIFT);
+    assert_eq!(found.code, Code::DoctorDrift);
+    assert_eq!(found.refs, vec!["ADR 0002".to_string()]);
+    assert_eq!(found.ids, vec![first.clone()]);
+    assert_eq!(
+        report.persist_error.as_ref().expect("stale").code,
+        Code::StaleRevision
+    );
+    assert!(report.freeze.is_none());
+    assert_eq!(kernel.kernel_state_count().expect("count"), 0);
+    assert_eq!(kernel.revision().expect("rev"), rev);
+    assert_eq!(
+        event_field(&kernel, "superseded_by", &first).as_deref(),
+        Some(second.as_str())
+    );
+
+    let missing = kernel.doctor(None).expect("missing");
+    assert_eq!(missing.exit_status, 1);
+    assert_eq!(
+        missing.persist_error.as_ref().expect("missing").code,
+        Code::MissingExpectedRevision
+    );
+    assert_eq!(kernel.kernel_state_count().expect("count"), 0);
+    assert_quiet(&missing);
+}
+
+#[test]
+fn planted_unsealed_kernel_row_is_detected_and_context_rows_are_not() {
+    let tmp = Tmp::new("doctor-unsealed");
+    let mut kernel = open_at(&tmp.db());
+    let _books = chart(&mut kernel);
+    let event_id = uid("EV99");
+    let missing_commit = uid("C999");
+    let deletion_id = uid("ED01");
+    let deletion_commit = uid("C998");
+    let sha = "ab".repeat(32);
+    kernel
+        .connection()
+        .execute_batch("PRAGMA foreign_keys = OFF")
+        .expect("fk off");
+    kernel
+        .connection()
+        .execute(
+            "INSERT INTO accounting_events(
+                id, commit_id, recipe_id, recipe_version, effective_date, recorded_at
+             ) VALUES (?1, ?2, 'u17_probe', '1', '2026-01-02', ?3)",
+            params![event_id, missing_commit, WHEN],
+        )
+        .expect("event");
+    kernel
+        .connection()
+        .execute(
+            "INSERT INTO evidence_objects(sha256, size_bytes, recorded_at) VALUES (?1, 0, ?2)",
+            params![sha, WHEN],
+        )
+        .expect("object");
+    kernel
+        .connection()
+        .execute(
+            "INSERT INTO evidence_deletions(id, sha256, reason, commit_id, recorded_at)
+             VALUES (?1, ?2, 'planted', ?3, ?4)",
+            params![deletion_id, sha, deletion_commit, WHEN],
+        )
+        .expect("deletion");
+    kernel
+        .connection()
+        .execute_batch("PRAGMA foreign_keys = ON")
+        .expect("fk on");
+
+    let rev = kernel.revision().expect("rev");
+    let report = kernel.doctor(Some(rev)).expect("doctor");
+    assert_eq!(report.exit_status, 1);
+    let unsealed = finding(&report, CHECK_UNSEALED);
+    assert_eq!(unsealed.code, Code::UnsealedRows);
+    assert_eq!(unsealed.refs, vec!["PR-19".to_string()]);
+    assert!(unsealed.ids.contains(&event_id));
+    assert!(unsealed.ids.contains(&missing_commit));
+    assert!(!unsealed.ids.contains(&deletion_id));
+    assert!(!unsealed.ids.contains(&deletion_commit));
+    let fk = finding(&report, CHECK_FOREIGN_KEYS);
+    assert_eq!(fk.code, Code::ForeignKeyCheckFailed);
+    assert!(fk.ids.contains(&event_id));
+    assert!(fk.ids.contains(&deletion_id));
+    assert_eq!(
+        report.freeze.as_ref().expect("persisted").code,
+        "ForeignKeyCheckFailed"
+    );
+    assert_eq!(kernel.posting_count().expect("count"), 0);
+    assert_quiet(&report);
+}
+
+#[test]
+fn planted_foreign_key_is_detected() {
+    let tmp = Tmp::new("doctor-fk");
+    let mut kernel = open_at(&tmp.db());
+    let _books = chart(&mut kernel);
+    let ghost = uid("GHST");
+    kernel
+        .connection()
+        .execute_batch("PRAGMA foreign_keys = OFF")
+        .expect("fk off");
+    kernel
+        .connection()
+        .execute(
+            "INSERT INTO party_aliases(party_id, alias) VALUES (?1, 'synthetic alias')",
+            params![ghost],
+        )
+        .expect("plant");
+    kernel
+        .connection()
+        .execute_batch("PRAGMA foreign_keys = ON")
+        .expect("fk on");
+    let rev = kernel.revision().expect("rev");
+    let report = kernel.doctor(Some(rev)).expect("doctor");
+    assert_eq!(report.exit_status, 1);
+    let fk = finding(&report, CHECK_FOREIGN_KEYS);
+    assert_eq!(fk.ids, vec![ghost]);
+    assert!(report.findings.iter().all(|f| f.check_id != CHECK_UNSEALED));
+    assert!(report
+        .findings
+        .iter()
+        .all(|f| f.check_id != CHECK_UNBALANCED));
+    assert_eq!(
+        report.freeze.as_ref().expect("freeze").code,
+        "ForeignKeyCheckFailed"
+    );
+    assert_quiet(&report);
+}
+
+#[test]
+fn planted_integrity_failure_is_detected() {
+    let tmp = Tmp::new("doctor-integrity");
+    let mut kernel = open_at(&tmp.db());
+    let _books = chart(&mut kernel);
+    kernel
+        .connection()
+        .execute_batch("PRAGMA writable_schema = ON")
+        .expect("schema");
+    kernel
+        .connection()
+        .execute(
+            "UPDATE sqlite_schema SET rootpage = 99 WHERE type = 'table' AND name = 'parties'",
+            [],
+        )
+        .expect("plant");
+    kernel
+        .connection()
+        .execute_batch("PRAGMA writable_schema = RESET")
+        .expect("reset");
+    let rev = kernel.revision().expect("rev");
+    let report = kernel.doctor(Some(rev)).expect("doctor");
+    assert_eq!(report.exit_status, 1);
+    let found = finding(&report, CHECK_INTEGRITY);
+    assert_eq!(found.code, Code::IntegrityFailed);
+    assert!(found.ids.is_empty());
+    assert_eq!(
+        report.freeze.as_ref().expect("freeze").code,
+        "IntegrityFailed"
+    );
+    assert_quiet(&report);
+}
+
+#[test]
+fn doctor_on_a_read_only_handle_returns_findings_without_a_freeze() {
+    let tmp = Tmp::new("doctor-ro");
+    let mut kernel = Kernel::open_observing_disabled_foreign_keys(
+        tmp.db(),
+        clock(),
+        Box::new(SequenceIds::new()),
+        "u17",
+    )
+    .expect("open");
+    let event_id = uid("EV99");
+    kernel
+        .connection()
+        .execute(
+            "INSERT INTO accounting_events(
+                id, commit_id, recipe_id, recipe_version, effective_date, recorded_at
+             ) VALUES (?1, ?2, 'u17_probe', '1', '2026-01-02', ?3)",
+            params![event_id, uid("C999"), WHEN],
+        )
+        .expect("plant");
+    let report = kernel.doctor(Some(0)).expect("doctor");
+    assert_eq!(report.exit_status, 1);
+    assert!(finding(&report, CHECK_UNSEALED).ids.contains(&event_id));
+    assert!(report.freeze.is_none());
+    assert_eq!(
+        report.persist_error.as_ref().expect("fk").code,
+        Code::ForeignKeysDisabled
+    );
+    assert_eq!(kernel.kernel_state_count().expect("count"), 0);
+    assert_quiet(&report);
+}
+
+#[test]
+fn a_context_can_register_checks_and_warnings_do_not_fail() {
+    let tmp = Tmp::new("doctor-register");
+    let mut kernel = open_at(&tmp.db());
+    let _books = chart(&mut kernel);
+    kernel.register_doctor_check(Box::new(WarningCheck));
+    kernel.register_doctor_check(Box::new(RegistryCheck));
+    let report = kernel.doctor(None).expect("doctor");
+    assert_eq!(report.exit_status, 0);
+    assert_eq!(report.findings.len(), 1);
+    assert_eq!(report.findings[0].check_id, "example.note");
+    assert_eq!(report.findings[0].severity, Severity::Warning);
+    assert!(report.freeze.is_none());
+    assert_eq!(kernel.commit_count().expect("count"), 1);
+
+    kernel.register_doctor_check(Box::new(ImportCheck));
+    let imported = kernel.doctor(None).expect("import");
+    assert_eq!(imported.exit_status, 1);
+    assert!(imported
+        .findings
+        .iter()
+        .any(|f| f.code == Code::OrphanEvidence && f.severity == Severity::Import));
+    assert!(imported.freeze.is_none());
+    assert!(imported.persist_error.is_none());
+    assert_eq!(kernel.kernel_state_count().expect("count"), 0);
+    assert_eq!(kernel.commit_count().expect("count"), 1);
+
+    kernel.register_doctor_check(Box::new(RegisteredDrift));
+    let rev = kernel.revision().expect("rev");
+    let drifted = kernel.doctor(Some(rev)).expect("drift");
+    assert_eq!(drifted.exit_status, 1);
+    let extra = finding(&drifted, "example.drift");
+    assert_eq!(extra.code, Code::DoctorDrift);
+    assert_eq!(extra.ids, vec![uid("DRF1")]);
+    assert_eq!(drifted.freeze.as_ref().expect("freeze").code, "DoctorDrift");
+    assert_quiet(&drifted);
+}
+
+#[test]
+fn empty_database_doctor_exits_zero() {
+    let tmp = Tmp::new("doctor-empty");
+    let mut kernel = open_at(&tmp.db());
+    let report = kernel.doctor(None).expect("doctor");
+    assert_eq!(report.exit_status, 0);
+    assert!(report.findings.is_empty());
+    assert_eq!(kernel.commit_count().expect("count"), 0);
 }
