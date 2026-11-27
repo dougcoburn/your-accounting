@@ -18,3 +18,11 @@ license = "MIT OR Apache-2.0"
 rusqlite = { version = "0.32", features = ["bundled"] }
 accounting-kernel = { path = "crates/accounting-kernel" }
 accounting-recipes = { path = "crates/accounting-recipes" }
+
+[workspace.lints.clippy]
+# KernelError's largest variant is just over Clippy's 128-byte Result
+# threshold. Shrinking it is a kernel change, not part of U01.
+result_large_err = "allow"
+# Money literals use a dollars_cents grouping (e.g. 10000_00).
+# The kernel crate itself is clean of this lint.
+inconsistent_digit_grouping = "allow"
