@@ -2,7 +2,7 @@
 //!
 //! Context tables (observations, evidence, refund links, tags) are not read
 //! here. Those contexts register their own checks. Settlement, obligation, and
-//! assertion tables stay in the kernel unsealed check for now (ADR 0011).
+//! assertion tables stay, because ADR 0011 still calls them kernel-owned.
 
 use rusqlite::Connection;
 
@@ -21,27 +21,28 @@ pub const CHECK_FREEZE: &str = "ledger.freeze";
 
 const CONTEXT: &str = "ledger";
 
-/// Commit-scoped tables the kernel still owns. The full `doctor_unsealed_rows`
-/// view also lists observation, evidence, tag, and refund rows; those are
-/// excluded here.
+/// Commit-scoped tables ADR 0011 names as kernel-owned. Reference tables with
+/// no `commit_id` (`entity`, `parties`, `ledger_accounts`, and the rest) are
+/// not in `doctor_unsealed_rows`. `user_grants` is not in that kernel-owned
+/// list, so it is not here. The view's observation, evidence, tag, and refund
+/// rows are context-owned (ADR 0010 §6.2, ADR 0011).
 const UNSEALED_SQL: &str = "
 SELECT table_name, row_id, commit_id FROM doctor_unsealed_rows
 WHERE table_name IN (
-    'user_grants',
     'accounting_events',
+    'event_counterpart_expectations',
+    'journal_postings',
+    'kernel_state',
+    'valuation_snapshots',
     'settlement_groups',
     'settlement_group_states',
     'settlement_postings',
+    'settlement_draft_participants',
     'obligations',
     'obligation_settlements',
-    'statements',
-    'balance_assertions',
-    'valuation_snapshots',
-    'kernel_state',
-    'journal_postings',
-    'event_counterpart_expectations',
     'obligation_postings',
-    'settlement_draft_participants'
+    'statements',
+    'balance_assertions'
 )
 ORDER BY table_name, row_id
 ";
