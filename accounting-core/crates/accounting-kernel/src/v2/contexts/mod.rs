@@ -3,9 +3,16 @@
 //! The kernel mapper calls these when a SQLite message belongs to a context
 //! table. Observation import, recipes, and tags each own their rows.
 
+mod import;
 mod observation;
 mod recipes;
 mod tags;
+
+pub use import::{
+    observation_links, EvidenceRecord, EvidenceTarget, ImportBatch, ImportOutcome, NewEvidence,
+    NewFeed, ObservationImport, ObservationInput, ObservationLink, CHECK_DOUBLE_CONSUMED,
+    CHECK_EVIDENCE_HASH, CHECK_ORPHAN_EVIDENCE, CHECK_UNSEALED,
+};
 
 use rusqlite::Error as SqlError;
 

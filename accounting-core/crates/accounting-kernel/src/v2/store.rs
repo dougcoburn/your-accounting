@@ -924,6 +924,12 @@ impl Kernel {
     pub(crate) fn connection(&self) -> &Connection {
         &self.conn
     }
+
+    pub(crate) fn downcast_participant<T: std::any::Any>(&self) -> Option<&T> {
+        self.participants
+            .iter()
+            .find_map(|participant| participant.as_any().downcast_ref::<T>())
+    }
 }
 
 impl Transaction<'_> {
@@ -1638,7 +1644,6 @@ impl Transaction<'_> {
 
     /// A context operation writes through the same `ContextTx` as `stage`.
     /// This is not the `stage` callback, so it may call kernel operations.
-    #[allow(dead_code)]
     pub(crate) fn with_participant<R>(
         &mut self,
         participant_id: &str,
@@ -1675,7 +1680,6 @@ impl Transaction<'_> {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn note_subject(&mut self, subject: Subject) -> Result<(), Error> {
         self.ensure_open()?;
         self.staged.subjects.push(subject);
@@ -1804,14 +1808,22 @@ impl Transaction<'_> {
         }
     }
 
-    fn ensure_open(&self) -> Result<(), Error> {
+    pub(crate) fn db(&self) -> &Connection {
+        &self.kernel.conn
+    }
+
+    pub(crate) fn downcast_participant<T: std::any::Any>(&self) -> Option<&T> {
+        self.kernel.downcast_participant()
+    }
+
+    pub(crate) fn ensure_open(&self) -> Result<(), Error> {
         if let Some(err) = &self.error {
             return Err(err.clone());
         }
         Ok(())
     }
 
-    fn fail(&mut self, err: Error) -> Error {
+    pub(crate) fn fail(&mut self, err: Error) -> Error {
         let expected = self.expected_revision;
         self.kernel.rollback();
         self.kernel.write_open = false;
@@ -1821,7 +1833,7 @@ impl Transaction<'_> {
         err
     }
 
-    fn allocate(&mut self, supplied: Option<String>) -> Result<String, Error> {
+    pub(crate) fn allocate(&mut self, supplied: Option<String>) -> Result<String, Error> {
         let id = match supplied {
             Some(id) => id,
             None => self.kernel.ids.next_id(),

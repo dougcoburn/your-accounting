@@ -147,6 +147,8 @@ pub trait ContextParticipant: Send {
     fn id(&self) -> &str;
     fn owned_tables(&self) -> &'static [&'static str];
     fn declared_codes(&self) -> &'static [Code];
+    /// Recovers the concrete participant. The kernel does not inspect the value.
+    fn as_any(&self) -> &dyn Any;
     fn stage(
         &self,
         tx: &mut ContextTx<'_>,
@@ -349,6 +351,22 @@ impl ContextTx<'_> {
             .query_row(sql, params, map)
             .optional()
             .map_err(map_context_sql)
+    }
+
+    pub fn query_vec<T, P, F>(&self, sql: &str, params: P, mut map: F) -> Result<Vec<T>, Error>
+    where
+        P: Params,
+        F: FnMut(&Row<'_>) -> rusqlite::Result<T>,
+    {
+        let mut stmt = self.conn.prepare(sql).map_err(map_context_sql)?;
+        let rows = stmt
+            .query_map(params, |row| map(row))
+            .map_err(map_context_sql)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(map_context_sql)?);
+        }
+        Ok(out)
     }
 }
 

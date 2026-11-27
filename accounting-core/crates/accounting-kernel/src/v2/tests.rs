@@ -3145,6 +3145,9 @@ impl ContextParticipant for Probe {
     fn declared_codes(&self) -> &'static [Code] {
         self.codes
     }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
     fn stage(
         &self,
         tx: &mut ContextTx<'_>,
