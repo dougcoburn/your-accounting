@@ -158,5 +158,5 @@ or rewriting kernel errors or money literals):
   This is the lint that keeps `accounting-kernel` from being clean on
   current stable.
 - `inconsistent_digit_grouping`: money literals use a dollars_cents
-  grouping (for example `10000_00`). The kernel crate itself is already
+  grouping (for example `10_000_00`). The kernel crate itself is already
   clean of this lint; recipes, the CLI, and monarch-synth are not.
