@@ -12,7 +12,7 @@ Doug pays for things on behalf of other entities and parties (Dragonfly, Acme Co
 - **One pattern for everything**: Acme Corp, Dragonfly, any party or entity.
 - The receivable balance equals Monarch's running e-* balance (named month-1 acceptance check), but every dollar is traceable to a purchase.
 - e-* tags are import hints for the Monarch adapter only.
-- Across two entities (see ADR 0004), each side holds its own claim; a partial settlement or forgiveness must be mirrored on the counterpart side through the cross-entity protocol.
+- Across two entities (see ADR 0004), each side holds its own claim; a partial settlement or forgiveness must be mirrored on the counterpart side as its own cross-entity recipe: two halves, written by the application and linked by a recipe-instance id (ADR 0004, rewritten 2026-11-26).
 
 ## Validator must reject
 Settlement above the open claim amount; forgiving an already-settled claim; settling a voided claim.
