@@ -35,11 +35,11 @@ INSERT INTO parties(id,name,label,created_at) VALUES('${P}SHP1','Example Grocer'
 INSERT INTO recipes VALUES('card_purchase','1.0.0'),('correction','1.0.0');
 INSERT INTO feeds VALUES('${P}FED1','monarch_csv','Synthetic feed');
 INSERT INTO financial_accounts(id,name,kind,currency,tracking_mode,last4,created_at) VALUES('${P}FAC1','Card','credit_card','USD','transparent','0000','$T');
-INSERT INTO ledger_accounts(id,entity_id,financial_account_id,account_type,kind,name,created_at) VALUES('${P}AC01','${P}ENT1','${P}FAC1','liability','card','Card','$T');
-INSERT INTO ledger_accounts(id,entity_id,account_type,kind,name,created_at) VALUES('${P}AX10','${P}ENT1','expense','category','Food','$T');
-INSERT INTO ledger_accounts(id,entity_id,account_type,kind,parent_id,name,created_at) VALUES('${P}AX11','${P}ENT1','expense','category','${P}AX10','Groceries','$T');
-INSERT INTO ledger_accounts(id,entity_id,account_type,kind,parent_id,name,created_at) VALUES('${P}AX12','${P}ENT1','expense','category','${P}AX10','Dining','$T');
-INSERT INTO ledger_accounts(id,entity_id,account_type,kind,name,created_at) VALUES('${P}AR01','${P}ENT1','asset','receivable','Claims receivable','$T');
+INSERT INTO ledger_accounts(id,financial_account_id,account_type,kind,name,created_at) VALUES('${P}AC01','${P}FAC1','liability','card','Card','$T');
+INSERT INTO ledger_accounts(id,account_type,kind,name,created_at) VALUES('${P}AX10','expense','category','Food','$T');
+INSERT INTO ledger_accounts(id,account_type,kind,parent_id,name,created_at) VALUES('${P}AX11','expense','category','${P}AX10','Groceries','$T');
+INSERT INTO ledger_accounts(id,account_type,kind,parent_id,name,created_at) VALUES('${P}AX12','expense','category','${P}AX10','Dining','$T');
+INSERT INTO ledger_accounts(id,account_type,kind,name,created_at) VALUES('${P}AR01','asset','receivable','Claims receivable','$T');
 INSERT INTO financial_accounts(id,name,kind,currency,tracking_mode,created_at) VALUES('${P}FAB1','Brokerage','brokerage','USD','transparent','$T');
 INSERT INTO tags(id,name) VALUES('${P}TG01','synthetic-tag');
 INSERT INTO evidence_objects(sha256,size_bytes,recorded_at) VALUES('$(printf 'b%.0s' {1..64})',10,'$T');
@@ -52,15 +52,15 @@ BEGIN;
 INSERT INTO observations(id,feed_id,external_id,financial_account_id,occurred_date,posted_date,direction,amount_minor,currency,row_hash,payload_json,commit_id,recorded_at)
   VALUES('${P}B001','${P}FED1','synthetic-1','${P}FAC1','2025-10-30','2025-11-01','outflow',4250,'USD','$(printf 'a%.0s' {1..64})','{\"synthetic\":true}','${P}C002','$T');
 INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at) VALUES('${P}EV01','${P}C002','card_purchase','1.0.0','2025-10-30','$T');
-INSERT INTO journal_postings(id,event_id,ledger_account_id,entity_id,currency,side,amount_minor,party_id) VALUES('${P}PS01','${P}EV01','${P}AX11','${P}ENT1','USD','debit',4250,'${P}SHP1');
-INSERT INTO journal_postings(id,event_id,ledger_account_id,entity_id,currency,side,amount_minor) VALUES('${P}PS02','${P}EV01','${P}AC01','${P}ENT1','USD','credit',4250);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor,party_id) VALUES('${P}PS01','${P}EV01','${P}AX11','USD','debit',4250,'${P}SHP1');
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS02','${P}EV01','${P}AC01','USD','credit',4250);
 INSERT INTO posting_observations VALUES('${P}PS02','${P}B001');
 INSERT INTO settlement_groups(id,recipe_id,recipe_version,commit_id,recorded_at) VALUES('${P}GRP1','card_purchase','1.0.0','${P}C002','$T');
 INSERT INTO settlement_group_states(id,group_id,seq,state,commit_id,recorded_at) VALUES('${P}GS11','${P}GRP1',1,'reconciled','${P}C002','$T');
 INSERT INTO settlement_postings VALUES('${P}GRP1','${P}PS02','${P}C002');
 INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at) VALUES('${P}EV0A','${P}C002','card_purchase','1.0.0','2025-10-30','$T');
-INSERT INTO journal_postings(id,event_id,ledger_account_id,entity_id,currency,side,amount_minor) VALUES('${P}PS0A','${P}EV0A','${P}AR01','${P}ENT1','USD','debit',1000);
-INSERT INTO journal_postings(id,event_id,ledger_account_id,entity_id,currency,side,amount_minor) VALUES('${P}PS0B','${P}EV0A','${P}AC01','${P}ENT1','USD','credit',1000);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS0A','${P}EV0A','${P}AR01','USD','debit',1000);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS0B','${P}EV0A','${P}AC01','USD','credit',1000);
 INSERT INTO obligations(id,party_id,direction,ledger_account_id,currency,original_minor,opened_event_id,commit_id,recorded_at) VALUES('${P}0B01','${P}SHP1','receivable','${P}AR01','USD',1000,'${P}EV0A','${P}C002','$T');
 INSERT INTO obligation_postings VALUES('${P}0B01','${P}PS0A');
 INSERT INTO commits(id,expected_revision,seq,kind,actor,recorded_at) VALUES('${P}C002',1,2,'interpret','smoke','$T');
@@ -76,18 +76,18 @@ rejects "UPDATE of a posting is rejected" "never updated" "UPDATE journal_postin
 rejects "DELETE of a posting is rejected" "never deleted" "DELETE FROM journal_postings WHERE id='${P}PS01';"
 rejects "DELETE of an observation is rejected (void instead)" "void an observation" "DELETE FROM observations WHERE id='${P}B001';"
 rejects "superseded_by without a reversal is rejected" "only superseded_by may be set" "UPDATE accounting_events SET superseded_by='${P}EV01' WHERE id='${P}EV01';"
-rejects "posting added to a sealed event is rejected" "open commit" "INSERT INTO journal_postings(id,event_id,ledger_account_id,entity_id,currency,side,amount_minor) VALUES('${P}PSX1','${P}EV01','${P}AX11','${P}ENT1','USD','debit',1);"
+rejects "posting added to a sealed event is rejected" "open commit" "INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PSX1','${P}EV01','${P}AX11','USD','debit',1);"
 
 # --- correction: reversal + replacement, superseded_by set in the same commit ---
 ok "commit 3: recategorize (reversal + replacement, flag set once, regroup)" "
 BEGIN;
 INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at,reverses_id) VALUES('${P}EV02','${P}C003','correction','1.0.0','2025-10-30','$T','${P}EV01');
-INSERT INTO journal_postings(id,event_id,ledger_account_id,entity_id,currency,side,amount_minor) VALUES('${P}PS03','${P}EV02','${P}AX11','${P}ENT1','USD','credit',4250);
-INSERT INTO journal_postings(id,event_id,ledger_account_id,entity_id,currency,side,amount_minor) VALUES('${P}PS04','${P}EV02','${P}AC01','${P}ENT1','USD','debit',4250);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS03','${P}EV02','${P}AX11','USD','credit',4250);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS04','${P}EV02','${P}AC01','USD','debit',4250);
 UPDATE accounting_events SET superseded_by='${P}EV02' WHERE id='${P}EV01';
 INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at) VALUES('${P}EV03','${P}C003','card_purchase','1.0.0','2025-10-30','$T');
-INSERT INTO journal_postings(id,event_id,ledger_account_id,entity_id,currency,side,amount_minor) VALUES('${P}PS05','${P}EV03','${P}AX12','${P}ENT1','USD','debit',4250);
-INSERT INTO journal_postings(id,event_id,ledger_account_id,entity_id,currency,side,amount_minor) VALUES('${P}PS06','${P}EV03','${P}AC01','${P}ENT1','USD','credit',4250);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS05','${P}EV03','${P}AX12','USD','debit',4250);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS06','${P}EV03','${P}AC01','USD','credit',4250);
 INSERT INTO posting_observations VALUES('${P}PS06','${P}B001');
 INSERT INTO settlement_group_states(id,group_id,seq,state,commit_id,recorded_at) VALUES('${P}GS12','${P}GRP1',2,'dissolved','${P}C003','$T');
 INSERT INTO settlement_groups(id,recipe_id,recipe_version,commit_id,recorded_at) VALUES('${P}GRP2','card_purchase','1.0.0','${P}C003','$T');
@@ -102,8 +102,8 @@ rejects "superseded_by cannot be set after the reversal's commit sealed" "only s
 rejects "a reversal must flag its target in the same commit" "must be flagged superseded_by" "
 BEGIN;
 INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at,reverses_id) VALUES('${P}EV04','${P}C004','correction','1.0.0','2025-10-30','$T','${P}EV03');
-INSERT INTO journal_postings(id,event_id,ledger_account_id,entity_id,currency,side,amount_minor) VALUES('${P}PS07','${P}EV04','${P}AX12','${P}ENT1','USD','credit',4250);
-INSERT INTO journal_postings(id,event_id,ledger_account_id,entity_id,currency,side,amount_minor) VALUES('${P}PS08','${P}EV04','${P}AC01','${P}ENT1','USD','debit',4250);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS07','${P}EV04','${P}AX12','USD','credit',4250);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS08','${P}EV04','${P}AC01','USD','debit',4250);
 INSERT INTO commits(id,expected_revision,seq,kind,actor,recorded_at) VALUES('${P}C004',3,4,'correct','smoke','$T');
 COMMIT;"
 rejects "a reversal of a reversal is rejected (AT-033 reverses the replacement)" "a reversal targets a current non-reversal event" "
@@ -119,11 +119,18 @@ COMMIT;"
 rejects "INV-001 unbalanced event is rejected and nothing persists (AT-013)" "INV-001" "
 BEGIN;
 INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at) VALUES('${P}EV06','${P}C004','card_purchase','1.0.0','2025-10-31','$T');
-INSERT INTO journal_postings(id,event_id,ledger_account_id,entity_id,currency,side,amount_minor) VALUES('${P}PS09','${P}EV06','${P}AX11','${P}ENT1','USD','debit',1000);
-INSERT INTO journal_postings(id,event_id,ledger_account_id,entity_id,currency,side,amount_minor) VALUES('${P}PS10','${P}EV06','${P}AC01','${P}ENT1','USD','credit',999);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS09','${P}EV06','${P}AX11','USD','debit',1000);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS10','${P}EV06','${P}AC01','USD','credit',999);
 INSERT INTO commits(id,expected_revision,seq,kind,actor,recorded_at) VALUES('${P}C004',3,4,'interpret','smoke','$T');
 COMMIT;"
 equals "no partial state after the rejected commit" "0" "SELECT count(*) FROM accounting_events WHERE id='${P}EV06';"
+rejects "INV-001 balances per currency: USD debit vs EUR credit is rejected" "INV-001: event does not balance per currency" "
+BEGIN;
+INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at) VALUES('${P}EV0C','${P}C004','card_purchase','1.0.0','2025-10-31','$T');
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS1C','${P}EV0C','${P}AX11','USD','debit',1000);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS1D','${P}EV0C','${P}AX12','EUR','credit',1000);
+INSERT INTO commits(id,expected_revision,seq,kind,actor,recorded_at) VALUES('${P}C004',3,4,'interpret','smoke','$T');
+COMMIT;"
 rejects "a transaction that never writes its commits row fails at COMMIT" "FOREIGN KEY constraint failed" "
 BEGIN;
 INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at) VALUES('${P}EV07','${P}C009','card_purchase','1.0.0','2025-10-31','$T');
@@ -133,13 +140,13 @@ rejects "seq must equal expected_revision + 1" "CHECK constraint failed: seq = e
 rejects "INV-003 posting to a non-leaf category is rejected" "leaf category" "
 BEGIN;
 INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at) VALUES('${P}EV08','${P}C004','card_purchase','1.0.0','2025-10-31','$T');
-INSERT INTO journal_postings(id,event_id,ledger_account_id,entity_id,currency,side,amount_minor) VALUES('${P}PS11','${P}EV08','${P}AX10','${P}ENT1','USD','debit',500);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS11','${P}EV08','${P}AX10','USD','debit',500);
 COMMIT;"
 rejects "INV-006 a draft group cannot hold postings" "INV-006" "
 BEGIN;
 INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at) VALUES('${P}EV09','${P}C004','card_purchase','1.0.0','2025-10-31','$T');
-INSERT INTO journal_postings(id,event_id,ledger_account_id,entity_id,currency,side,amount_minor) VALUES('${P}PS12','${P}EV09','${P}AX11','${P}ENT1','USD','debit',500);
-INSERT INTO journal_postings(id,event_id,ledger_account_id,entity_id,currency,side,amount_minor) VALUES('${P}PS13','${P}EV09','${P}AC01','${P}ENT1','USD','credit',500);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS12','${P}EV09','${P}AX11','USD','debit',500);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS13','${P}EV09','${P}AC01','USD','credit',500);
 INSERT INTO settlement_groups(id,recipe_id,recipe_version,commit_id,recorded_at) VALUES('${P}GRP3','card_purchase','1.0.0','${P}C004','$T');
 INSERT INTO settlement_group_states(id,group_id,seq,state,commit_id,recorded_at) VALUES('${P}GS31','${P}GRP3',1,'draft','${P}C004','$T');
 INSERT INTO settlement_postings VALUES('${P}GRP3','${P}PS13','${P}C004');
@@ -152,10 +159,12 @@ INSERT INTO settlement_postings VALUES('${P}GRP4','${P}PS06','${P}C004');
 COMMIT;"
 rejects "ADR 0004 a second entity row is rejected" "UNIQUE constraint failed: entity.singleton" "INSERT INTO entity(id,party_id,name,created_at) VALUES('${P}ENT2','${P}PTY2','Other','$T');"
 rejects "ADR 0003 entities have no visibility column" "no such column: visibility" "SELECT visibility FROM entity;"
+rejects "ADR 0004 amendment: postings carry no row-level entity_id" "no such column: entity_id" "SELECT entity_id FROM journal_postings;"
+rejects "ADR 0008 amendment: ledger accounts carry no row-level entity_id" "no such column: entity_id" "SELECT entity_id FROM ledger_accounts;"
 rejects "money is integer minor units (STRICT rejects a float)" "cannot store REAL value in INTEGER column" "
 BEGIN;
 INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at) VALUES('${P}EV10','${P}C004','card_purchase','1.0.0','2025-10-31','$T');
-INSERT INTO journal_postings(id,event_id,ledger_account_id,entity_id,currency,side,amount_minor) VALUES('${P}PS14','${P}EV10','${P}AX11','${P}ENT1','USD','debit',12.5);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS14','${P}EV10','${P}AX11','USD','debit',12.5);
 COMMIT;"
 rejects "ids must be ULIDs" "CHECK constraint failed" "INSERT INTO parties(id,name,created_at) VALUES('je_1','Bad id','$T');"
 rejects "observation natural key is unique (feed + external id)" "UNIQUE constraint failed: observations.feed_id, observations.external_id" "
@@ -175,10 +184,10 @@ INSERT INTO valuation_snapshots(id,financial_account_id,as_of,value_minor,curren
 COMMIT;"
 rejects "INV-008/AT-030 a reconciled group with a clearing residual is rejected" "nonzero clearing residual" "
 BEGIN;
-INSERT INTO ledger_accounts(id,entity_id,account_type,kind,name,created_at) VALUES('${P}AC02','${P}ENT1','asset','clearing','Clearing','$T');
+INSERT INTO ledger_accounts(id,account_type,kind,name,created_at) VALUES('${P}AC02','asset','clearing','Clearing','$T');
 INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at) VALUES('${P}EV11','${P}C004','card_purchase','1.0.0','2025-10-31','$T');
-INSERT INTO journal_postings(id,event_id,ledger_account_id,entity_id,currency,side,amount_minor) VALUES('${P}PS15','${P}EV11','${P}AC02','${P}ENT1','USD','debit',1000);
-INSERT INTO journal_postings(id,event_id,ledger_account_id,entity_id,currency,side,amount_minor) VALUES('${P}PS16','${P}EV11','${P}AC01','${P}ENT1','USD','credit',1000);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS15','${P}EV11','${P}AC02','USD','debit',1000);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS16','${P}EV11','${P}AC01','USD','credit',1000);
 INSERT INTO settlement_groups(id,recipe_id,recipe_version,commit_id,recorded_at) VALUES('${P}GRP5','card_purchase','1.0.0','${P}C004','$T');
 INSERT INTO settlement_group_states(id,group_id,seq,state,commit_id,recorded_at) VALUES('${P}GS51','${P}GRP5',1,'reconciled','${P}C004','$T');
 INSERT INTO settlement_postings VALUES('${P}GRP5','${P}PS15','${P}C004');
@@ -208,8 +217,8 @@ COMMIT;"
 rejects "dissolving with a reversal but no repost of the observed leg is rejected" "must be reposted in the same commit" "
 BEGIN IMMEDIATE;
 INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at,reverses_id) VALUES('${P}EV12','${P}C005','correction','1.0.0','2025-10-30','$T','${P}EV03');
-INSERT INTO journal_postings(id,event_id,ledger_account_id,entity_id,currency,side,amount_minor) VALUES('${P}PS17','${P}EV12','${P}AX12','${P}ENT1','USD','credit',4250);
-INSERT INTO journal_postings(id,event_id,ledger_account_id,entity_id,currency,side,amount_minor) VALUES('${P}PS18','${P}EV12','${P}AC01','${P}ENT1','USD','debit',4250);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS17','${P}EV12','${P}AX12','USD','credit',4250);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS18','${P}EV12','${P}AC01','USD','debit',4250);
 UPDATE accounting_events SET superseded_by='${P}EV12' WHERE id='${P}EV03';
 INSERT INTO settlement_group_states(id,group_id,seq,state,commit_id,recorded_at) VALUES('${P}GS22','${P}GRP2',2,'dissolved','${P}C005','$T');
 INSERT INTO commits(id,expected_revision,seq,kind,actor,recorded_at) VALUES('${P}C005',4,5,'correct','smoke','$T');
@@ -238,17 +247,16 @@ sealed settlement_group_states "INSERT INTO settlement_group_states(id,group_id,
 sealed settlement_postings "INSERT INTO settlement_postings VALUES('${P}GRP2','${P}PS05','$S');"
 sealed obligations "INSERT INTO obligations(id,party_id,direction,ledger_account_id,currency,original_minor,opened_event_id,commit_id,recorded_at) VALUES('${P}0B09','${P}SHP1','receivable','${P}AR01','USD',100,'${P}EV0A','$S','$T');"
 sealed obligation_settlements "INSERT INTO obligation_settlements(id,obligation_id,event_id,kind,amount_minor,commit_id,recorded_at) VALUES('${P}0S01','${P}0B01','${P}EV0A','payment',100,'$S','$T');"
-sealed cross_entity_outbox "INSERT INTO cross_entity_outbox(id,recipe_instance_id,idempotency_key,counterpart_party_id,action,amount_minor,currency,event_id,commit_id,recorded_at) VALUES('${P}0X01','${P}R101','k1','${P}SHP1','leg',100,'USD','${P}EV01','$S','$T');"
-sealed cross_entity_inbox "INSERT INTO cross_entity_inbox(idempotency_key,recipe_instance_id,source_party_id,action,amount_minor,currency,event_id,commit_id,recorded_at) VALUES('k2','${P}R102','${P}SHP1','leg',100,'USD','${P}EV01','$S','$T');"
 sealed statements "INSERT INTO statements(id,financial_account_id,period_start,period_end,commit_id,recorded_at) VALUES('${P}ST01','${P}FAC1','2025-10-01','2025-10-31','$S','$T');"
 sealed balance_assertions "INSERT INTO balance_assertions(id,financial_account_id,cutoff,balance_minor,currency,source,commit_id,recorded_at) VALUES('${P}BA01','${P}FAC1','2025-10-31',4250,'USD','manual','$S','$T');"
 sealed valuation_snapshots "INSERT INTO valuation_snapshots(id,financial_account_id,as_of,value_minor,currency,source,commit_id,recorded_at) VALUES('${P}VS09','${P}FAB1','2025-10-31',100,'USD','manual','$S','$T');"
-sealed journal_postings "INSERT INTO journal_postings(id,event_id,ledger_account_id,entity_id,currency,side,amount_minor) VALUES('${P}PS99','${P}EV01','${P}AX11','${P}ENT1','USD','debit',1);"
+sealed journal_postings "INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS99','${P}EV01','${P}AX11','USD','debit',1);"
 sealed posting_tags "INSERT INTO posting_tags VALUES('${P}PS01','${P}TG01');"
 sealed posting_observations "INSERT INTO posting_observations VALUES('${P}PS02','${P}B001');"
 sealed refund_links "INSERT INTO refund_links(id,refund_posting_id,purchase_posting_id,amount_minor) VALUES('${P}R701','${P}PS03','${P}PS01',100);"
 sealed obligation_postings "INSERT INTO obligation_postings VALUES('${P}0B01','${P}PS01');"
 sealed settlement_draft_participants "INSERT INTO settlement_draft_participants(id,group_state_id,role,expected_json) VALUES('${P}DP01','${P}GS11','expected','{}');"
+sealed kernel_state "INSERT INTO kernel_state(id,state_key,active,code,commit_id,recorded_at) VALUES('${P}FRZ9','freeze',1,'UnsealedRows','$S','$T');"
 equals "all 23 commit-scoped tables are covered by doctor_unsealed_rows" "23|23" "SELECT count(*), sum(instr((SELECT sql FROM sqlite_master WHERE name='doctor_unsealed_rows'), char(39)||t||char(39)) > 0) FROM (SELECT DISTINCT tbl_name AS t FROM sqlite_master WHERE type='trigger' AND name GLOB '*_open_commit');"
 
 # --- read models ----------------------------------------------------------------
@@ -266,6 +274,112 @@ equals "trial balance closes per currency (AT-034)" "0" "SELECT sum(net_debit_mi
 equals "doctor views are clean" "0|0|0|0" "SELECT (SELECT count(*) FROM doctor_unbalanced_events),(SELECT count(*) FROM doctor_superseded_drift),(SELECT count(*) FROM doctor_observation_double_consumed),(SELECT count(*) FROM doctor_unsealed_rows);"
 equals "integrity and foreign keys clean" "ok" "PRAGMA integrity_check; PRAGMA foreign_key_check;"
 
+# --- U17: kernel_state freeze row, commits.kind includes freeze -----------------
+ok "U17 freeze commit seals a kernel_state row" "
+BEGIN;
+INSERT INTO kernel_state(id,state_key,active,code,commit_id,recorded_at) VALUES('${P}FRZ1','freeze',1,'UnsealedRows','${P}CFR1','$T');
+INSERT INTO commits(id,expected_revision,seq,kind,actor,recorded_at) VALUES('${P}CFR1',(SELECT coalesce(max(seq),0) FROM commits),(SELECT coalesce(max(seq),0) FROM commits)+1,'freeze','smoke','$T');
+COMMIT;"
+rejects "U17 kernel_state is append-only" "never updated" "UPDATE kernel_state SET active=0 WHERE id='${P}FRZ1';"
+rejects "U17 kernel_state is never deleted" "never deleted" "DELETE FROM kernel_state WHERE id='${P}FRZ1';"
+ok "U17 clear appends active=0 and leaves the prior row" "
+BEGIN;
+INSERT INTO kernel_state(id,state_key,active,code,commit_id,recorded_at) VALUES('${P}FRZ2','freeze',0,'UnsealedRows','${P}CFR2','$T');
+INSERT INTO commits(id,expected_revision,seq,kind,actor,recorded_at) VALUES('${P}CFR2',(SELECT coalesce(max(seq),0) FROM commits),(SELECT coalesce(max(seq),0) FROM commits)+1,'freeze','smoke','$T');
+COMMIT;"
+equals "U17 latest freeze row is the clear" "0" "SELECT k.active FROM kernel_state k JOIN commits c ON c.id = k.commit_id WHERE k.state_key='freeze' ORDER BY c.seq DESC LIMIT 1;"
+equals "U17 clear does not update the prior freeze row" "1" "SELECT active FROM kernel_state WHERE id='${P}FRZ1';"
+
+
+# --- ADR 0004 rewrite: recipe halves (no outbox/inbox). Household half of a
+# synthetic \$1,200.00 payment for Dragonfly (counterpart entity ${P}ENTD).
+R=$(sqlite3 "$DB" "SELECT max(seq) FROM commits"); N=$((R+1))
+rejects "ADR 0004 outbox and inbox tables are gone" "no such table: cross_entity_outbox" "SELECT 1 FROM cross_entity_outbox;"
+ok "ADR 0004 a recipe half commits with its recipe fields and one expectation" "
+BEGIN IMMEDIATE;
+INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at,recipe_instance_id,counterpart_entity_id) VALUES('${P}EV20','${P}CR01','card_purchase','1.0.0','2026-01-01','$T','${P}RR01','${P}ENTD');
+INSERT INTO event_counterpart_expectations(event_id,currency,expected_amount_minor) VALUES('${P}EV20','USD',120000);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS20','${P}EV20','${P}AR01','USD','debit',120000);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS21','${P}EV20','${P}AC01','USD','credit',120000);
+INSERT INTO commits(id,expected_revision,seq,kind,actor,recorded_at) VALUES('${P}CR01',$R,$N,'cross_entity','smoke','$T');
+COMMIT;"
+R=$N; N=$((R+1))
+rejects "ADR 0004 a second current half with the same recipe_instance_id is rejected" "UNIQUE constraint failed: accounting_events.recipe_instance_id" "
+BEGIN IMMEDIATE;
+INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at,recipe_instance_id,counterpart_entity_id) VALUES('${P}EV21','${P}CR02','card_purchase','1.0.0','2026-01-01','$T','${P}RR01','${P}ENTD');
+COMMIT;"
+rejects "ADR 0004 recipe fields are all-or-none" "CHECK constraint failed" "
+BEGIN IMMEDIATE;
+INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at,recipe_instance_id) VALUES('${P}EV21','${P}CR02','card_purchase','1.0.0','2026-01-01','$T','${P}RR02');
+COMMIT;"
+rejects "ADR 0004 counterpart_entity_id cannot be this database's entity" "counterpart_entity_id must be another entity" "
+BEGIN IMMEDIATE;
+INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at,recipe_instance_id,counterpart_entity_id) VALUES('${P}EV21','${P}CR02','card_purchase','1.0.0','2026-01-01','$T','${P}RR02','${P}ENT1');
+COMMIT;"
+rejects "ADR 0004 a reversal carries no recipe fields" "CHECK constraint failed" "
+BEGIN IMMEDIATE;
+INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at,reverses_id,recipe_instance_id,counterpart_entity_id) VALUES('${P}EV22','${P}CR02','correction','1.0.0','2026-01-01','$T','${P}EV20','${P}RR01','${P}ENTD');
+COMMIT;"
+ok "ADR 0004 correcting a half: reversal without recipe fields, replacement keeps recipe_instance_id" "
+BEGIN IMMEDIATE;
+INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at,reverses_id) VALUES('${P}EV22','${P}CR02','correction','1.0.0','2026-01-01','$T','${P}EV20');
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS22','${P}EV22','${P}AR01','USD','credit',120000);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS23','${P}EV22','${P}AC01','USD','debit',120000);
+UPDATE accounting_events SET superseded_by='${P}EV22' WHERE id='${P}EV20';
+INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at,recipe_instance_id,counterpart_entity_id) VALUES('${P}EV23','${P}CR02','card_purchase','1.0.0','2026-01-01','$T','${P}RR01','${P}ENTD');
+INSERT INTO event_counterpart_expectations(event_id,currency,expected_amount_minor) VALUES('${P}EV23','USD',110000);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS24','${P}EV23','${P}AR01','USD','debit',110000);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS25','${P}EV23','${P}AC01','USD','credit',110000);
+INSERT INTO commits(id,expected_revision,seq,kind,actor,reason,recorded_at) VALUES('${P}CR02',$R,$N,'correct','smoke','amount fix','$T');
+COMMIT;"
+equals "ADR 0004 exactly one current half per recipe instance after the correction" "${P}EV23" "SELECT id FROM accounting_events WHERE recipe_instance_id='${P}RR01' AND superseded_by IS NULL;"
+R=$N; N=$((R+1))
+rejects "ADR 0004 a reversal carries no counterpart expectations" "belong to a recipe half" "
+BEGIN IMMEDIATE;
+INSERT INTO event_counterpart_expectations(event_id,currency,expected_amount_minor) VALUES('${P}EV22','USD',120000);
+COMMIT;"
+rejects "ADR 0004 expectations are commit-scoped through their event (sealed)" "commit already sealed" "INSERT INTO event_counterpart_expectations(event_id,currency,expected_amount_minor) VALUES('${P}EV23','EUR',1);"
+rejects "ADR 0004 a recipe half with no expectation is rejected at the seal" "needs at least one counterpart expectation" "
+BEGIN IMMEDIATE;
+INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at,recipe_instance_id,counterpart_entity_id) VALUES('${P}EV24','${P}CR03','card_purchase','1.0.0','2026-01-02','$T','${P}RR03','${P}ENTD');
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS26','${P}EV24','${P}AR01','USD','debit',500);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS27','${P}EV24','${P}AC01','USD','credit',500);
+INSERT INTO commits(id,expected_revision,seq,kind,actor,recorded_at) VALUES('${P}CR03',$R,$N,'cross_entity','smoke','$T');
+COMMIT;"
+ok "ADR 0004 one half may expect two currencies (USD and EUR, balanced per currency)" "
+BEGIN IMMEDIATE;
+INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at,recipe_instance_id,counterpart_entity_id) VALUES('${P}EV25','${P}CR03','card_purchase','1.0.0','2026-01-02','$T','${P}RR04','${P}ENTD');
+INSERT INTO event_counterpart_expectations(event_id,currency,expected_amount_minor) VALUES('${P}EV25','USD',50000);
+INSERT INTO event_counterpart_expectations(event_id,currency,expected_amount_minor) VALUES('${P}EV25','EUR',30000);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS28','${P}EV25','${P}AR01','USD','debit',50000);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS29','${P}EV25','${P}AC01','USD','credit',50000);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS2A','${P}EV25','${P}AR01','EUR','debit',30000);
+INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS2B','${P}EV25','${P}AX12','EUR','credit',30000);
+INSERT INTO commits(id,expected_revision,seq,kind,actor,recorded_at) VALUES('${P}CR03',$R,$N,'cross_entity','smoke','$T');
+COMMIT;"
+equals "ADR 0004 the two-currency half stored one expectation per currency" "EUR|30000
+USD|50000" "SELECT currency, expected_amount_minor FROM event_counterpart_expectations WHERE event_id='${P}EV25' ORDER BY currency;"
+R=$N; N=$((R+1))
+rejects "ADR 0004 a duplicate currency on one half is rejected" "UNIQUE constraint failed: event_counterpart_expectations.event_id, event_counterpart_expectations.currency" "
+BEGIN IMMEDIATE;
+INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at,recipe_instance_id,counterpart_entity_id) VALUES('${P}EV26','${P}CR04','card_purchase','1.0.0','2026-01-02','$T','${P}RR05','${P}ENTD');
+INSERT INTO event_counterpart_expectations(event_id,currency,expected_amount_minor) VALUES('${P}EV26','USD',100);
+INSERT INTO event_counterpart_expectations(event_id,currency,expected_amount_minor) VALUES('${P}EV26','USD',200);
+COMMIT;"
+rejects "ADR 0004 a zero expected amount is rejected" "CHECK constraint failed" "
+BEGIN IMMEDIATE;
+INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at,recipe_instance_id,counterpart_entity_id) VALUES('${P}EV26','${P}CR04','card_purchase','1.0.0','2026-01-02','$T','${P}RR05','${P}ENTD');
+INSERT INTO event_counterpart_expectations(event_id,currency,expected_amount_minor) VALUES('${P}EV26','USD',0);
+COMMIT;"
+rejects "ADR 0004 a negative expected amount is rejected" "CHECK constraint failed" "
+BEGIN IMMEDIATE;
+INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_date,recorded_at,recipe_instance_id,counterpart_entity_id) VALUES('${P}EV26','${P}CR04','card_purchase','1.0.0','2026-01-02','$T','${P}RR05','${P}ENTD');
+INSERT INTO event_counterpart_expectations(event_id,currency,expected_amount_minor) VALUES('${P}EV26','USD',-5);
+COMMIT;"
+rejects "ADR 0004 expectations on a plain event are rejected" "belong to a recipe half" "
+BEGIN IMMEDIATE;
+INSERT INTO event_counterpart_expectations(event_id,currency,expected_amount_minor) VALUES('${P}EV0A','USD',100);
+COMMIT;"
 
 # --- PR 19 fix 1: a connection with foreign_keys OFF can leave an unsealed row; doctor finds it
 if sqlite3 -bail "$DB" "PRAGMA foreign_keys=OFF;" "INSERT INTO user_grants(id,user_id,role,commit_id,recorded_at) VALUES('${P}6G0F','${P}H0MF','viewer','${P}CZZZ','$T');" 2>&1; then

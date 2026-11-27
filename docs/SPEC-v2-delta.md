@@ -24,7 +24,7 @@ This file lists what v2 changes in the v0.2 spec and why. Where this delta and `
 | Settlement | Mutable `state`/`revision` | Append-only **`settlement_group_states`**, with draft participants and no postings in drafts. `settlement_postings.posting_id` is UNIQUE | ADR 0006, INV-006, INV-008 |
 | Voids | Not modelled | An **`observation_voids` tombstone**. The same commit must reverse every current event that interprets the observation | ADR 0002 |
 | Claims | `obligations` and `obligation_settlements` | The same, plus `obligation_postings`, which links a claim to its purchase postings. A settlement cap trigger is added | ADR 0001 |
-| Cross-entity | One entry spanning entities | **`cross_entity_outbox`** in the first leg's commit and an idempotent **`cross_entity_inbox`** on the counterpart | ADR 0004 |
+| Cross-entity | One entry spanning entities | **Two halves**, one event per entity database, written by the application and linked by `accounting_events.recipe_instance_id` with `counterpart_entity_id`, and per-currency expected counterpart amounts in `event_counterpart_expectations`. An identical retry is a no-op. An application recipe check reads both databases. No cross-database message tables | ADR 0004 (rewritten 2026-11-26) |
 | Evidence | Shared store with a mutable `status` | Evidence is **per entity database**. Deleting it writes an `evidence_deletions` tombstone, and status is derived | ADR 0004, INV-020 |
 | Valuation | Not modelled | **`valuation_snapshots`** live outside the journal, on non-cash asset accounts only | ADR 0005 |
 | Audit | `audit_operations` and `audit_changes` (before/after JSON) | **Removed.** The append-only log is the audit: commits record actor and reason, and events record lineage | ADR 0002 |
@@ -33,7 +33,7 @@ This file lists what v2 changes in the v0.2 spec and why. Where this delta and `
 ## 2. Changes by SPEC section
 
 ### §1 Architecture and authority
-- "SQLite is the sole authoritative store" still holds, but as **one SQLite database per entity** (ADR 0004). A cross-entity recipe writes one commit per database and pairs them through the outbox. `doctor` checks the pairing.
+- "SQLite is the sole authoritative store" still holds, but as **one SQLite database per entity** (ADR 0004). A cross-entity recipe writes one commit per database, and the application writes both. The halves share a `recipe_instance_id`. There is no cross-database atomicity: the application's recipe check, which reads both databases through the per-user registry, detects a missing half, a duplicate, or a mismatched amount. The per-database `doctor` stays single-database and read-only.
 - The evidence store is **per entity database**, not shared (ADR 0004).
 - "Schema migrations … tested against prior-version fixtures": v2 is **migration 1**. No v0.2 database exists, so there is no data migration. The "upgraded database" runs in §12 start at v2.
 
@@ -50,6 +50,7 @@ This file lists what v2 changes in the v0.2 spec and why. Where this delta and `
 
 ### §2.3 Currency and amounts
 - Resolved: money is a **signed integer in minor units plus a currency code**. Magnitudes (postings, observations, settlements) are positive with an explicit side or direction. Only `balance_minor` and `value_minor` columns carry a sign.
+- **Proposed, post-month-1 (ADR 0009, Doug 2026-11-26):** logical categories stay currency-independent, but every posting ledger account has one currency and is unique per (logical category, currency), for example Dining (USD) and Dining (EUR). Every posting matches its ledger account's currency. The one exception is a single multi-currency FX Clearing account per entity. No report adds a category across currencies: reports are per currency. This rewords SPEC §2.3 "categories (income/expense ledger accounts) are independent of currency" to "categories are logical and currency-independent; ledger accounts are (category, currency)". The schema change is listed in section 6 of this delta and is not in `docs/schema-v2.sql` yet.
 
 ### §2.5 Evidence, observations, movements
 - `CanonicalTransaction`, `AccountMovement` and `movement_observations` are removed. An observation is explained by the posting on its own financial account's ledger account, through `posting_observations`. That posting must match the observation's account, amount and currency, with inflow as debit and outflow as credit (INV-007, trigger).
@@ -72,7 +73,7 @@ This file lists what v2 changes in the v0.2 spec and why. Where this delta and `
 > The **occurred date** (the transaction or purchase date) is an event's `effective_date`, and it alone assigns the event to a period. That includes statement reconciliation. Feed rows also keep the **posted date** when the feed has one. It is used only to explain the gap to a statement: the occurred-date balance at the cutoff, minus items that occurred on or before the cutoff but posted after it, plus items that posted on or before the cutoff but occurred after it, must equal the statement's ending balance. Corrections and reversals keep the effective date of the event they correct (ADR 0002). The v0.2 `effective_date_override` is removed. (Decision 2026-11-22, MAP "Statement cutoff".)
 
 ### §4 Invariants
-- **INV-001** now applies per event and per (entity, currency) within `journal_postings` alone (ADR 0008). Because each database holds one entity, the entity partition is always that entity. `entity_id` stays on postings for explicitness and for `doctor`.
+- **INV-001** now applies per event and per currency within `journal_postings` alone (ADR 0008 and its 2026-11-26 amendment). Each database holds one entity, so there is no entity partition: postings and ledger accounts carry no `entity_id` (ADR 0004 amendment 2026-11-26). The singleton `entity` row is the database's identity.
 - **INV-012 and INV-013**: "atomically replacing current state" becomes "atomically appending reversals and replacements" (ADR 0002).
 - **New, from the ADR 0002 amendment:** `superseded_by` is NULL or the id of the single event whose `reverses_id` points at this event. It is set in that reversal's commit and never changed. A reversal targets a current, non-reversal event, cancels it account by account, and keeps its effective date.
 - **New, from the ADR 0002 void rule:** a void commit reverses every current event that interprets the voided observation.
@@ -94,10 +95,12 @@ This file lists what v2 changes in the v0.2 spec and why. Where this delta and `
 
 Removed: `entities.visibility`, `parties.opaque_entity_id`, `account_owner_valid`, `canonical_transactions`, `account_movements`, `movement_observations`, `event_transactions`, `scenarios` (renamed `recipes`), `transaction_tags`, `audit_operations`, `audit_changes`, `reporting_groups`, `reporting_group_members`, and the `mcp_*` tables. Also every mutable `state`/`revision`/`status` column.
 
-Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`, `import_runs`, `observation_voids`, `posting_observations`, `settlement_group_states`, `settlement_draft_participants`, `obligation_postings`, `cross_entity_outbox`, `cross_entity_inbox`, `evidence_deletions`, `valuation_snapshots` and `reference_renames`.
+Dropped by the ADR 0004 rewrite (2026-11-26): the two cross-entity message tables that earlier drafts of v2 added. `accounting_events` gains `counterpart_entity_id` beside the existing `recipe_instance_id`. The new `event_counterpart_expectations` holds one expected amount per currency for each recipe half.
+
+Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`, `import_runs`, `observation_voids`, `posting_observations`, `settlement_group_states`, `settlement_draft_participants`, `obligation_postings`, `event_counterpart_expectations`, `evidence_deletions`, `valuation_snapshots` and `reference_renames`.
 
 ### §11 Acceptance tests affected
-- **AT-001, AT-016:** two databases, with the legs paired by the outbox and inbox. "Business owes Household" is a payable to a party in one database and a receivable in the other.
+- **AT-001, AT-016:** two databases, with the halves paired by `recipe_instance_id` and checked by the application's recipe check (ADR 0004). "Business owes Household" is a payable to a party in one database and a receivable in the other.
 - **AT-004, AT-020:** remain draft groups. No clearing posting is ever committed. **AT-019** has to be adapted: the HSA expected slot becomes its own draft group (plan U28).
 - **AT-005:** "opaque entity" becomes a party.
 - **AT-009, AT-010, AT-014, AT-024:** use occurred-date windows (plan U32).
@@ -105,6 +108,7 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
 - **AT-022, AT-023, AT-033:** use reversal plus replacement. The smoke check covers one reversal and a recategorization.
 - **AT-032:** covered by `commits.seq`.
 - **AT-027, AT-028:** MCP is deferred past month 1.
+- **AT-029 (FX transfer):** post-month-1. One event with bank legs in each currency and FX Clearing rows in the ADR 0009 shape. "Rate evidence" is the derived rate (credit total / debit total of the FX Clearing rows, 7 decimals half-even, never stored) plus the application's rate plausibility check (section 6 of this delta).
 
 ### §12 Definition of done
 "Empty and upgraded database" means the upgraded runs start from a v2 database (migration 1).
@@ -112,6 +116,7 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
 ### §13 Open decisions
 - **Resolved:** 1 (integer minor units), 3 (occurred date, with in-flight explanation), 8 (settlement exclusivity with no participation limits in month 1, ADR 0006), 9 (ADR 0002 closed-month invariant).
 - **Still open:** 2, 6, 7, 10, 11, 12.
+- **Decided for post-month-1 (ADR 0009):** 2 (FX journal model: single-currency ledger accounts plus one FX Clearing account per entity), and the native-currency part of 6 (isolated per-currency month-end reports, even within one entity; no single reporting currency, no revaluation). Retained-earnings presentation per currency stays open under 6. FX across recipe halves: the converting side exchanges inside its own half (ADR 0009 decision 13).
 
 ### §14 Architectural decisions
 - SPEC **ADR-003** (transparent and opaque entities) is superseded by docs/adr 0003 and 0004.
@@ -123,34 +128,38 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
 **Write protocol (PR 19 fix 2).** `begin_transaction(expected_revision)` takes `expected_revision` from the **caller**. That is the revision the user or the planning step saw. The kernel MUST NOT recompute it inside the transaction.
 1. Run `BEGIN IMMEDIATE`, which takes the write lock before any read.
 2. Read `current = coalesce(max(commits.seq), 0)`. If `current != expected_revision`, fail with the AT-032 conflict and write nothing. The `commits_seal` trigger makes the same check against `commits.expected_revision` as a storage backstop. It can only catch a stale write if the kernel stores the caller's value there unchanged.
-3. Insert every row of the commit. Each row carries `commit_id`, and events carry the commit's `recorded_at`. To correct an event, insert the reversal, then run `UPDATE accounting_events SET superseded_by = <reversal id> WHERE id = <target>`. That is the only UPDATE the schema accepts.
+3. Insert every row of the commit. Each row carries `commit_id`, and events carry the commit's `recorded_at`. To correct an event, insert the reversal, then supersede the original (`UPDATE accounting_events SET superseded_by = <reversal id> WHERE id = <target>`), then insert the replacement, all in the same commit. That UPDATE is the only one the schema accepts. The order matters: a replacement that keeps a `recipe_instance_id` can be inserted only after the original is superseded (partial UNIQUE index).
 4. Insert the `commits` row **last**, with `expected_revision` set to the caller's value and `seq = expected_revision + 1` (a CHECK enforces this). The `commits_seal` trigger aborts the commit on any of these:
    - a stale revision (AT-032)
    - a recorded_at that differs from the commit's
    - an event with fewer than 2 postings (INV-002)
-   - an imbalance per event, entity and currency (INV-001)
+   - an imbalance per event and currency (INV-001)
    - a reversal that doesn't exactly cancel and flag its target (ADR 0002 amendment)
    - postings in a draft (INV-006)
    - a reconciled group with no postings, or a nonzero clearing residual (INV-008, INV-017, AT-030)
    - a void whose linked events are not reversed (ADR 0002)
    - a dissolved reconciled group whose legs are not all reversed, or whose observed legs are not reposted (§5 Q3)
 5. `COMMIT`. If the commits row was never written, the deferred foreign keys fail at COMMIT and nothing persists.
-6. Once sealed, a commit accepts no new rows. Open-commit triggers on all 23 commit-scoped tables enforce this, and the smoke script tries each table.
+6. Once sealed, a commit accepts no new rows. Open-commit triggers on all 23 commit-scoped tables enforce this (23 in PR 19; U17 adds `kernel_state`; the ADR 0004 rewrite drops the two cross-entity message tables and adds `event_counterpart_expectations`), and the smoke script tries each table.
 
 **doctor rules (U21; all must be clean, exit nonzero otherwise):**
 - `PRAGMA integrity_check` returns `ok`.
 - `PRAGMA foreign_key_check` returns no rows. This is a doctor rule, not just a smoke check.
 - `doctor_unsealed_rows` returns no rows. It lists rows in commit-scoped tables, and rows hanging off them, whose commit has no `commits` row.
 - `doctor_unbalanced_events`, `doctor_superseded_drift` and `doctor_observation_double_consumed` return no rows.
-- The ADR 0004 cross-database checks (outbox/inbox pairing, evidence hashes) pass.
+- The ADR 0004 application recipe check (missing half, counterpart not visible, orphaned for 7 days, duplicate, mismatched counterpart or amount per currency) and the evidence-hash check pass.
 
 ## 4. Where each rule is enforced
 
 | Rule | Storage (schema-v2) | Commit validator (U19) / doctor (U21) |
 |---|---|---|
-| INV-001 balance per event, entity, currency | `commits_seal` | `doctor_unbalanced_events` |
+| INV-001 balance per event, currency | `commits_seal` | `doctor_unbalanced_events` |
 | INV-002 posting shape | CHECKs, STRICT, `commits_seal` (at least 2 postings) | — |
-| INV-003 leaf, same-entity category | `journal_postings_category_leaf`, `journal_postings_entity_valid`, `ledger_accounts_parent_valid` | — |
+| INV-003 leaf category, same-type parent | `journal_postings_category_leaf`, `ledger_accounts_parent_valid` | — |
+| ADR 0004: recipe fields both-or-neither, none on a reversal, counterpart is not this entity | CHECK on `accounting_events`; trigger on `counterpart_entity_id` vs `entity.id` | — |
+| ADR 0004: a recipe half has one or more expectations, at most one per currency, amount > 0; none on a reversal or plain event | `event_counterpart_expectations` primary key and CHECK; trigger `event_counterpart_expectations_recipe_half`; `commits_seal` (at least one row) | U19 rejects first |
+| ADR 0004: one current half per `recipe_instance_id` per database; identical retry is a no-op | partial UNIQUE index `WHERE superseded_by IS NULL`; kernel payload compare (`IdempotencyConflict`) | — |
+| ADR 0004: target database is the registered entity | application registry check (`RegistryMismatch`) before any write | — |
 | INV-004, INV-005 one owner, one currency | singleton entity, `journal_postings_currency_valid`, `observations_currency_valid` | — |
 | INV-006 drafts never post | `commits_seal` | — |
 | INV-007 no double consumption | `posting_observations_valid`, observation natural key | `doctor_observation_double_consumed` |
@@ -165,7 +174,7 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
 | ADR 0002 amendment `superseded_by` | `accounting_events_only_supersede`, `commits_seal` | `doctor_superseded_drift` |
 | ADR 0002 closed month | — | U19 |
 | ADR 0001 claim caps | `obligation_settlements_cap` | — |
-| ADR 0004 outbox pairing | idempotency-key uniqueness | doctor (cross-database) |
+| ADR 0004 recipe pairing | one current half per database (partial UNIQUE index) | application recipe check (cross-database) |
 | ADR 0005 valuation snapshots | `valuation_snapshots_noncash` | — |
 | ADR 0006 exclusivity | `settlement_postings.posting_id` UNIQUE | — |
 | ADR 0006 dissolving a reconciled group (§5 Q3) | `commits_seal`: all legs reversed, observed legs reposted | U19: replacement legs regrouped |
@@ -180,3 +189,35 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
 4. **Exact 1:1 match in `posting_observations`. Decided: keep it for month 1.** Splits go on the category side of one event, including cross-entity receivable legs. Relax the rule only when a real case needs two events for one bank row.
 5. **Reference data. Decided: agreed.** Reference data is not commit-scoped. Display names are now **append-only in the schema**: reference rows (entity, parties, financial and ledger accounts, tags, feeds) reject every UPDATE, and a rename is a `reference_renames` row. `reference_current_names` gives the latest name, so replay and audit show what a row was called at the time. Party aliases stay in `party_aliases`.
 6. **Rewrite without migration. Decided: yes (Doug).** This is the plan's open question 5. Schema v2 replaces the v0.2 kernel schema as fresh migration 1, with no data migration, because no real database exists. The "upgraded database" runs in §12 start at v2.
+
+## 6. Proposed: single-currency accounts and FX Clearing (ADR 0009, post-month-1)
+
+**Status:** Decided by Doug (2026-11-26, including the PR 33 answers). FX across recipe halves is decided too: the converting side, as the bank statement shows, does the exchange inside its own half, and the wire fee books on its expense account. No open decisions remain. Not part of the month-1 plan. Nothing here is in `docs/schema-v2.sql` or the kernel yet. When the unit is scheduled, the schema, the smoke checks and `docs/KERNEL_INTERFACE_SPEC.md` §3.3, §4.1 and §4.3 change together (kernel spec §7). ADR 0009 has the full rules and the worked examples.
+
+**Schema delta (proposed):**
+
+| Object | Change |
+|---|---|
+| `ledger_accounts.currency` | New `TEXT` column, ISO format CHECK. NULL only on the `fx_clearing` account and on logical category nodes (`InvalidShape` token `account_currency`) |
+| `ledger_accounts.kind` | Gains `fx_clearing`: asset type, no financial account, no parent. Distinct from the ADR 0006 `clearing` kind |
+| Partial UNIQUE index | At most one `fx_clearing` account per database (one per entity, ADR 0009 decision 3) |
+| New trigger | A financial-account-backed ledger account has its financial account's currency |
+| Categories | Currency-free category nodes are the logical categories and take no postings. A posting category account has a currency, its parent is a logical leaf category, and a partial UNIQUE index on `(parent_id, currency)` keeps it unique per (category, currency). `ledger_accounts_parent_valid` follows |
+| `observations` | Optional `original_amount_minor` and `original_currency` from the feed (a card charge abroad). Feed facts only, never postings; used for an informational rate (ADR 0009 worked example 2) |
+| `journal_postings_currency_valid` | A posting's currency equals `ledger_accounts.currency`, unless the account is `fx_clearing` (widens INV-005) |
+| `commits_seal` | Per event: FX Clearing rows, if any, have exactly one debit currency and one different credit currency, each side with at least one row |
+| `doctor_fx_clearing_shape` | New view; the same rule over sealed history (`DoctorDrift`) |
+| `account_balances` | Leaves out `fx_clearing` rows; FX Clearing never shows a balance |
+| `fx_clearing_groups` | New view: event, date, debit currency and total, credit currency and total, `reverses_id`. The rate is computed outside SQL with an ISO 4217 minor-unit table |
+
+**Where each rule would be enforced:**
+
+| Rule | Storage | Kernel, doctor or application |
+|---|---|---|
+| ADR 0009: posting currency = account currency (except FX Clearing) | `journal_postings_currency_valid` | U19 rejects first; `CurrencyMismatch` |
+| ADR 0009: ledger account currency present and consistent | CHECK, new trigger | `InvalidShape` token `account_currency`; `CurrencyMismatch` for the financial-account trigger |
+| ADR 0009: FX Clearing shape per event | `commits_seal` | U19 rejects first (`InvalidShape` token `fx_clearing`); `doctor_fx_clearing_shape` |
+| ADR 0009: effective balance zero | by construction from the shape rule | none needed |
+| ADR 0009: rate plausible for the date | none | application rate check behind a rate-source port; a finding is a warning-level to-do, information only, exit 0 |
+| ADR 0009: rate display | none | derived, never stored; 7 decimal places, half-even, after the minor-unit exponent adjustment |
+

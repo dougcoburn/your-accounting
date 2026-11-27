@@ -2,6 +2,7 @@
 
 pub mod domain;
 pub mod sqlite_repo;
+pub mod v2;
 
 pub use domain::{
     AccountElement, AccountRole, AccountingEquationSummary, CommittedJournalEntry, Currency,
