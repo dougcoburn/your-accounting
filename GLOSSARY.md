@@ -202,3 +202,14 @@ The date the institution posted a feed row. Kept as evidence only, to explain di
 
 **In-flight item**:
 A line whose occurred and posted dates fall on opposite sides of a statement cutoff. In-flight items are the only allowed difference between an occurred-date balance and the statement's ending balance.
+
+## Context placement notes (ADR 0010, ADR 0011)
+
+This is where terms belong. The definitions stay above until the move after U22 (ADR 0010, decided item 3).
+
+- **Line**: the same thing as **Posting** (a `journal_postings` row). The kernel stages an event and its lines only (ADR 0011).
+- **Observation link** (`posting_observations`), **Observation**, **Feed**, **Void**, **Evidence** and **evidence (file) link** (`evidence_links`): observation import context. These are not kernel concepts.
+- **Refund link** (`refund_links`, the INV-015 cap): recipes context. **Contra-expense**, the posting pattern, stays in ledger core.
+- **Tag** (`tags`, `posting_tags`): application context. **Entity tag** (e-*) hints come from adapters and recipes.
+- Context rows reference a kernel event or line **by id**. Whether they commit in the kernel's transaction is ADR 0011 open decision 1.
+

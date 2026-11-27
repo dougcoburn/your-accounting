@@ -1,6 +1,6 @@
 # Bounded contexts and context map
 
-**Status:** Accepted with [ADR 0010](../adr/0010-bounded-contexts-small-agent-context.md) (Doug, 2026-11-26). Docs only. The normative sources are unchanged: [`KERNEL_INTERFACE_SPEC.md`](../KERNEL_INTERFACE_SPEC.md) ("KIS"), [`SPEC-v2-delta.md`](../SPEC-v2-delta.md) ("delta"), [`schema-v2.sql`](../schema-v2.sql), the ADRs, and [`GLOSSARY.md`](../../GLOSSARY.md). This page proposes how to cut them. It does not restate their rules.
+**Status:** Accepted with [ADR 0010](../adr/0010-bounded-contexts-small-agent-context.md) (Doug, 2026-11-26). Amended by [ADR 0011](../adr/0011-kernel-stages-only-events-and-lines.md) (Doug, 2026-11-26): the kernel stages only events and their lines; observation import, evidence, refund links and tags are context-owned (§3.1, §3.2, §3.4, §3.8, §4, §6.2). Docs only. The normative sources are unchanged: [`KERNEL_INTERFACE_SPEC.md`](../KERNEL_INTERFACE_SPEC.md) ("KIS"), [`SPEC-v2-delta.md`](../SPEC-v2-delta.md) ("delta"), [`schema-v2.sql`](../schema-v2.sql), the ADRs, and [`GLOSSARY.md`](../../GLOSSARY.md). This page proposes how to cut them. It does not restate their rules.
 
 **Principle (Doug, 2026-11-26):** smaller context = smarter agent work. When the glossary terms and independent concepts needed for a change get numerous, split the design with DDD into bounded contexts with small interfaces. An interface should be understandable without its implementation.
 
@@ -72,20 +72,21 @@ Each context gets a one-page `docs/contexts/<name>/INTERFACE.md` (§7). Below is
 ### 3.1 Ledger core (kernel)
 
 - **Purpose:** one entity database's books: reference rows, events and postings, corrections, the commit seal, the numbered invariants that are not owned below, and the write freeze.
-- **Interface:** `open(path, clock, ids)`, `begin_transaction(expected_revision)`, `append_event(event, postings)`, `correct(target, replacement)`, `commit()`, `record_write_freeze` / `clear_write_freeze`, and the kernel half of a recipe write (§3.9: an event carrying `recipe_instance_id` and counterpart fields, where an identical retry is a no-op). It also exposes a **validator rule hook**, so a context can add a per-event commit rule without editing core rules (FX uses this).
+- **Interface:** `open(path, clock, ids)`, `begin_transaction(expected_revision)`, `append_event(event, postings)` (event and lines only, ADR 0011), `correct(target, replacement)`, `commit()`, `record_write_freeze` / `clear_write_freeze`, and the kernel half of a recipe write (§3.9: an event carrying `recipe_instance_id` and counterpart fields, where an identical retry is a no-op). It also exposes a **validator rule hook**, so a context can add a per-event commit rule without editing core rules (FX uses this), and, if Doug picks ADR 0011 option (i), a **context staging hook** (`stage(tx, new event and line ids, commit_id)` and `validate(tx, staged ids)`) so context link rows commit in the same transaction.
 - **Errors:** `Unbalanced`, `InsufficientPostings`, `NonLeafCategory`, `CategoryParentInvalid`, `LedgerKindMismatch`, `CurrencyMismatch`, the reversal and supersede family, `StaleRevision`, `MissingExpectedRevision`, `WriteLocked`, `CommitSealed`, `IdempotencyConflict`, `InvalidShape` (closed token list), the §4.2 bugchecks.
 - **Owns terms:** Posting, Ledger account, Account type, Category, Superseded, Party, Party id, Tracking mode, Black-box account, Contra-expense, Income, Valuation snapshot, Book basis.
-- **Load:** KIS §1, §2, §3.1–§3.4, §3.9, §3.11, §3.13, §4, §5, §8.4–§8.8, §8.14, §8.15. Delta §3 and §4. ADRs 0002, 0003, 0005, 0008. Tables: `entity`, `commits`, `kernel_state`, `parties`, `party_aliases`, `reference_renames`, `recipes`, `financial_accounts`, `ledger_accounts`, `accounting_events`, `event_counterpart_expectations`, `journal_postings`, `tags`, `posting_tags`, `refund_links`, `valuation_snapshots`.
-- **Must NOT need to know:** feed formats, match hints, suggestion ranking, the registry, other entity databases, rate sources, viewer-relative presentation, or screens.
+- **Load:** KIS §1, §2, §3.1–§3.4, §3.9, §3.11, §3.13, §4, §5, §8.4–§8.8, §8.14, §8.15. Delta §3 and §4. ADRs 0002, 0003, 0005, 0008. Tables: `entity`, `commits`, `kernel_state`, `parties`, `party_aliases`, `reference_renames`, `recipes`, `financial_accounts`, `ledger_accounts`, `accounting_events`, `event_counterpart_expectations`, `journal_postings`, `valuation_snapshots`. (`tags`, `posting_tags` and `refund_links` left the kernel with ADR 0011.)
+- **Must NOT need to know:** tags, observation/evidence/refund links (ADR 0011), feed formats, match hints, suggestion ranking, the registry, other entity databases, rate sources, viewer-relative presentation, or screens.
 - **Units:** U17 (done), U18, U19, U20, U35 (core part).
 
-### 3.2 Observation import and evidence (kernel-hosted module)
+### 3.2 Observation import and evidence (context in the same entity DB; ADR 0011)
 
-- **Purpose:** store already-keyed feed facts and evidence bytes, idempotently. Void them.
-- **Interface:** `import_observations(feed_id, rows keyed by external_id with row_hash)` returns inserted, identical no-op, or `ImportConflict`. Also `void_observation(observation_id, reason)`, the observation–posting link rule (INV-007) that `append_event` calls, and `put_evidence(bytes) -> hash`.
-- **Errors:** `ImportConflict`, `CorroborationMismatch`, `VoidedObservation`, `ObservationAlreadyVoided`, `ObservationMismatch`, `ObservationDoubleConsumed`, `VoidWithoutReversal`, `OrphanEvidence`, `EvidenceHashMismatch`.
-- **Owns terms:** Observation, Feed, Evidence, Void, Posted date, Origin.
-- **Load:** KIS §2.2, §3.5, §3.6, §8.7. Delta §2.5 and §3.4. ADR 0007 (the adapter boundary). Tables: `feeds`, `import_runs`, `observations`, `observation_voids`, `posting_observations`, `evidence_objects`, `evidence_documents`, `evidence_deletions`, `evidence_links`.
+- **Purpose:** store already-keyed feed facts and evidence bytes, idempotently; link observations and evidence to kernel events and lines by id; void observations.
+- **Interface:** `import_observations(feed_id, rows keyed by external_id with row_hash)` returns inserted, identical no-op, or `ImportConflict`. `link_observation(posting_id, observation_id)` (INV-007 match, not voided), `void_observation(observation_id, reason)` (reverses linked events through the kernel's `correct`), `put_evidence(bytes) -> hash`, and `link_evidence(document_id, event_id | observation_id)`. Not kernel operations (ADR 0011); transaction mechanics per ADR 0011 open decision 1.
+- **Why evidence lives here, not in the application:** most evidence is produced by import (`import_runs.document_id` references `evidence_documents`), and the hash and orphan checks were already U22's. User-attached receipts use the same `put_evidence` / `link_evidence`.
+- **Errors:** `ImportConflict`, `CorroborationMismatch`, `VoidedObservation`, `ObservationAlreadyVoided`, `ObservationMismatch`, `ObservationDoubleConsumed`, `VoidWithoutReversal`, `OrphanEvidence`, `EvidenceHashMismatch`. Tokens `void_reason`, `observation_direction`, `feed_kind`, `evidence_link_target`, `hash`.
+- **Owns terms:** Observation, Feed, Evidence, Void, Posted date, Origin, observation link, evidence (file) link.
+- **Load:** KIS §2.2, §3.5, §3.6, §8.7, §8.16. ADR 0011. Delta §2.5 and §3.4. ADR 0007 (the adapter boundary). Tables: `feeds`, `import_runs`, `observations`, `observation_voids`, `posting_observations`, `evidence_objects`, `evidence_documents`, `evidence_deletions`, `evidence_links`.
 - **Must NOT need to know:** recipes, settlement, Monarch CSV columns, or FX.
 - **Anti-corruption layer:** each feed adapter (the Monarch adapter, U23) translates its file into observation rows. Monarch vocabulary (Reviewed, Pending, `Id`) stops at the adapter.
 - **Units:** U22, U23 (adapter), U24.
@@ -104,10 +105,10 @@ This context is not in the original candidate list. It is listed because U26, U3
 ### 3.4 Recipes and matching (layer 2, `accounting-recipes` crate)
 
 - **Purpose:** turn observations into ChangeSets. Own match hints and suggestion ranking.
-- **Interface:** `Recipe { code, version, build(observations, params) -> ChangeSet }` and `suggest(observation) -> ranked, deterministic list`. The ChangeSet is the only thing passed to the kernel.
-- **Errors:** `UnknownRecipe`, and the kernel's codes passed through unchanged (`RecipeIncomplete`, `RefundShapeInvalid` and others).
-- **Owns terms:** Recipe code, Match hint, Entity tag, Non-taxable fringe benefit, Investment income, Allocation (retired).
-- **Load:** ADRs 0006, 0007 and 0008. KIS §3.3, for the ChangeSet shape only. The §4.1 code list. Delta §11 (acceptance tests).
+- **Interface:** `Recipe { code, version, build(observations, params) -> ChangeSet }` and `suggest(observation) -> ranked, deterministic list`. A ChangeSet holds the kernel part (events and lines) plus context parts (observation links, refund links, tag hints), each handed to its owning context. Refund links are owned here: `link_refund(refund_posting_id, purchase_posting_id, amount_minor)` (ADR 0008 shape, INV-015 cap; ADR 0011).
+- **Errors:** `UnknownRecipe`, `RefundShapeInvalid`, `RefundCapExceeded` (owned here, ADR 0011), and the kernel's codes passed through unchanged (`RecipeIncomplete` and others).
+- **Owns terms:** Recipe code, Match hint, Entity tag (as a hint), refund link, Non-taxable fringe benefit, Investment income, Allocation (retired).
+- **Load:** ADRs 0006, 0007, 0008 and 0011. KIS §3.3, for the ChangeSet shape only. Table `refund_links`. The §4.1 code list. Delta §11 (acceptance tests).
 - **Must NOT need to know:** triggers, §4.3 storage mapping, the freeze, other databases.
 - **Units:** U25, U27, U28, U30.
 
@@ -139,7 +140,7 @@ See §6. The kernel owns the runner and the finding shape. Contexts contribute c
 
 - **Purpose:** the per-login registry of entity databases, opening databases, sequencing doctor runs (on app open, after a cross-entity commit, before a backup), the CLI (U36), and the local JSON API that U37 consumes.
 - **Interface:** `registry.resolve(entity_id | party_id) -> db handle | not visible`, CLI commands (`init`, `import`, `worklist`, `apply-recipe`, `group`, `assert`, `reconcile`, `correct`, `void`, `doctor`, `--json`), and the JSON API (one page, published by U36).
-- **Owns terms:** Registry, and Visibility (viewer-relative presentation, ADR 0003).
+- **Owns terms:** Registry, Visibility (viewer-relative presentation, ADR 0003), and tags (`tags`, `posting_tags`, tag renames; ADR 0011). Recipes and adapters supply tag hints; the application stores tags against posting ids.
 - **Must NOT need to know:** triggers, invariants, or storage mapping. It calls context interfaces.
 
 ### 3.9 Read models and reporting (downstream, conformist)
@@ -158,8 +159,10 @@ See §6. The kernel owns the runner and the finding shape. Contexts contribute c
 ```text
                      Shared kernel: Money, Ulid, Revision/Commit, dates, error envelope
                                          |
-   [Feed adapters] --ACL--> [Observation import] --(same DB, same commit)--+
-                                                                            v
+   [Feed adapters] --ACL--> [Observation import & evidence] --links by event/line id (ADR 0011)--+
+   [Application: tags] --------------------------------------links by line id------------------+
+   [Recipes: refund links] ----------------------------------links by line id------------------+
+                                                                                                v
    [Recipes & matching] --ChangeSet (customer/supplier)-->  [LEDGER CORE]  <--rule hook-- [FX kernel rules]
             ^                                                 ^      ^ (published language: KIS §3.9)
             |                                                 |      |
@@ -177,6 +180,7 @@ See §6. The kernel owns the runner and the finding shape. Contexts contribute c
 | Shared kernel to all Rust contexts | Shared kernel | Money, ids and the commit protocol are used everywhere. Keep it tiny. |
 | Recipes to ledger core | Customer/supplier | Recipes emit ChangeSets. The kernel validates them and never interprets hints. |
 | Feed adapters to observation import | Anti-corruption layer | Feed vocabulary stops at the adapter (ADR 0007). |
+| Observation import, recipes (refund links), application (tags) to ledger core | Customer/supplier; conformist to event and line ids | Context tables in the same entity DB reference events and lines by id; the kernel knows no link semantics (ADR 0011). Whether they share the kernel's transaction is ADR 0011 open decision 1. |
 | Cross-entity to ledger core | Published language (KIS §3.9) | One half is an ordinary event plus instance and counterpart fields. |
 | FX to ledger core | Partnership through a rule hook | ADR 0009 rule 3 is a kernel invariant, but its text and tests live with FX. |
 | FX to rate data | Anti-corruption layer (port) | The provider is expected to change. It may be a person. |
@@ -224,11 +228,12 @@ Report     { findings, exit_status }
 |---|---|---|---|---|---|
 | `PRAGMA integrity_check` | KIS §3.12 | Ledger core (storage) | single_db | bugcheck | U21 |
 | `PRAGMA foreign_key_check` | KIS §3.12 | Ledger core | single_db | bugcheck | U21 |
-| `doctor_unsealed_rows` | KIS §3.12 | Ledger core (commit seal) | single_db | bugcheck | U21 |
+| `doctor_unsealed_rows`, kernel-table part | KIS §3.12 | Ledger core (commit seal) | single_db | bugcheck | U21 |
 | `doctor_unbalanced_events` (INV-001) | KIS §3.12 | Ledger core | single_db | bugcheck | U21 |
 | `doctor_superseded_drift` | KIS §3.12 | Ledger core (corrections) | single_db | bugcheck | U21 |
 | Active write freeze | KIS §3.12, §3.13 | Ledger core (runner) | single_db | bugcheck | U21 |
 | `doctor_observation_double_consumed` (INV-007) | KIS §3.12 | Observation import | single_db | bugcheck | U22 |
+| `doctor_unsealed_rows`, context-table part (`observations`, `import_runs`, `observation_voids`, `posting_observations`, `evidence_links`, `evidence_deletions`; `refund_links`; `posting_tags`) | KIS §3.12 | Observation import; recipes; application (ADR 0011) | single_db | bugcheck | U22; U27; U34/U36 |
 | Evidence bytes against stored hashes | KIS §3.12 | Observation import and evidence | single_db | bugcheck | U22, or the first evidence unit |
 | Staged evidence with no committed row | KIS §3.12 | Observation import and evidence | single_db | import | U22, or the first evidence unit |
 | Regrouping drift (none yet, §8.10) | KIS §8.10 | Settlement | single_db | bugcheck | U26 or U35 |

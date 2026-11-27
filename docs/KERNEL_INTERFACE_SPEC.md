@@ -23,13 +23,13 @@ Synthetic fixtures only. Invented ULIDs, invented external ids, invented amounts
 
 One SQLite database holds one entity (ADR 0004). Foreign keys never cross databases. A counterpart entity is a `parties` row whose id is that entity's stable `party_id` (ADR 0003). There is no `visibility` column.
 
-The kernel is the only writer of journal, observation, settlement, obligation, and assertion rows. Its operations are the append-only journal and commit seal, the numbered invariants, `import_observations`, recipe-idempotent event writes (§3.9), and `doctor` over its one database (§8.2). It never opens a second entity database. Cross-entity recipes, the registry, and the cross-database recipe check are application work (ADR 0004 rewrite, ADR 0007). It stores feed rows, tag rows, and access grants as facts and does not interpret them. Callers hand it a changeset. They do not get a connection and they do not send SQL.
+The kernel is the only writer of journal (events and their lines, i.e. postings), settlement, obligation, and assertion rows. Its operations are the append-only journal and commit seal, the numbered invariants, recipe-idempotent event writes (§3.9), and the `doctor` runner over its one database (§8.2). Observations, observation links, evidence and evidence links, refund links, and tags are context-owned rows in the same entity database (ADR 0011, §8.16). It never opens a second entity database. Cross-entity recipes, the registry, and the cross-database recipe check are application work (ADR 0004 rewrite, ADR 0007). It stores access grants as facts and does not interpret them. Feed rows and tag rows belong to their contexts (ADR 0011). Callers hand it a changeset. They do not get a connection and they do not send SQL.
 
 | In the kernel | Outside the kernel |
 |---|---|
 | Append-only journal, commit seal, numbered invariants the schema enforces | Match hints and suggestion ranking (ADR 0006, ADR 0007) |
-| Observations as already-keyed facts (`feed_id` + `external_id`) | Feed file formats and how an adapter derives an external id (ADR 0007) |
-| Tag rows on postings | What a tag means to a person |
+| — | Observations, `import_observations`, `void_observation`, observation links and evidence: observation import context (ADR 0011). Feed file formats and how an adapter derives an external id (ADR 0007) |
+| — | Tag rows on postings (application context) and refund links (recipes context), ADR 0011. What a tag means to a person |
 | One half of a cross-entity recipe as an ordinary event carrying `recipe_instance_id` and the counterpart fields; an identical retry is a no-op (§3.9) | Writing both halves, the per-user registry, the registry check before a write, the cross-database recipe check, and any UI around a gap (ADR 0004) |
 | `doctor` over this one entity database | Viewer-relative presentation (ADR 0003) |
 
@@ -164,15 +164,15 @@ U19 **MUST** reject every condition `commits_seal` raises, and return the user-c
 
 ### 3.3 `append_event` (event plus postings)
 
-Stages one non-reversal event and its postings. A reversal is `correct`, not this operation. An event that is one half of a cross-entity recipe is an ordinary `append_event` that also carries the four recipe fields; §3.9 adds its idempotency rule.
+Stages one non-reversal event and its postings (lines), and nothing else (ADR 0011). Tags, observation links, refund links, and evidence links are staged by their owning context and reference the event or line by id (§8.16). A reversal is `correct`, not this operation. An event that is one half of a cross-entity recipe is an ordinary `append_event` that also carries the four recipe fields; §3.9 adds its idempotency rule.
 
 | | |
 |---|---|
-| Preconditions | Inside `begin_transaction`. Caller-supplied ids are 26-character Crockford base32 ULIDs, or the kernel allocates them from the injected source. `recipe_id` + `recipe_version` already exist (AT-012). At least two postings. Each posting has one ledger account, one currency, an explicit `debit` or `credit`, and `amount_minor > 0`. Per currency inside the event, sum of debits equals sum of credits. Postings carry no `entity_id`: every ledger account in the database is the entity's (ADR 0004 amendment 2026-11-26). An income or expense posting uses a leaf category. A posting on a financial-account-backed ledger account uses that account's currency. `recorded_at` is the transaction's fixed timestamp. `effective_date` is an occurred date (`YYYY-MM-DD`). `superseded_by` is null. A `posting_observations` link matches the observation's financial account, amount, and currency, with inflow as debit and outflow as credit, on both asset and liability accounts (month 1 is exact 1:1, delta §5 Q4). The observation is not voided. The event's commit is still open. |
-| Postconditions | The event and its postings, tags, observation links, and refund links are staged in this transaction. They are invisible to other connections until `commit`. Caller-supplied ids are unchanged. Balances, once committed, are the sum of all postings and do not read `superseded_by` (ADR 0002). |
-| Invariants | INV-001, INV-002, INV-003, INV-004, INV-005, INV-007, INV-015. ADR 0008 (no contra type; categories are income/expense accounts). ADR 0002 (append-only; an event is inserted current). |
-| Typed error | `Unbalanced`, `InsufficientPostings`, `NonLeafCategory`, `CategoryParentInvalid`, `LedgerKindMismatch`, `CurrencyMismatch`, `ObservationMismatch`, `ObservationDoubleConsumed`, `VoidedObservation`, `RefundShapeInvalid`, `RefundCapExceeded`, `UnknownRecipe`, `UnknownTarget`, `InvalidId`, `DuplicateId`, `InvalidMoney`, `InvalidCurrency`, `InvalidDate`, `CommitSealed`, `EventInsertedSuperseded`, `AppendOnlyViolation`. |
-| Enforced by | U19 for INV-001 and INV-002 before the seal; the seal raises the same two and is then a `ValidatorMissed` bugcheck. Storage for leaf, currency, refund shape and cap, observation match, voided observation, open commit, and "inserted current". U21 `doctor_unbalanced_events` and `doctor_observation_double_consumed` after the fact; a row there on a database this kernel sealed is `DoctorDrift`. |
+| Preconditions | Inside `begin_transaction`. Caller-supplied ids are 26-character Crockford base32 ULIDs, or the kernel allocates them from the injected source. `recipe_id` + `recipe_version` already exist (AT-012). At least two postings. Each posting has one ledger account, one currency, an explicit `debit` or `credit`, and `amount_minor > 0`. Per currency inside the event, sum of debits equals sum of credits. Postings carry no `entity_id`: every ledger account in the database is the entity's (ADR 0004 amendment 2026-11-26). An income or expense posting uses a leaf category. A posting on a financial-account-backed ledger account uses that account's currency. `recorded_at` is the transaction's fixed timestamp. `effective_date` is an occurred date (`YYYY-MM-DD`). `superseded_by` is null. The event's commit is still open. *Moved (ADR 0011):* the observation-link match rule (INV-007, delta §5 Q4) and the not-voided rule belong to the observation import context. |
+| Postconditions | The event and its postings are staged in this transaction. Context rows that reference them are staged by their contexts, in the same transaction or not, per ADR 0011 open decision 1. They are invisible to other connections until `commit`. Caller-supplied ids are unchanged. Balances, once committed, are the sum of all postings and do not read `superseded_by` (ADR 0002). |
+| Invariants | INV-001, INV-002, INV-003, INV-004, INV-005. (INV-007 moved to observation import; INV-015 moved to recipes; ADR 0011.) ADR 0008 (no contra type; categories are income/expense accounts). ADR 0002 (append-only; an event is inserted current). |
+| Typed error | `Unbalanced`, `InsufficientPostings`, `NonLeafCategory`, `CategoryParentInvalid`, `LedgerKindMismatch`, `CurrencyMismatch`, `UnknownRecipe`, `UnknownTarget`, `InvalidId`, `DuplicateId`, `InvalidMoney`, `InvalidCurrency`, `InvalidDate`, `CommitSealed`, `EventInsertedSuperseded`, `AppendOnlyViolation`. |
+| Enforced by | U19 for INV-001 and INV-002 before the seal; the seal raises the same two and is then a `ValidatorMissed` bugcheck. Storage for leaf, currency, open commit, and "inserted current". U21 `doctor_unbalanced_events` after the fact (`doctor_observation_double_consumed` is U22, observation import, ADR 0010/0011); a row there on a database this kernel sealed is `DoctorDrift`. |
 
 Category splits of one observation are other postings on the same event. They are not a second interpreting event for the same bank row (delta §5 Q4).
 
@@ -182,7 +182,7 @@ One transaction. The kernel stages, in this order: the reversal event and its ca
 
 | | |
 |---|---|
-| Preconditions | Inside `begin_transaction`. The target is a current event: `reverses_id` is null and `superseded_by` is null. The target is not itself a reversal. The reversal's `effective_date` equals the target's `effective_date`. The reversal's postings exactly cancel the target, account by account and currency by currency (opposite side, same accounts, same amounts). The replacement is a normal `append_event` and **MAY** carry a different `effective_date`. Correcting a correction reverses the replacement, never the earlier reversal (AT-033). `superseded_by` is set once, inside this still-open transaction, to the reversal's id, and is not cleared or pointed at any other event. Every group, obligation, refund link, and assertion the change touches is valid afterward (INV-013). Closed-month: every existing balance assertion with a cutoff on or after the earliest `effective_date` in this transaction, on every financial account the transaction posts to, recomputes to the same `balance_minor`. Earliest date is `min(reversal effective_date, replacement effective_date)` (delta §7, §5 Q2). |
+| Preconditions | Inside `begin_transaction`. The target is a current event: `reverses_id` is null and `superseded_by` is null. The target is not itself a reversal. The reversal's `effective_date` equals the target's `effective_date`. The reversal's postings exactly cancel the target, account by account and currency by currency (opposite side, same accounts, same amounts). The replacement is a normal `append_event` and **MAY** carry a different `effective_date`. Correcting a correction reverses the replacement, never the earlier reversal (AT-033). `superseded_by` is set once, inside this still-open transaction, to the reversal's id, and is not cleared or pointed at any other event. Every group, obligation, refund link, and assertion the change touches is valid afterward (INV-013); links are validated, and re-linked to the replacement lines, by their owning contexts in the same operation (ADR 0011). Closed-month: every existing balance assertion with a cutoff on or after the earliest `effective_date` in this transaction, on every financial account the transaction posts to, recomputes to the same `balance_minor`. Earliest date is `min(reversal effective_date, replacement effective_date)` (delta §7, §5 Q2). |
 | Postconditions | After `commit`, the target's `superseded_by` is the reversal id. The register (`register_events`) shows the replacement and hides the target and the reversal. Audit still returns every event, with lineage through `reverses_id`. Account balances equal the plain sum of every posting. A second correction of the new replacement repeats the same shape. |
 | Invariants | ADR 0002 and its amendment. AT-032, AT-033. INV-001, INV-011, INV-012, INV-013. |
 | Typed error | `ReversalTargetInvalid`, `ReversalDoesNotCancel`, `SupersedeInvalid`, `SupersedeMissing`, `EventInsertedSuperseded`, `ClosedMonthViolation`, `TransitiveInvalid`, plus any `append_event` error on the replacement. |
@@ -191,6 +191,8 @@ One transaction. The kernel stages, in this order: the reversal event and its ca
 `superseded_by` **MUST NOT** be set in a later transaction. The smoke script covers a second set, a clear, a set after seal, a reversal that never flags its target, a reversal of a reversal, and a reversal whose date differs from the target.
 
 ### 3.5 `void_observation(observation_id, reason)`
+
+**Owner moved (ADR 0011):** this is an observation import context operation. It reverses linked events through the kernel's `correct` (§3.4). The rules below stand, enforced by that context; the transaction mechanics follow ADR 0011 open decision 1.
 
 | | |
 |---|---|
@@ -201,6 +203,8 @@ One transaction. The kernel stages, in this order: the reversal event and its ca
 | Enforced by | Storage seal rejects a void whose current linked events are not reversed. U19 **MUST** reject that first (`ValidatorMissed` if the seal raises it). Storage `posting_observations_not_voided` and UNIQUE `observation_voids.observation_id`. There is no DELETE path; DELETE on `observations` is `AppendOnlyViolation`. |
 
 ### 3.6 `import_observations`
+
+**Owner moved (ADR 0011):** this is an observation import context operation, not a kernel operation. The rules below stand, enforced by that context. The §2.2 no-op applies when neither the kernel nor any context staged a row.
 
 The kernel stores facts. The adapter has already turned a feed file into rows. Natural key is `(feed_id, external_id)` (ADR 0007).
 
@@ -326,6 +330,8 @@ The checks are read-only. They do not open a write transaction, they do not repa
 | Typed error | The findings above. The read-only checks do not return `StaleRevision`. If the following `record_write_freeze` is given a stale or missing revision, that call returns `StaleRevision` or `MissingExpectedRevision`, the findings are still returned, and no freeze row is written. |
 | Enforced by | U21 for the checks. `record_write_freeze` for the persist. These views and pragmas are the check, not a second writer. |
 
+Ownership (ADR 0010 §6, ADR 0011): the kernel runner owns the integrity, foreign-key, unsealed (kernel tables), unbalanced, superseded-drift, and freeze rows. `doctor_observation_double_consumed`, the evidence rows, and the context-table part of `doctor_unsealed_rows` are contributed by the observation import context (U22) and, for refund links and tags, by their contexts.
+
 Write refusal does not delete or update the sealed journal. Recovery from `IntegrityFailed`, `DoctorDrift`, `UnsealedRows`, or `EvidenceHashMismatch` is a restore of a prior consistent snapshot, then a fresh `doctor`. If a freeze row is still active and every other bugcheck-class check is clean, `clear_write_freeze` is what resumes writes. A snapshot that has no freeze row needs no clear. The kernel **MUST NOT** compact, rewrite, or "fix" `superseded_by` in place. A clean doctor report alone does not resume writes while the freeze row is active.
 
 ### 3.13 Write freeze (`kernel_state`) and `clear_write_freeze`
@@ -444,6 +450,8 @@ The SQL text in this section is the mapping key for the adapter. It **MUST NOT**
 | `StatementNotAgreed` | user | INV-010. Raised by U32 only. Month-1 `assert_balance` does not raise it. |
 | `OrphanEvidence` | import | Staged evidence bytes with no committed row. `doctor` only. Collectable. |
 
+**Owners (ADR 0011).** The list stays one closed list (the shared error envelope). Codes owned by the observation import context: `ImportConflict`, `CorroborationMismatch`, `ObservationMismatch`, `ObservationDoubleConsumed`, `VoidedObservation`, `ObservationAlreadyVoided`, `VoidWithoutReversal`, `OrphanEvidence`, `EvidenceHashMismatch` (§4.2). Codes owned by recipes: `RefundShapeInvalid`, `RefundCapExceeded`. `CurrencyMismatch` stays shared.
+
 An identical re-import and an identical recipe retry are successes, not codes. When the transaction staged nothing else they are the §2.2 no-op: the caller gets the original commit, and no new `commits` row exists. A different payload on the same current `recipe_instance_id` is `IdempotencyConflict`.
 
 ### 4.2 Bugchecks
@@ -539,6 +547,8 @@ SQLite constraint text that is not a RAISE. The first matching row wins. A ULID 
 
 `recipe_party` has no RAISE or CHECK behind it. The kernel write path raises it directly (§3.9): a posting on a `receivable` or `payable` ledger account in a recipe half has no `party_id`. It is listed here so the token list stays the one closed list.
 
+**Moved (ADR 0011).** These rows and tokens stay in this closed table, but their RAISE/CHECK sources are context-owned: tokens `void_reason`, `observation_direction`, `feed_kind`, `evidence_link_target`, `hash` (observation import); `unique_other` from `tags.name` (application), from the `refund_links` pair (recipes), and from `evidence_deletions.sha256` (observation import); the RAISE rows `observation currency must match`, `corroborating row must be`, `posting must match its observation`, `voided observation cannot be interpreted`, `a void must reverse every current event`, `observed legs must be reposted` (observation import), and `opposite-side posting to the purchase`, `INV-015: refund links exceed` (recipes).
+
 A new CHECK or RAISE lands only by extending this section in the same change (§7).
 
 ## 5. Bugcheck policy
@@ -613,7 +623,7 @@ This v2 interface is `docs/KERNEL_INTERFACE_SPEC.md`, next to schema v2. v1's bu
 
 ADR 0007 says the kernel knows nothing about tags, match hints, visibility, or feeds, and that the application owns cross-entity orchestration and `doctor`. Schema v2 stores feeds, observations, tags, and grants in the entity database and defines the doctor views. The U16 assignment listed import, the cross-entity protocol of that time, and `doctor` as kernel operations.
 
-Choice: match hints, feed formats, and viewer-relative display stay outside the kernel. Import of already-keyed observations and `doctor` are kernel operations because the schema and this assignment put their rules here. Superseded 2026-11-26 for the cross-entity protocol: the ADR 0004 rewrite drops it. The kernel's cross-entity part is now only the recipe-idempotent event write (§3.9). Orchestration, the registry, and the cross-database recipe check belong to the application, and `doctor` reads one database. The kernel stores tag rows and does not interpret them. ADR 0007 now records this choice (amended 2026-11-25). §0 and §1 use this same widened scope. §8 may widen a kernel, not only tighten one; when it does, the ADR is amended so the documents agree.
+Choice: match hints, feed formats, and viewer-relative display stay outside the kernel. Import of already-keyed observations and `doctor` are kernel operations because the schema and this assignment put their rules here. Superseded 2026-11-26 for the cross-entity protocol: the ADR 0004 rewrite drops it. The kernel's cross-entity part is now only the recipe-idempotent event write (§3.9). Orchestration, the registry, and the cross-database recipe check belong to the application, and `doctor` reads one database. The kernel stores tag rows and does not interpret them. ADR 0007 now records this choice (amended 2026-11-25). §0 and §1 use this same widened scope. §8 may widen a kernel, not only tighten one; when it does, the ADR is amended so the documents agree. Narrowed 2026-11-26 by §8.16 (ADR 0011): import, observation links, evidence, refund links, and tags leave the kernel.
 
 ### 8.3 Settlement exclusivity is forever
 
@@ -702,7 +712,17 @@ Choice (Doug, 2026-11-26; ADR 0004 and ADR 0008):
 
 `docs/schema-v2.sql` (PR 31, merged) has no row-level `entity_id`. It carries the recipe columns on `accounting_events` and the `event_counterpart_expectations` table (§3.9), so the schema and this section agree.
 
+### 8.16 The kernel stages only events and their lines (ADR 0011)
+
+Doug, 2026-11-26: tags, evidence (file) links, observation links, and refund links are not kernel concepts. They live in context tables in the same entity database that reference a kernel event or line (posting) by id. `append_event` stages the event and its postings only; an event's recipe-half fields and counterpart expectations are part of the event (§3.9).
+
+Choice: owners are observation import (`feeds`, `import_runs`, `observations`, `observation_voids`, `posting_observations`, evidence tables and `evidence_links`), recipes (`refund_links`), and the application (`tags`, `posting_tags`). `docs/schema-v2.sql` is unchanged; its triggers on those tables are storage backstops owned by those contexts. Whether context rows commit in the kernel's transaction is ADR 0011 open decision 1 (recommended: the same transaction through a two-method context hook). Until Doug decides, the existing triggers and `commits_seal` clauses keep today's behavior.
+
 ## 9. Changelog
+
+### 2026-11-26 — ADR 0011: kernel stages only events and lines
+
+Docs only. §1, §3.3, §3.4, §3.5, §3.6, §3.12, §4.1, §4.3 and §8.2 now mark tags, observation links, refund links, evidence links, and observation import as context-owned, with pointers to ADR 0011; §8.16 records the choice. No code, schema, or smoke change.
 
 ### 2026-11-26 — ADR 0009 accepted, not yet in this contract
 
