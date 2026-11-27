@@ -704,6 +704,10 @@ Choice (Doug, 2026-11-26; ADR 0004 and ADR 0008):
 
 ## 9. Changelog
 
+### 2026-11-26 — ADR 0009 accepted, not yet in this contract
+
+Docs only. ADR 0009 (single-currency accounts and one FX Clearing account, Doug 2026-11-26) is a post-month-1 unit. Until it is scheduled, this contract, `docs/schema-v2.sql` and the smoke checks are unchanged, and §0 item 1 does not pull its rules in early. When it lands, §3.3, §4.1 and §4.3 gain its rules in the same change (§7): `CurrencyMismatch` widens to every ledger account except FX Clearing, and `InvalidShape` gains `account_currency` and `fx_clearing`. The proposed schema delta is `docs/SPEC-v2-delta.md` section 6.
+
 ### 2026-11-26 — post-merge fixes to the PR 32 text
 
 Spec only. Flagged by Backend after PR 31 and PR 32 merged.

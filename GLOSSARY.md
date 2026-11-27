@@ -95,6 +95,25 @@ A point-in-time estimate of a non-cash asset account's market value (a brokerage
 
 **FX translation** (deferred):
 Restating a foreign-currency account's exact balance in the reporting currency at an exchange rate on a date. Exchange rates are stored per currency pair per date; the translated value and any translation gain/loss are display-only, never journaled. Not a valuation snapshot: the account's balance check stays in its own currency.
+ADR 0009 (Doug, 2026-11-26) adds no translation: there is no month-end revaluation and no single reporting currency, and each currency is reported on its own. This entry stays deferred and display-only.
+
+**Account currency** (ADR 0009, post-month-1):
+The one currency of a ledger account, fixed when the account is created. Every posting on the account must be in that currency, or the kernel rejects it (`CurrencyMismatch`). The only account without one is the FX Clearing account. A ledger account backed by a financial account has that account's currency. _Avoid_: "the account's main currency" (there is only one).
+
+**FX Clearing account** (ADR 0009, post-month-1):
+The one multi-currency ledger account (kind `fx_clearing`). An exchange passes through it: the currency given up is debited to it, and the currency received is credited from it, in the same event. It never shows a balance; reports show it as a list of closed FX groups with their rates. Not the ADR 0006 `clearing` kind used by settlement groups. _Avoid_: "FX suspense", "FX gain/loss account".
+
+**FX group** (exchange transaction; ADR 0009):
+One accounting event that has FX Clearing rows. Its FX Clearing debit rows are all in one currency and its credit rows all in one different currency, each side with at least one row; the kernel rejects any other shape. It is closed when it commits. _Example_ (synthetic): Tx 15 debits FX Clearing EUR 1,000.00 and credits it USD 1,080.00 and USD 105.00.
+
+**Derived rate** (ADR 0009):
+An FX group's FX Clearing credit total divided by its debit total, in units of the credit currency per unit of the debit currency, after adjusting for each currency's minor-unit exponent: (credit minor / debit minor) x 10^(debit exponent - credit exponent). Computed from the posted amounts, never entered. _Example_ (synthetic): USD 1,185.00 / EUR 1,000.00 = 1.185 USD per EUR; USD 100.00 against JPY 15,000 is 150 JPY per USD, not the raw minor-unit ratio 1.5. A reversal's derived rate is the inverse of its target's.
+
+**Effective balance** (of FX Clearing; ADR 0009):
+FX Clearing's balance with each FX group's debit total converted at that group's own derived rate. It is zero after every event by construction, because the kernel only accepts groups with a defined rate. Raw per-currency sums of FX Clearing are never reported as a balance. _Avoid_: "FX Clearing balance" for the raw per-currency sums.
+
+**Rate plausibility check** (ADR 0009):
+An application-level check, outside the kernel `doctor`, that compares each current, non-reversal FX group's derived rate with a reference rate for the pair on the event's effective date, and reports implausible rates or a missing reference rate. Information only: it never writes or blocks a commit. It matters because the zero effective balance is true by construction and cannot catch a wrong amount. Rate source and tolerance are open (ADR 0009).
 
 **Unrealized gain/loss** (market move):
 Valuation snapshot minus book basis. Derived for display only, never journaled. Only a realized event (e.g. a sale) becomes a transaction. _Avoid_: "valuation adjustment" or a plug entry.

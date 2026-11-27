@@ -50,6 +50,7 @@ This file lists what v2 changes in the v0.2 spec and why. Where this delta and `
 
 ### §2.3 Currency and amounts
 - Resolved: money is a **signed integer in minor units plus a currency code**. Magnitudes (postings, observations, settlements) are positive with an explicit side or direction. Only `balance_minor` and `value_minor` columns carry a sign.
+- **Proposed, post-month-1 (ADR 0009, Doug 2026-11-26):** every ledger account has one currency, except one multi-currency FX Clearing account, and every posting matches its account's currency. This replaces "categories are independent of currency" (pending ADR 0009 open question 2). The schema change is listed in section 6 of this delta and is not in `docs/schema-v2.sql` yet.
 
 ### §2.5 Evidence, observations, movements
 - `CanonicalTransaction`, `AccountMovement` and `movement_observations` are removed. An observation is explained by the posting on its own financial account's ledger account, through `posting_observations`. That posting must match the observation's account, amount and currency, with inflow as debit and outflow as credit (INV-007, trigger).
@@ -107,6 +108,7 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
 - **AT-022, AT-023, AT-033:** use reversal plus replacement. The smoke check covers one reversal and a recategorization.
 - **AT-032:** covered by `commits.seq`.
 - **AT-027, AT-028:** MCP is deferred past month 1.
+- **AT-029 (FX transfer):** post-month-1. One event with bank legs in each currency and FX Clearing rows in the ADR 0009 shape. "Rate evidence" is the derived rate (credit total / debit total of the FX Clearing rows) plus the application's rate plausibility check (section 6 of this delta).
 
 ### §12 Definition of done
 "Empty and upgraded database" means the upgraded runs start from a v2 database (migration 1).
@@ -114,6 +116,7 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
 ### §13 Open decisions
 - **Resolved:** 1 (integer minor units), 3 (occurred date, with in-flight explanation), 8 (settlement exclusivity with no participation limits in month 1, ADR 0006), 9 (ADR 0002 closed-month invariant).
 - **Still open:** 2, 6, 7, 10, 11, 12.
+- **Decided for post-month-1 (ADR 0009):** 2 (FX journal model: single-currency accounts plus one FX Clearing account), and the native-currency part of 6 (each currency reported on its own, no single reporting currency, no revaluation). Retained-earnings presentation per currency stays open under 6.
 
 ### §14 Architectural decisions
 - SPEC **ADR-003** (transparent and opaque entities) is superseded by docs/adr 0003 and 0004.
@@ -186,3 +189,33 @@ Added: `entity` (singleton), `commits`, `user_grants`, `party_aliases`, `feeds`,
 4. **Exact 1:1 match in `posting_observations`. Decided: keep it for month 1.** Splits go on the category side of one event, including cross-entity receivable legs. Relax the rule only when a real case needs two events for one bank row.
 5. **Reference data. Decided: agreed.** Reference data is not commit-scoped. Display names are now **append-only in the schema**: reference rows (entity, parties, financial and ledger accounts, tags, feeds) reject every UPDATE, and a rename is a `reference_renames` row. `reference_current_names` gives the latest name, so replay and audit show what a row was called at the time. Party aliases stay in `party_aliases`.
 6. **Rewrite without migration. Decided: yes (Doug).** This is the plan's open question 5. Schema v2 replaces the v0.2 kernel schema as fresh migration 1, with no data migration, because no real database exists. The "upgraded database" runs in §12 start at v2.
+
+## 6. Proposed: single-currency accounts and FX Clearing (ADR 0009, post-month-1)
+
+**Status:** Decided by Doug (2026-11-26). Not part of the month-1 plan. Nothing here is in `docs/schema-v2.sql` or the kernel yet. When the unit is scheduled, the schema, the smoke checks and `docs/KERNEL_INTERFACE_SPEC.md` §3.3, §4.1 and §4.3 change together (kernel spec §7). ADR 0009 has the full rules, the worked example and the open questions.
+
+**Schema delta (proposed):**
+
+| Object | Change |
+|---|---|
+| `ledger_accounts.currency` | New `TEXT` column, ISO format CHECK. `CHECK ((kind = 'fx_clearing') = (currency IS NULL))` |
+| `ledger_accounts.kind` | Gains `fx_clearing`: asset type, no financial account, no parent. Distinct from the ADR 0006 `clearing` kind |
+| Partial UNIQUE index | At most one `fx_clearing` account per database (ADR 0009 open question 1) |
+| New trigger | A financial-account-backed ledger account has its financial account's currency |
+| `ledger_accounts_parent_valid` | A child category has its parent's currency (if ADR 0009 open question 2 keeps currency on categories) |
+| `journal_postings_currency_valid` | A posting's currency equals `ledger_accounts.currency`, unless the account is `fx_clearing` (widens INV-005) |
+| `commits_seal` | Per event: FX Clearing rows, if any, have exactly one debit currency and one different credit currency, each side with at least one row |
+| `doctor_fx_clearing_shape` | New view; the same rule over sealed history (`DoctorDrift`) |
+| `account_balances` | Leaves out `fx_clearing` rows; FX Clearing never shows a balance |
+| `fx_clearing_groups` | New view: event, date, debit currency and total, credit currency and total, `reverses_id`. The rate is computed outside SQL with an ISO 4217 minor-unit table |
+
+**Where each rule would be enforced:**
+
+| Rule | Storage | Kernel, doctor or application |
+|---|---|---|
+| ADR 0009: posting currency = account currency (except FX Clearing) | `journal_postings_currency_valid` | U19 rejects first; `CurrencyMismatch` |
+| ADR 0009: ledger account currency present and consistent | CHECK, new trigger | `InvalidShape` token `account_currency`; `CurrencyMismatch` for the financial-account trigger |
+| ADR 0009: FX Clearing shape per event | `commits_seal` | U19 rejects first (`InvalidShape` token `fx_clearing`); `doctor_fx_clearing_shape` |
+| ADR 0009: effective balance zero | by construction from the shape rule | none needed |
+| ADR 0009: rate plausible for the date | none | application rate check, informational (rate source and tolerance open) |
+
