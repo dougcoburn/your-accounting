@@ -1,8 +1,8 @@
 # ADR 0012: Feed identity, observation revisions, and provisional transactions
 
-Status: **Proposed** (2026-11-28). Doug decided the U23 behavior on PR #81. This note records the schema and the follow-up that the behavior needs. It is not accepted. The code in this revision implements the revision table and the identity below so the behavior can be reviewed. It does not post provisional journal entries.
+Status: **Proposed** (2026-11-28). Doug decided the U23 behavior on PR #81, and on 2026-11-28 decided the two items this note had left open: where a provisional transaction lives, and what happens when a voided row reappears. The ADR stays Proposed. The revision table is implemented for review and becomes the contract when this ADR is accepted. The provisional event (U41) and the explicit restore (U42) are specified below and are not built. U23 does not post provisional journal entries.
 
-Amends, once accepted: [ADR 0007](0007-layering.md) (natural key and `ImportConflict` on a changed hash) and INV-014 as applied to a later pull of the same feed. Does not amend ADR 0002 for kernel events: observations stay append-only. A later pull appends a row; it does not update the first snapshot.
+Amends, once accepted: [ADR 0007](0007-layering.md) (natural key and `ImportConflict` on a changed hash) and INV-014 as applied to a later pull of the same feed. Does not amend ADR 0002. Observations stay append-only: a later pull appends a row and does not update the first snapshot. A provisional event that changes or is voided also appends a reversal and a replacement. It does not update a sealed event in place.
 
 ## Context
 
@@ -47,14 +47,14 @@ Rules for the follow-up unit:
 Still open, and not decided by this note:
 
 - How a confident match is scored, and what a possible match shows the user.
-- How the statement import fixes a duplicate. A void still does not free a feed-id key, so restoring or merging a voided FITID would be a new operation.
+- How the statement import fixes a duplicate that is not a voided row. A voided row that comes back the same stays voided. Restore is the explicit U42 operation, not an automatic un-void.
 - Where statement membership is stored so "a row must not appear on two statements" can be checked. This note adds no table.
 
 ### Revisions
 
 `observations` stays the first accepted snapshot and stays append-only (no UPDATE, no DELETE). Each later pull of the same identity inserts `observation_revisions` with the full new attributes, including `payload_json` (raw columns and hints). `observation_current` is the latest revision, or the first snapshot when there is none. INV-007's link check reads `observation_current`.
 
-A voided identity is not revised and is not inserted again. The tombstone does not free the key, so a row that reappears after a void stays voided. Restoring one would be a new operation. That limit is part of this proposal.
+A voided identity is not revised and is not inserted again. Doug decided the reappearance rule in the section below. U23 already implements the stay-voided half of it.
 
 `ImportConflict` remains the code for a unique-key race the pre-check did not see. It is no longer the result of a changed hash.
 
@@ -62,25 +62,64 @@ A voided identity is not revised and is not inserted again. The tombstone does n
 
 The adapter, not the kernel, decides absence. For each account in the pull, coverage is the min and max occurred date of that account's rows. An existing live observation on that feed and account is voided with reason `other` when its id is absent and the coverage includes `[occurred_date - 7 days, occurred_date + 7 days]`. The void is `void_observation`: an `observation_voids` row, commit kind `import`, no kernel reversal. Reason `other` is the existing closed set. A dedicated reason code is not added here.
 
+### Provisional transactions (decided 2026-11-28)
+
+Doug decided the shape. U23 does not implement it. It is [U41](../MONTH1_IMPLEMENTATION_PLAN.md).
+
+- A provisional transaction is a kernel event with a provisional flag. It is not a context-only row.
+- Balances include provisional and pending entries, even though those entries can change or be voided.
+- A recipe commit of a transaction group must not use a provisional or pending entry. Only a posted entry is eligible.
+- "Unmatched" means no live `posting_observations` row. An unmatched pending observation creates the provisional event. It is visible immediately.
+- Accepting it later, once it is no longer pending, is an interpretation (`append_event` plus `observation_links`), not an in-place edit of the sealed event.
+
+U23 stores the pending observation and leaves it unreviewed, with no postings. That is the visible observation. It is not the provisional event.
+
+U41 is its own unit because the flag is not a small adapter change:
+
+- INV-001 requires the event to balance per currency. An unmatched pending observation names one financial account and an amount. U23 creates no ledger account from the Monarch category hint, so the other leg has no account yet. Choosing that offset account is part of U41.
+- ADR 0002 allows one update of an event: `superseded_by`, set once, to the reversing event, inside its commit. A provisional entry that changes or is voided appends a reversal and, when it continues, a replacement. It does not flip a flag on a sealed row.
+- `account_balances` and `trial_balance` already sum every posting. Including these entries follows from posting them. Keeping them out of a recipe commit group is a new rule on the settlement and recipe commit path (U26, U27).
+- ADR 0011 keeps import from posting kernel events. U23 does not cross that line.
+
+U41 acceptance:
+
+- An unmatched pending observation creates a balanced kernel event with the provisional flag set, in the import commit.
+- `account_balances` and `trial_balance` include that event's postings, and they include a pending entry the same way.
+- A recipe commit of a transaction group that contains a provisional or pending entry is rejected. A group made only of posted entries commits.
+- A later change to the observation, or a void of it, changes or voids the provisional event by appending. The sealed event row is not rewritten in place.
+- One predicate defines a posted entry: the event is not provisional, and the observation is not pending.
+
+### Voided rows that reappear (decided 2026-11-28)
+
+Doug decided:
+
+- A voided row that reappears and looks the same as what was voided stays voided. There is no auto-restore.
+- Restoring is an explicit action.
+- When a statement's ending balance does not reconcile, the reconciliation flow surfaces voided observations as one of the candidate sources for the missing observations.
+
+U23 already does the first bullet. A voided identity is left as it is: no second insert and no revision. The tombstone does not free the key.
+
+The explicit restore, and the reconciliation candidate list, need statement import. They are [U42](../MONTH1_IMPLEMENTATION_PLAN.md), not this unit.
+
+U42 acceptance:
+
+- Re-importing a voided identity with the same attributes leaves the tombstone and writes no observation and no revision.
+- An explicit restore makes that observation live again. Import does not call it.
+- When a statement ending balance does not agree, the reconciliation result includes the voided observations in that account's window among the candidates for the missing rows.
+
 ### What this unit does not do
 
-**Provisional transactions are not posted.** A pending observation is stored and is visible as an unreviewed observation (`observation_review_state`). It does not append an `accounting_events` row. Posting a provisional journal entry would touch the kernel: events are append-only, and removing one later is a reversal, which is a one-way door. Proposed follow-up, not decided here:
-
-- An unmatched pending observation (no live `posting_observations` row) gets a provisional transaction the worklist can show immediately.
-- "Unmatched" means no live link to a posting.
-- The provisional row is not a reconciled event and not a settlement. Accepting it later is an interpretation (`append_event` plus `observation_links`), not an in-place edit.
-- Where that provisional row lives (a context table versus a kernel event with a new flag) is the open schema question. This proposal does not add that table and does not add a kernel flag.
-
-Categories are hints on `payload_json` only. No income or expense ledger accounts are created from Monarch names. `Reviewed` stays `reviewed_hint` with `reviewed_authoritative: false`.
+Categories are hints on `payload_json` only. No income or expense ledger accounts are created from Monarch names. `Reviewed` stays `reviewed_hint` with `reviewed_authoritative: false`. U23 does not post the provisional event (U41) and does not restore a void (U42).
 
 ## Alternatives
 
 - **Update `observations` in place and keep history in a side table.** Rejected for this proposal. ADR 0002's append-only trigger would have to allow attribute updates. The first snapshot would no longer be the row itself.
 - **Keep `ImportConflict` and report column names.** That was the previous U23 default. Doug rejected it: a later pull updates attributes and keeps history.
-- **Post a balanced kernel event for every pending row now.** Rejected until the provisional-transaction shape above is accepted. A posted event is hard to undo.
+- **Post the provisional kernel event inside U23.** Doug accepted the shape (a kernel event with a provisional flag). U23 still does not post it. The offset leg, the append-only change and void, and the recipe-group exclusion are U41.
 
 ## Consequences
 
 - `docs/schema-v2.sql` in this revision adds `observation_revisions` and `observation_current`, and widens the observation unique key to `(feed_id, external_id, financial_account_id)`. Smoke counts 24 commit-scoped tables.
 - KERNEL_INTERFACE_SPEC §3.6 describes the revision behavior so the spec matches the code under review. Acceptance of this ADR is what makes that text normative.
-- Id-less matching, the weekly CSV / QFX cadence, statement-balance reconciliation, and provisional transactions are a follow-up unit. They are not U23. The cadence rules above are the spec for that unit.
+- Id-less matching and the weekly CSV / QFX cadence are a follow-up. They are not U23. The cadence rules above are the spec for that unit.
+- Provisional events are U41. Explicit restore, and surfacing voided observations when a statement ending balance does not reconcile, are U42. Both are decided here and not built.
