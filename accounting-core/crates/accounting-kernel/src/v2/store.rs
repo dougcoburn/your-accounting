@@ -107,7 +107,8 @@ pub struct LiveObservation {
 pub struct ObservationFact {
     pub id: String,
     pub external_id: String,
-    pub financial_account_id: String,
+    pub financial_account_id: Option<String>,
+    pub cross_check_account_id: Option<String>,
     pub occurred_date: String,
     pub posted_date: Option<String>,
     pub direction: String,
@@ -557,8 +558,9 @@ impl Kernel {
     ) -> Result<Option<ObservationFact>, Error> {
         self.conn
             .query_row(
-                "SELECT id, external_id, financial_account_id, occurred_date, posted_date,
-                        direction, amount_minor, currency, row_hash, payload_json
+                "SELECT id, external_id, financial_account_id, cross_check_account_id,
+                        occurred_date, posted_date, direction, amount_minor, currency,
+                        row_hash, payload_json
                  FROM observation_current WHERE feed_id = ?1 AND external_id = ?2",
                 params![feed_id, external_id],
                 |row| {
@@ -566,13 +568,14 @@ impl Kernel {
                         id: row.get(0)?,
                         external_id: row.get(1)?,
                         financial_account_id: row.get(2)?,
-                        occurred_date: row.get(3)?,
-                        posted_date: row.get(4)?,
-                        direction: row.get(5)?,
-                        amount_minor: row.get(6)?,
-                        currency: row.get(7)?,
-                        row_hash: row.get(8)?,
-                        payload_json: row.get(9)?,
+                        cross_check_account_id: row.get(3)?,
+                        occurred_date: row.get(4)?,
+                        posted_date: row.get(5)?,
+                        direction: row.get(6)?,
+                        amount_minor: row.get(7)?,
+                        currency: row.get(8)?,
+                        row_hash: row.get(9)?,
+                        payload_json: row.get(10)?,
                     })
                 },
             )
@@ -628,6 +631,53 @@ impl Kernel {
             .map_err(|err| map_sql(err, SqlSite::Read))?;
         let rows = stmt
             .query_map(params![feed_id, financial_account_id], |row| {
+                Ok(LiveObservation {
+                    id: row.get(0)?,
+                    external_id: row.get(1)?,
+                    occurred_date: row.get(2)?,
+                })
+            })
+            .map_err(|err| map_sql(err, SqlSite::Read))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|err| map_sql(err, SqlSite::Read))?);
+        }
+        Ok(out)
+    }
+
+    /// The payroll cross-check account, when this database has one.
+    pub fn cross_check_account_id(&self, role: &str) -> Result<Option<String>, Error> {
+        self.conn
+            .query_row(
+                "SELECT id FROM cross_check_accounts WHERE role = ?1",
+                [role],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|err| map_sql(err, SqlSite::Read))
+    }
+
+    /// Live observations bound to a cross-check account. Payloads are not returned.
+    pub fn live_observations_for_cross_check(
+        &self,
+        feed_id: &str,
+        cross_check_account_id: &str,
+    ) -> Result<Vec<LiveObservation>, Error> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT o.id, o.external_id, c.occurred_date
+                 FROM observations o
+                 JOIN observation_current c ON c.id = o.id
+                 WHERE o.feed_id = ?1 AND o.cross_check_account_id = ?2
+                   AND NOT EXISTS (
+                     SELECT 1 FROM observation_voids v WHERE v.observation_id = o.id
+                   )
+                 ORDER BY o.external_id",
+            )
+            .map_err(|err| map_sql(err, SqlSite::Read))?;
+        let rows = stmt
+            .query_map(params![feed_id, cross_check_account_id], |row| {
                 Ok(LiveObservation {
                     id: row.get(0)?,
                     external_id: row.get(1)?,
@@ -1279,6 +1329,26 @@ impl Transaction<'_> {
                 new.last4,
                 recorded_at
             ],
+        )?;
+        self.staged.new_rows += 1;
+        Ok(id)
+    }
+
+    /// The payroll cross-check account. Inserts it when this database has none.
+    /// `role` is `payroll`.
+    pub fn ensure_cross_check_account(&mut self, role: &str) -> Result<String, Error> {
+        self.ensure_open()?;
+        if role != "payroll" {
+            return Err(self.fail(shape("cross_check_role")));
+        }
+        if let Some(id) = self.kernel.cross_check_account_id(role)? {
+            return Ok(id);
+        }
+        let id = self.allocate(None)?;
+        let recorded_at = self.recorded_at.clone();
+        self.exec(
+            "INSERT INTO cross_check_accounts(id, role, created_at) VALUES (?1, ?2, ?3)",
+            params![id, role, recorded_at],
         )?;
         self.staged.new_rows += 1;
         Ok(id)

@@ -181,6 +181,15 @@ CREATE TABLE financial_accounts (
     created_at    TEXT NOT NULL CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z')
 ) STRICT;
 
+-- Proposed (ADR 0012): a non-financial role for feed rows that are stored and
+-- never posted. Month 1 has one role, payroll. The Monarch account name that
+-- binds to it is import configuration, not a column here. One row per role.
+CREATE TABLE cross_check_accounts (
+    id         TEXT PRIMARY KEY CHECK (length(id) = 26 AND id NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
+    role       TEXT NOT NULL UNIQUE CHECK (role = 'payroll'),
+    created_at TEXT NOT NULL CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z')
+) STRICT;
+
 -- ADR 0008: exactly one account_type; engine sub-kind in `kind`; categories are
 -- the income/expense accounts (kind 'category'), a tree via parent_id (same
 -- type) where only leaves take postings (INV-003). No entity_id column: every
@@ -351,7 +360,9 @@ CREATE TABLE import_runs (
 
 -- An observation's first snapshot is an immutable accepted source fact
 -- (SPEC §2.5, INV-014). Identity = (feed_id, external_id, financial_account_id)
--- (ADR 0007, proposed ADR 0012). A later pull of the same identity appends
+-- or, for a payroll cross-check row, (feed_id, external_id, cross_check_account_id)
+-- (ADR 0007, proposed ADR 0012). Exactly one of those account columns is set.
+-- A later pull of the same identity appends
 -- observation_revisions and does not update this row. Current attributes are
 -- the view observation_current. An identical row_hash is a no-op.
 -- occurred_date assigns the period; posted_date is optional and only explains
@@ -363,7 +374,8 @@ CREATE TABLE observations (
     feed_id              TEXT NOT NULL REFERENCES feeds(id),
     external_id          TEXT NOT NULL CHECK (length(external_id) > 0),
     import_run_id        TEXT REFERENCES import_runs(id),
-    financial_account_id TEXT NOT NULL REFERENCES financial_accounts(id),
+    financial_account_id   TEXT REFERENCES financial_accounts(id),
+    cross_check_account_id TEXT REFERENCES cross_check_accounts(id),
     occurred_date        TEXT NOT NULL CHECK (date(occurred_date) IS occurred_date),
     posted_date          TEXT CHECK (posted_date IS NULL OR date(posted_date) IS posted_date),
     direction            TEXT NOT NULL CHECK (direction IN ('inflow','outflow')),
@@ -375,9 +387,16 @@ CREATE TABLE observations (
     corroborates_id      TEXT REFERENCES observations(id),   -- ADR 0007: a later row for the same movement corroborates, never duplicates
     commit_id            TEXT NOT NULL REFERENCES commits(id) DEFERRABLE INITIALLY DEFERRED,
     recorded_at          TEXT NOT NULL CHECK (recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z'),
-    UNIQUE (feed_id, external_id, financial_account_id),
-    CHECK (corroborates_id IS NULL OR corroborates_id <> id)
+    CHECK (corroborates_id IS NULL OR corroborates_id <> id),
+    -- Exactly one binding: a financial account, or a cross-check role.
+    CHECK ((financial_account_id IS NULL) = (cross_check_account_id IS NOT NULL))
 ) STRICT;
+CREATE UNIQUE INDEX observations_feed_financial
+    ON observations(feed_id, external_id, financial_account_id)
+    WHERE financial_account_id IS NOT NULL;
+CREATE UNIQUE INDEX observations_feed_cross_check
+    ON observations(feed_id, external_id, cross_check_account_id)
+    WHERE cross_check_account_id IS NOT NULL;
 CREATE INDEX observations_account_date ON observations(financial_account_id, occurred_date);
 
 -- Voiding is an import-context tombstone (Doug, 2026-11-27). It ends this
@@ -424,7 +443,7 @@ CREATE INDEX observation_revisions_observation ON observation_revisions(observat
 
 -- Current source attributes: the latest revision, or the first snapshot.
 CREATE VIEW observation_current AS
-SELECT o.id, o.feed_id, o.external_id, o.financial_account_id, o.corroborates_id,
+SELECT o.id, o.feed_id, o.external_id, o.financial_account_id, o.cross_check_account_id, o.corroborates_id,
        CASE WHEN r.id IS NULL THEN o.occurred_date ELSE r.occurred_date END AS occurred_date,
        CASE WHEN r.id IS NULL THEN o.posted_date ELSE r.posted_date END AS posted_date,
        CASE WHEN r.id IS NULL THEN o.direction ELSE r.direction END AS direction,
@@ -814,7 +833,8 @@ BEGIN SELECT RAISE(ABORT, 'INV-015: refund links exceed the refundable purchase 
 
 -- --- Observations ------------------------------------------------------------
 CREATE TRIGGER observations_currency_valid BEFORE INSERT ON observations
-WHEN (SELECT currency FROM financial_accounts WHERE id = NEW.financial_account_id) IS NOT NEW.currency
+WHEN NEW.financial_account_id IS NOT NULL
+ AND (SELECT currency FROM financial_accounts WHERE id = NEW.financial_account_id) IS NOT NEW.currency
 BEGIN SELECT RAISE(ABORT, 'INV-005: observation currency must match its financial account'); END;
 CREATE TRIGGER observation_revisions_currency_valid BEFORE INSERT ON observation_revisions
 WHEN (SELECT f.currency FROM observations o JOIN financial_accounts f ON f.id = o.financial_account_id WHERE o.id = NEW.observation_id) IS NOT NEW.currency

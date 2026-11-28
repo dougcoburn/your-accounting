@@ -208,15 +208,15 @@ A void writes only import-context rows. `observation_voids.commit_id` needs a `c
 
 **Owner moved (ADR 0011):** this is an observation import context operation, not a kernel operation. It writes through its `ContextTx` inside a kernel transaction (§3.14). The rules below stand, enforced by that context. The §2.2 no-op applies when neither the kernel nor any participant staged a row.
 
-The kernel stores facts. The adapter has already turned a feed file into rows. Identity is `(feed_id, external_id, financial_account_id)` (ADR 0007, proposed ADR 0012).
+The kernel stores facts. The adapter has already turned a feed file into rows. Identity is `(feed_id, external_id, financial_account_id)` (ADR 0007, proposed ADR 0012). A payroll cross-check row, also proposed in that ADR, names `cross_check_account_id` instead of a financial account and is not interpreted by a posting.
 
 | | |
 |---|---|
-| Preconditions | Inside `begin_transaction`. Each row has a known feed, a non-empty `external_id`, a financial account in this database, `occurred_date`, optional `posted_date`, direction `inflow` or `outflow`, `amount_minor > 0`, the account's currency, a 64-character hex `row_hash`, and `payload_json` that is valid JSON. `corroborates_id`, when set, is an observation on the same financial account and is not this row. `payload_json` stays in this database. |
+| Preconditions | Inside `begin_transaction`. Each row has a known feed, a non-empty `external_id`, exactly one of a financial account in this database or a payroll cross-check account, `occurred_date`, optional `posted_date`, direction `inflow` or `outflow`, `amount_minor > 0`, the financial account's currency (USD for a cross-check row), a 64-character hex `row_hash`, and `payload_json` that is valid JSON. `corroborates_id`, when set, is an observation on the same financial account and is not this row. `payload_json` stays in this database. |
 | Postconditions | Same identity and same current `row_hash`: no new row, success, idempotent. When the transaction staged nothing else, `commit` is the §2.2 no-op. Same identity and a different `row_hash`: append one `observation_revisions` row with the new attributes and seal a commit of kind `import`. The `observations` row stays the first snapshot and is not updated (INV-014, proposed ADR 0012). Current attributes are `observation_current`. A voided identity is left as it is: no second insert and no revision. A new identity is staged. Review state of a brand-new observation is `unreviewed` unless this same transaction also interprets it. |
 | Invariants | ADR 0007. Proposed ADR 0012. INV-005, INV-014. §2.2. |
 | Typed error | `ImportConflict` (class import; unique-key race only), `CorroborationMismatch` (class import), `CurrencyMismatch` (class user, §4.1), `InvalidId`, `InvalidMoney`, `InvalidDate`, `InvalidShape`, `UnknownTarget`, `AppendOnlyViolation`. |
-| Enforced by | Storage: UNIQUE `(feed_id, external_id, financial_account_id)`, `observations_currency_valid`, `observation_revisions_currency_valid`, `observations_corroborate_valid`, append-only triggers, open-commit triggers. The import context compares the current `row_hash` before insert so an identical re-import does not depend on catching the UNIQUE failure and does not seal an empty commit (§2.2). The first snapshot is never rewritten. |
+| Enforced by | Storage: partial UNIQUE indexes on `(feed_id, external_id, financial_account_id)` and `(feed_id, external_id, cross_check_account_id)`, the check that exactly one of those columns is set, `observations_currency_valid`, `observation_revisions_currency_valid`, `observations_corroborate_valid`, append-only triggers, open-commit triggers. The import context compares the current `row_hash` before insert so an identical re-import does not depend on catching the UNIQUE failure and does not seal an empty commit (§2.2). The first snapshot is never rewritten. A cross-check row has a null financial account, so `posting_observations_valid` rejects a link to it (INV-007). |
 
 `payload_json`, descriptions, and hashes **MUST NOT** appear in the error or the log. The ids are the feed id, the external id, and the observation id.
 
@@ -794,6 +794,10 @@ Doug, 2026-11-26: tags, evidence (file) links, observation links, and refund lin
 Choice: owners are observation import (`feeds`, `import_runs`, `observations`, `observation_voids`, `posting_observations`, evidence tables and `evidence_links`), recipes (`refund_links`), and the application (`tags`, `posting_tags`). `docs/schema-v2.sql` is unchanged; its triggers on those tables are storage backstops owned by those contexts. Decided (Doug, 2026-11-26, ADR 0011 option (i)): context rows commit in the kernel's transaction through the two-method participant hook in §3.14. A separate post-commit transaction and a separate application database were rejected.
 
 ## 9. Changelog
+
+### 2026-11-28 — Proposed ADR 0012: payroll cross-check binding
+
+Proposed, implemented for review, not accepted. A row may name `cross_check_account_id` instead of `financial_account_id`. Exactly one is set. The payroll role is the only role. Those observations are stored and are not posted. The paystub comparison is U28 and is not in this contract. `cross_check_accounts` has no `commit_id`, so the open-commit count stays 24.
 
 ### 2026-11-28 — Proposed ADR 0012: revisions instead of `ImportConflict` on a changed hash
 

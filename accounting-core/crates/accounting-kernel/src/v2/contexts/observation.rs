@@ -16,7 +16,9 @@ pub(crate) fn map_message(msg: &str) -> Option<Error> {
     if let Some((code, refs)) = raise(msg) {
         return Some(Error::new(code, refs, vec![]));
     }
-    if msg.contains("UNIQUE constraint failed: observations.feed_id, observations.external_id, observations.financial_account_id") {
+    if msg.contains("UNIQUE constraint failed: observations.feed_id, observations.external_id, observations.financial_account_id")
+        || msg.contains("UNIQUE constraint failed: observations.feed_id, observations.external_id, observations.cross_check_account_id")
+    {
         return Some(Error::new(Code::ImportConflict, &[], vec![]));
     }
     if msg.contains("UNIQUE constraint failed: observation_voids.observation_id") {
@@ -113,6 +115,9 @@ mod tests {
                 .expect("import");
         assert_eq!(conflict.code, Code::ImportConflict);
         assert_eq!(conflict.class, Class::Import);
+        let payroll = map_message("UNIQUE constraint failed: observations.feed_id, observations.external_id, observations.cross_check_account_id")
+            .expect("payroll");
+        assert_eq!(payroll.code, Code::ImportConflict);
 
         let hashed = map_message("CHECK constraint failed: length(row_hash) = 64").expect("hash");
         assert_eq!(hashed.token, Some("hash"));

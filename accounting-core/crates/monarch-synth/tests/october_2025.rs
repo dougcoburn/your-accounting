@@ -27,6 +27,7 @@ const REQUIRED_SCENARIOS: &[&str] = &[
     "Card perk or statement credit",
     "Duplicate row",
     "In-flight item",
+    "Payroll cross-check",
 ];
 
 #[test]
@@ -189,7 +190,11 @@ fn assert_contract(rows: &[Row], raw: &str) {
         categories.insert(row.category.clone());
         owners.insert(row.owner.clone());
         reviewers.insert(row.reviewed_by.clone());
-        assert_eq!(row.reviewed, "true", "{}", row.id);
+        if row.id == "s-fly-01" {
+            assert!(row.reviewed.is_empty(), "{}", row.id);
+        } else {
+            assert_eq!(row.reviewed, "Reviewed", "{}", row.id);
+        }
         assert_eq!(row.pending, "false", "{}", row.id);
         assert!(!row.reviewed_at.is_empty(), "{}", row.id);
         assert!(!row.reviewed_by.is_empty(), "{}", row.id);
@@ -246,7 +251,7 @@ fn assert_contract(rows: &[Row], raw: &str) {
         "positive share {positive}/{}",
         rows.len()
     );
-    assert_eq!(accounts.len(), 12, "accounts: {accounts:?}");
+    assert_eq!(accounts.len(), 13, "accounts: {accounts:?}");
     assert!(
         (40..=48).contains(&categories.len()),
         "categories {}",
@@ -488,7 +493,7 @@ fn card_buys(rows: &[Row]) -> usize {
 fn is_credit_card(account: &str) -> bool {
     matches!(
         account,
-        "Cinder Visa ...5582"
+        "Cinder Visa (...5582)"
             | "Cinder Mastercard ...5590"
             | "Fable Rewards ...6603"
             | "Nimbus Store Card ...7714"
@@ -510,6 +515,9 @@ fn is_e_tag(tag: &str) -> bool {
 }
 
 fn account_has_only_a_last4(account: &str) -> bool {
+    if !account.bytes().any(|byte| byte.is_ascii_digit()) {
+        return account == "Payroll Tracking";
+    }
     if !account.contains("...") {
         return false;
     }

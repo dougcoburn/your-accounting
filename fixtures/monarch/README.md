@@ -1,6 +1,6 @@
 # synthetic October 2025 Monarch fixture
 
-Invented Monarch Money export for October 2025. Merchants, notes, and ids are fictional. Account names show at most a last-4.
+Invented Monarch Money export for October 2025. Merchants, notes, and ids are fictional. Account names show a last-4, except `Payroll Tracking`, which has no last 4.
 
 `monarch-synth` writes `october-2025-synthetic.csv` beside this file. From `accounting-core`:
 
@@ -10,7 +10,7 @@ cargo run -p monarch-synth -- --check
 
 `--check` confirms the committed CSV and this file match the default seed (`DEFAULT_SEED`, the digits of 2025-10-15). `--seed` changes filler merchants, amounts, and days. Scenario rows, and the ids in the table below, stay put.
 
-Every `Date` is in October 2025 (2025-10-01 through 2025-10-31). Amounts are signed: negative is an outflow, positive is an inflow, and none are zero. Every row has `Pending` false, `Reviewed` true, a `Reviewed At` timestamp, and a `Reviewed By` value.
+Every `Date` is in October 2025 (2025-10-01 through 2025-10-31). Amounts are signed: negative is an outflow, positive is an inflow, and none are zero. Every row has `Pending` false, a `Reviewed At` timestamp, and a `Reviewed By` value. `Reviewed` is the status word, except one blank cell.
 
 ## Columns
 
@@ -19,27 +19,28 @@ Every `Date` is in October 2025 (2025-10-01 through 2025-10-31). Amounts are sig
 ## Shape
 
 - Data rows: 200
-- Distinct accounts: 12
+- Distinct accounts: 13
 - Distinct categories: 44
-- Negative amounts: 80 percent
+- Negative amounts: 79 percent
 - Positive amounts: 20 percent
 - Transfer or payment categories: 15 percent
 - Distinct e-tags: 7
 - Untagged rows: 2
-- Rows with notes: 6
+- Rows with notes: 7
 - Owner: Casey Sample
 
 ## Accounts
 
 - Bramble Brokerage ...3160
 - Cinder Mastercard ...5590
-- Cinder Visa ...5582
+- Cinder Visa (...5582)
 - Dragonfly Operating ...9936
 - Fable Rewards ...6603
 - Harbor Joint Checking ...3340
 - Lumen Cash ...4471
 - Nimbus Store Card ...7714
 - Oak Mortgage ...1048
+- Payroll Tracking
 - Pebble Checking ...2210
 - Pebble Savings ...2218
 - Sable Auto Loan ...2059
@@ -70,3 +71,4 @@ The ids below are the rows that exercise each scenario. Filler rows use the same
 | Card perk or statement credit | s-perk-01 | Positive Subscriptions amount on a card whose original statement contains STATEMENT CREDIT. |
 | Duplicate row | s-dup-a, s-dup-b | These two rows share every field except Id. |
 | In-flight item | s-fly-01 | Late-October transfer outflow. The note says the other side posts in November and that side is absent from this file. |
+| Payroll cross-check | s-pr-pos, s-pr-tax, s-pr-ret, s-pr-ben, s-pr-hsa, s-pr-ded | Net-zero payroll tracking rows for Acme Corp. They are observations for a later paystub cross-check and are not posted. |

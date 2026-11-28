@@ -5,10 +5,13 @@
 //! a feed id, identity is that id plus the financial account. The raw-text
 //! hash only detects change: the same hash is a no-op, and a different hash
 //! appends a revision while the first snapshot stays. `Date` is both the
-//! occurred date and the posted date. `Reviewed` and `Pending` are attributes
-//! on the observation, not a reconciliation and not a reason to skip the row.
+//! occurred date and the posted date. `Reviewed` is the status word
+//! `Reviewed` or blank (`true` and `false` are aliases). `Pending` is an
+//! attribute. Neither is a reconciliation and neither skips the row.
 //! Category is a hint in the payload. This feed creates no ledger accounts
-//! and no financial accounts, and it does not post kernel events.
+//! and no financial accounts, and it does not post kernel events. A
+//! configured name with no last 4 is stored as a payroll cross-check
+//! observation and is not posted.
 //!
 //! A later pull voids an observation only when that pull, for the same
 //! account, covers at least seven days on either side of the observation's
@@ -42,6 +45,9 @@ pub struct ImportRequest<'a> {
     pub feed_id: &'a str,
     pub feed_name: &'a str,
     pub expected_revision: i64,
+    /// Monarch account name, with no last 4, that binds to the payroll
+    /// cross-check role. `None` leaves a name-only account unmapped.
+    pub payroll_cross_check_name: Option<&'a str>,
 }
 
 /// A financial-movement observation already bound to one account.
@@ -90,6 +96,7 @@ struct ResolvedAccount {
 struct AccountScope {
     present: HashSet<String>,
     dates: Vec<String>,
+    cross_check: bool,
 }
 
 /// Import `request.csv`. A parse fault or an account that is not exactly one
@@ -107,42 +114,63 @@ pub fn import_monarch_csv(
             request.expected_revision,
         ));
     }
-    let accounts = resolve_accounts(kernel, &sources)?;
+    let resolved = resolve_accounts(kernel, request, &sources)?;
     let strategy = FeedIdStrategy;
     let mut rows = Vec::with_capacity(sources.len());
     let mut scopes: BTreeMap<String, AccountScope> = BTreeMap::new();
+    let mut payroll_rows = Vec::new();
     for source in &sources {
-        let account = &accounts[&source.last4];
+        let Some(last4) = &source.last4 else {
+            payroll_rows.push(source);
+            continue;
+        };
+        let account = &resolved[last4];
         let identity = strategy
             .identify(&source.external_id, &account.id)
             .map_err(ImportError::Identity)?;
-        let scope = scopes
-            .entry(identity.financial_account_id.clone())
-            .or_insert_with(|| AccountScope {
-                present: HashSet::new(),
-                dates: Vec::new(),
-            });
-        scope.present.insert(identity.external_id.clone());
-        scope.dates.push(source.occurred_date.clone());
+        push_scope(&mut scopes, &identity, &source.occurred_date, false);
         rows.push(observation_input(
             identity,
             &account.currency,
-            &FinancialObservation {
-                external_id: source.external_id.clone(),
-                occurred_date: source.occurred_date.clone(),
-                posted_date: Some(source.occurred_date.clone()),
-                direction: source.direction.to_string(),
-                amount_minor: source.amount_minor,
-                description: source.description.clone(),
-                row_hash: source.row_hash.clone(),
-                payload_json: source.payload_json.clone(),
-            },
+            &financial_observation(source, false),
+            None,
         ));
+    }
+    let existing_payroll = if payroll_rows.is_empty() {
+        None
+    } else {
+        kernel
+            .cross_check_account_id("payroll")
+            .map_err(ImportError::kernel)?
+    };
+    if let Some(account_id) = &existing_payroll {
+        for source in &payroll_rows {
+            let identity = strategy
+                .identify(&source.external_id, account_id)
+                .map_err(ImportError::Identity)?;
+            push_scope(&mut scopes, &identity, &source.occurred_date, true);
+        }
     }
     let voids = absent_ids(kernel, request.feed_id, &scopes)?;
     let mut tx = kernel
         .begin_transaction(Some(request.expected_revision))
         .map_err(ImportError::kernel)?;
+    if !payroll_rows.is_empty() {
+        let account_id = tx
+            .ensure_cross_check_account("payroll")
+            .map_err(ImportError::kernel)?;
+        for source in payroll_rows {
+            let identity = strategy
+                .identify(&source.external_id, &account_id)
+                .map_err(ImportError::Identity)?;
+            rows.push(observation_input(
+                identity,
+                "USD",
+                &financial_observation(source, true),
+                Some(account_id.clone()),
+            ));
+        }
+    }
     tx.ensure_feed(NewFeed {
         id: Some(request.feed_id.to_string()),
         kind: "monarch_csv".to_string(),
@@ -204,7 +232,12 @@ pub fn add_observations(
             }]));
         }
         present.insert(identity.external_id.clone());
-        rows.push(observation_input(identity, &account.currency, observation));
+        rows.push(observation_input(
+            identity,
+            &account.currency,
+            observation,
+            None,
+        ));
     }
     let voids = if let Some(coverage) = &request.coverage {
         let live = kernel
@@ -251,15 +284,56 @@ pub fn add_observations(
     ))
 }
 
+fn push_scope(
+    scopes: &mut BTreeMap<String, AccountScope>,
+    identity: &FeedIdentity,
+    occurred_date: &str,
+    cross_check: bool,
+) {
+    let scope = scopes
+        .entry(identity.financial_account_id.clone())
+        .or_insert_with(|| AccountScope {
+            present: HashSet::new(),
+            dates: Vec::new(),
+            cross_check,
+        });
+    scope.present.insert(identity.external_id.clone());
+    scope.dates.push(occurred_date.to_string());
+}
+
+fn financial_observation(source: &row::SourceRow, payroll: bool) -> FinancialObservation {
+    let payload_json = if payroll {
+        row::mark_payroll(&source.payload_json)
+    } else {
+        source.payload_json.clone()
+    };
+    FinancialObservation {
+        external_id: source.external_id.clone(),
+        occurred_date: source.occurred_date.clone(),
+        posted_date: Some(source.occurred_date.clone()),
+        direction: source.direction.to_string(),
+        amount_minor: source.amount_minor,
+        description: source.description.clone(),
+        row_hash: source.row_hash.clone(),
+        payload_json,
+    }
+}
+
 fn observation_input(
     identity: FeedIdentity,
     currency: &str,
     observation: &FinancialObservation,
+    cross_check_account_id: Option<String>,
 ) -> ObservationInput {
     ObservationInput {
         id: None,
         external_id: identity.external_id,
-        financial_account_id: identity.financial_account_id,
+        financial_account_id: if cross_check_account_id.is_some() {
+            String::new()
+        } else {
+            identity.financial_account_id
+        },
+        cross_check_account_id,
         occurred_date: observation.occurred_date.clone(),
         posted_date: observation.posted_date.clone(),
         direction: observation.direction.clone(),
@@ -282,9 +356,12 @@ fn absent_ids(
         let Some(coverage) = dates::span(scope.dates.iter().map(String::as_str)) else {
             continue;
         };
-        let live = kernel
-            .live_observations_for_account(feed_id, account_id)
-            .map_err(ImportError::kernel)?;
+        let live = if scope.cross_check {
+            kernel.live_observations_for_cross_check(feed_id, account_id)
+        } else {
+            kernel.live_observations_for_account(feed_id, account_id)
+        }
+        .map_err(ImportError::kernel)?;
         for obs in live {
             if scope.present.contains(&obs.external_id) {
                 continue;
@@ -390,7 +467,7 @@ fn read_sources(csv: &str) -> Result<Vec<row::SourceRow>, ImportError> {
     }
     let mut seen = HashSet::new();
     for source in &sources {
-        if !seen.insert((source.last4.clone(), source.external_id.clone())) {
+        if !seen.insert((account_key(source), source.external_id.clone())) {
             faults.push(RowFault {
                 row: source.line,
                 column: "Id",
@@ -405,22 +482,44 @@ fn read_sources(csv: &str) -> Result<Vec<row::SourceRow>, ImportError> {
     Ok(sources)
 }
 
+fn account_key(source: &row::SourceRow) -> String {
+    match &source.last4 {
+        Some(last4) => format!("4:{last4}"),
+        None => format!("n:{}", source.account_name),
+    }
+}
+
+fn payroll_name(request: &ImportRequest<'_>, source: &row::SourceRow) -> bool {
+    source.last4.is_none()
+        && request
+            .payroll_cross_check_name
+            .is_some_and(|name| source.account_name == name.trim())
+}
+
 fn resolve_accounts(
     kernel: &Kernel,
+    request: &ImportRequest<'_>,
     sources: &[row::SourceRow],
 ) -> Result<HashMap<String, ResolvedAccount>, ImportError> {
     let mut resolved = HashMap::new();
     let mut unmapped = Vec::new();
     let mut last4s = BTreeSet::new();
     for source in sources {
-        last4s.insert(source.last4.clone());
+        if let Some(last4) = &source.last4 {
+            last4s.insert(last4.clone());
+        } else if !payroll_name(request, source) {
+            unmapped.push(source.line);
+        }
     }
     for last4 in last4s {
         let found = kernel
             .financial_accounts_with_last4(&last4)
             .map_err(ImportError::kernel)?;
         if found.len() != 1 || found[0].currency != "USD" {
-            for source in sources.iter().filter(|source| source.last4 == last4) {
+            for source in sources
+                .iter()
+                .filter(|source| source.last4.as_deref() == Some(last4.as_str()))
+            {
                 unmapped.push(source.line);
             }
             continue;
