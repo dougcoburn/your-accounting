@@ -5,7 +5,7 @@
 //! reverse or correct the kernel event. `row_hash` is the adapter's hash of
 //! the raw source row. The same identity and the same hash is a no-op. A
 //! different hash appends `observation_revisions` and leaves the first snapshot
-//! in place (proposed ADR 0012). A Monarch `Date` is the posted date when the
+//! in place (ADR 0012, Accepted 2026-11-27). A Monarch `Date` is the posted date when the
 //! adapter copies it into `posted_date` (U23). This module does not read feed files.
 //!
 //! Evidence bytes are not a schema column. `put_evidence` writes them into the

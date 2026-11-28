@@ -208,13 +208,13 @@ A void writes only import-context rows. `observation_voids.commit_id` needs a `c
 
 **Owner moved (ADR 0011):** this is an observation import context operation, not a kernel operation. It writes through its `ContextTx` inside a kernel transaction (§3.14). The rules below stand, enforced by that context. The §2.2 no-op applies when neither the kernel nor any participant staged a row.
 
-The kernel stores facts. The adapter has already turned a feed file into rows. Identity is `(feed_id, external_id, financial_account_id)` (ADR 0007, proposed ADR 0012). A payroll cross-check row, also proposed in that ADR, names `cross_check_account_id` instead of a financial account and is not interpreted by a posting.
+The kernel stores facts. The adapter has already turned a feed file into rows. Identity is `(feed_id, external_id, financial_account_id)` (ADR 0007, ADR 0012, Accepted 2026-11-27). A payroll cross-check row names `cross_check_account_id` instead of a financial account and is not interpreted by a posting. Doug approved that schema shape by merging #84: `financial_account_id` is nullable, `cross_check_accounts` holds the payroll role, and exactly one of the two is set.
 
 | | |
 |---|---|
 | Preconditions | Inside `begin_transaction`. Each row has a known feed, a non-empty `external_id`, exactly one of a financial account in this database or a payroll cross-check account, `occurred_date`, optional `posted_date`, direction `inflow` or `outflow`, `amount_minor > 0`, the financial account's currency (USD for a cross-check row), a 64-character hex `row_hash`, and `payload_json` that is valid JSON. `corroborates_id`, when set, is an observation on the same financial account and is not this row. `payload_json` stays in this database. |
-| Postconditions | Same identity and same current `row_hash`: no new row, success, idempotent. When the transaction staged nothing else, `commit` is the §2.2 no-op. Same identity and a different `row_hash`: append one `observation_revisions` row with the new attributes and seal a commit of kind `import`. The `observations` row stays the first snapshot and is not updated (INV-014, proposed ADR 0012). Current attributes are `observation_current`. A voided identity is left as it is: no second insert and no revision. A new identity is staged. Review state of a brand-new observation is `unreviewed` unless this same transaction also interprets it. |
-| Invariants | ADR 0007. Proposed ADR 0012. INV-005, INV-014. §2.2. |
+| Postconditions | Same identity and same current `row_hash`: no new row, success, idempotent. When the transaction staged nothing else, `commit` is the §2.2 no-op. Same identity and a different `row_hash`: append one `observation_revisions` row with the new attributes and seal a commit of kind `import`. The `observations` row stays the first snapshot and is not updated (INV-014, ADR 0012). Current attributes are `observation_current`. A voided identity is left as it is: no second insert and no revision. A new identity is staged. Review state of a brand-new observation is `unreviewed` unless this same transaction also interprets it. |
+| Invariants | ADR 0007. ADR 0012 (Accepted 2026-11-27). INV-005, INV-014. §2.2. |
 | Typed error | `ImportConflict` (class import; unique-key race only), `CorroborationMismatch` (class import), `CurrencyMismatch` (class user, §4.1), `InvalidId`, `InvalidMoney`, `InvalidDate`, `InvalidShape`, `UnknownTarget`, `AppendOnlyViolation`. |
 | Enforced by | Storage: partial UNIQUE indexes on `(feed_id, external_id, financial_account_id)` and `(feed_id, external_id, cross_check_account_id)`, the check that exactly one of those columns is set, `observations_currency_valid`, `observation_revisions_currency_valid`, `observations_corroborate_valid`, append-only triggers, open-commit triggers. The import context compares the current `row_hash` before insert so an identical re-import does not depend on catching the UNIQUE failure and does not seal an empty commit (§2.2). The first snapshot is never rewritten. A cross-check row has a null financial account, so `posting_observations_valid` rejects a link to it (INV-007). |
 
@@ -492,7 +492,7 @@ The SQL text in this section is the mapping key for the adapter. It **MUST NOT**
 | `ObservationAlreadyVoided` | user | A second tombstone for the same observation. |
 | `ObservationMismatch` | user | INV-007. Link does not match account, amount, currency, and direction. |
 | `ObservationDoubleConsumed` | user | INV-007. Two current events interpret one observation. |
-| `ImportConflict` | import | Unique identity `(feed_id, external_id, financial_account_id)` inserted when the pre-check missed the stored row. A changed `row_hash` is a revision, not this code (proposed ADR 0012). |
+| `ImportConflict` | import | Unique identity `(feed_id, external_id, financial_account_id)` inserted when the pre-check missed the stored row. A changed `row_hash` is a revision, not this code (ADR 0012). |
 | `CorroborationMismatch` | import | `corroborates_id` is a different financial account. |
 | `DraftHasPostings` | user | INV-006. |
 | `ReconciledGroupEmpty` | user | INV-008. Reconciled state with no postings. |
@@ -795,13 +795,17 @@ Choice: owners are observation import (`feeds`, `import_runs`, `observations`, `
 
 ## 9. Changelog
 
+### 2026-11-27 — ADR 0012 accepted
+
+Doug accepted ADR 0012 on 2026-11-27. Merging #84 approved the schema shape: `observations.financial_account_id` is nullable, `cross_check_accounts` is the payroll role, and exactly one of `financial_account_id` and `cross_check_account_id` is set. §3.6 matches that shape. U41, U42, and the weekly or statement matching rules stay the follow-ups named in the ADR.
+
 ### 2026-11-28 — Proposed ADR 0012: payroll cross-check binding
 
-Proposed, implemented for review, not accepted. A row may name `cross_check_account_id` instead of `financial_account_id`. Exactly one is set. The payroll role is the only role. Those observations are stored and are not posted. The paystub comparison is U28 and is not in this contract. `cross_check_accounts` has no `commit_id`, so the open-commit count stays 24.
+Recorded while the ADR was still proposed. Accepted 2026-11-27; see the entry above. A row may name `cross_check_account_id` instead of `financial_account_id`. Exactly one is set. The payroll role is the only role. Those observations are stored and are not posted. The paystub comparison is U28 and is not in this contract. `cross_check_accounts` has no `commit_id`, so the open-commit count stays 24.
 
 ### 2026-11-28 — Proposed ADR 0012: revisions instead of `ImportConflict` on a changed hash
 
-Proposed, implemented for review, not accepted. §3.6 identity is `(feed_id, external_id, financial_account_id)`. The same identity and a different `row_hash` appends `observation_revisions` and leaves the first `observations` snapshot in place. Current attributes are `observation_current`. `ImportConflict` is only the unique-key race. §4.1 and §4.3 match that. `observation_revisions` is commit-scoped, so the open-commit count in the smoke script is 24. Doug decided on 2026-11-28 that a provisional transaction is a kernel event with a provisional flag, that balances include provisional and pending entries, and that a recipe commit group takes only posted entries. That behavior is U41 and is not in this contract yet. A voided row that reappears the same stays voided; explicit restore and the reconciliation candidate list are U42, and they are not in this contract either. The same ADR specifies the weekly bank-CSV or QFX/OFX import and the month-end statement. Those matching rules are not part of this kernel contract, and U23 does not implement them.
+Recorded while the ADR was still proposed. Accepted 2026-11-27; see the entry above. §3.6 identity is `(feed_id, external_id, financial_account_id)`. The same identity and a different `row_hash` appends `observation_revisions` and leaves the first `observations` snapshot in place. Current attributes are `observation_current`. `ImportConflict` is only the unique-key race. §4.1 and §4.3 match that. `observation_revisions` is commit-scoped, so the open-commit count in the smoke script is 24. Doug decided on 2026-11-28 that a provisional transaction is a kernel event with a provisional flag, that balances include provisional and pending entries, and that a recipe commit group takes only posted entries. That behavior is U41 and is not in this contract yet. A voided row that reappears the same stays voided; explicit restore and the reconciliation candidate list are U42, and they are not in this contract either. The same ADR specifies the weekly bank-CSV or QFX/OFX import and the month-end statement. Those matching rules are not part of this kernel contract, and U23 does not implement them.
 
 ### 2026-11-27 — `VoidWithoutReversal` leaves the closed list
 

@@ -2,7 +2,7 @@
 //! plus the financial account. Monarch `Id` and a QFX/OFX FITID both use
 //! [`FeedIdStrategy`]. A time-range CSV with no id plugs in through
 //! [`IdLessStrategy`] later. The weekly cadence and the month-end statement
-//! rules are proposed ADR 0012. This unit does not match an id-less source.
+//! rules are ADR 0012 (Accepted 2026-11-27). This unit does not match an id-less source.
 
 use std::fmt;
 
@@ -39,7 +39,7 @@ impl IdentityStrategy for FeedIdStrategy {
 }
 
 /// Seam for a time-range CSV or statement with no stable id. The follow-up
-/// unit (proposed ADR 0012) classifies each row as a confident match, a
+/// unit (ADR 0012) classifies each row as a confident match, a
 /// possible match for review, or new. Calling this strategy does not match
 /// and does not write.
 #[derive(Debug, Default, Clone, Copy)]

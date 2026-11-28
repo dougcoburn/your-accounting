@@ -4,7 +4,7 @@
 Take one real month (October 2025 sample) from imported observations to a posted, balanced ledger. Every observation is either reconciled, voided (e.g. a duplicate from an extraction bug), or still open on the worklist (unreviewed or interpreted). Open is not an end state; it is work still to do. Revised 2026-11-20: dropped "open with a named reason" as a terminal state.
 
 ## Decisions so far
-ADRs: docs/adr/0001-0011 (drafted 2026-11-19, revised after Eng Leads review 2026-11-20; 0008 and 0002 amendment 2026-11-22; 0009 FX Clearing 2026-11-26, post-month-1; 0010 bounded contexts 2026-11-26; 0011 kernel stages only events and lines 2026-11-26).
+ADRs: docs/adr/0001-0012 (drafted 2026-11-19, revised after Eng Leads review 2026-11-20; 0008 and 0002 amendment 2026-11-22; 0009 FX Clearing 2026-11-26, post-month-1; 0010 bounded contexts 2026-11-26; 0011 kernel stages only events and lines 2026-11-26; 0012 feed identity and observation revisions, Accepted 2026-11-27).
 
 - Destination set (2026-11-19).
 - Observation source for month 1: Monarch CSV rows; Monarch category is a suggestion, not truth. Missing accounts (e.g. HSA) supplied by Doug's offline extraction (2026-11-19).
@@ -93,6 +93,14 @@ ADRs: docs/adr/0001-0011 (drafted 2026-11-19, revised after Eng Leads review 202
 - Single-currency ledger accounts and FX Clearing (2026-11-26, Doug, ADR 0009 with PR 33 answers; post-month-1 unit, not in the month-1 plan): logical categories are currency-independent, ledger accounts are (category, currency), and every line matches its account's currency, except one multi-currency FX Clearing account per entity. Each event touching FX Clearing has exactly one debit currency and one different credit currency there; the derived rate is credit total / debit total, never stored, shown to 7 decimals half-even, so FX Clearing's effective balance is zero by construction. INV-001 stays per event per currency. Month-end reports are per currency and isolated, even within one entity; no revaluation, no single reporting currency; realized exchange gain/loss is a later application report. A USD card abroad posts in USD only. Fees go to expense. A rate plausibility check behind a rate-source port raises information-only to-dos (exit 0). FX across recipe halves (decided 2026-11-26): the converting side, as its bank statement shows, does the exchange inside its own half with one obligation currency for the recipe instance; the wire fee books on the converting side's expense account; splitting the exchange across halves is rejected.
 - Bounded contexts for small agent context (2026-11-26, Doug, ADR 0010; design in docs/design/bounded-contexts.md): split the docs now, one `INTERFACE.md` per context plus a context map; split the code later as kernel modules, not crates. U21 is the doctor check runner plus the six ledger-core checks; other contexts add their checks in their own units (U22, U29/U31, FX), and warning/info findings never fail doctor. Context-owned glossary terms move into context pages after U22, with a small shared core plus an index in GLOSSARY.md. Architect defaults reversible choices; only one-way-door questions go to Doug, once per PR.
 - Kernel stages only events and their lines (2026-11-26, Doug, ADR 0011): tags, evidence/file links, observation links and refund links are not kernel concepts. They live in context tables in the same entity database and reference events or lines by id. Observation import (with evidence and observation links) is U22; refund links belong to recipes (U27); tags belong to the application. Decided (Doug, 2026-11-26): context rows commit in the kernel's transaction through a two-method participant hook, `stage()`/`validate()` (KERNEL_INTERFACE_SPEC §3.14). A separate post-commit transaction and a separate app database were rejected.
+- Feed identity and observation revisions (Accepted 2026-11-27, Doug, ADR 0012): identity is feed id + external id + financial account, or feed id + external id + the payroll cross-check account. A changed hash appends a revision. Doug approved the schema shape by merging #84: `observations.financial_account_id` is nullable, `cross_check_accounts` holds the payroll role, and exactly one of those two columns is set. Provisional events (U41) and explicit restore (U42) are specified and not built.
+- Prototype A review (Doug, 2026-11-26). There is no separate product brief or feedback log. These points are the record:
+  - PA-01, open design issue (U43): navigation is hard. Primary workflows must be easy to reach. No navigation pattern is chosen.
+  - PA-02 (U07): the user can clear an assigned recipe and clear an assigned category.
+  - PA-03 (U07): the category picker can add a category inline, and the new category is added to the options list.
+  - PA-04 (U08): after a recipe is applied, show the sibling transactions the group expects that are still missing or unmatched.
+  - PA-05: Prototypes A (spreadsheet register), B (card triage), and C (journal-first) are not a pick-one choice. Each fits specific workflows.
+  - PA-06, pending (U44): map each interface to its workflow once Prototype B and C feedback is in.
 
 ## Not yet specified (fog)
 - Party-to-entity conversion wizard (when Esther joins).
@@ -101,6 +109,8 @@ ADRs: docs/adr/0001-0011 (drafted 2026-11-19, revised after Eng Leads review 202
 - v0.2 section 13 open decisions still open: 2 FX journal model (decided for post-month-1 by ADR 0009), 6 multi-currency reporting (native-currency part decided by ADR 0009; retained earnings per currency still open), 7 account ownership transfer, 8 settlement participation constraints (no limits in month 1), 10 approval/MCP auth (deferred), 11 budgets, 12 data retention. Settled: 1 money, 3 statement cutoff, 4 refunds, 5 payroll, 9 corrections.
 - Balance checkpoints (deferred past month 1): rebuildable per-account balances at cutoffs to bound the cost of closed-month checks and as-of-recorded replay as corrections accumulate. Caches only, verified by `doctor`, never authoritative.
 - Prototype gaps remaining: evidence strength (strong vs weak) as an input to match suggestions; editable registries UI; paired in/out transfer expected slots (brokerage).
+- Navigation (open design issue, Doug 2026-11-26, PA-01, U43): primary workflows must be easy to reach. No pattern is chosen.
+- Interface-to-workflow map (pending, Doug 2026-11-26, PA-06, U44): map Prototypes A, B, and C to the workflows they fit, after B and C feedback is in.
 
 ## Out of scope
 - Polished UI, reports, live bank feeds.
