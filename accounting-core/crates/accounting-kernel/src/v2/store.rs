@@ -94,6 +94,14 @@ pub struct LedgerAccountRow {
     pub name: String,
 }
 
+/// A live observation on one account. No source text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveObservation {
+    pub id: String,
+    pub external_id: String,
+    pub occurred_date: String,
+}
+
 /// A committed observation. `payload_json` stays in this process; callers do not log it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservationFact {
@@ -551,7 +559,7 @@ impl Kernel {
             .query_row(
                 "SELECT id, external_id, financial_account_id, occurred_date, posted_date,
                         direction, amount_minor, currency, row_hash, payload_json
-                 FROM observations WHERE feed_id = ?1 AND external_id = ?2",
+                 FROM observation_current WHERE feed_id = ?1 AND external_id = ?2",
                 params![feed_id, external_id],
                 |row| {
                     Ok(ObservationFact {
@@ -574,6 +582,64 @@ impl Kernel {
 
     pub fn observation_count(&self) -> Result<i64, Error> {
         self.scalar("SELECT count(*) FROM observations")
+    }
+
+    pub fn observation_revision_count(&self, observation_id: &str) -> Result<i64, Error> {
+        self.conn
+            .query_row(
+                "SELECT count(*) FROM observation_revisions WHERE observation_id = ?1",
+                [observation_id],
+                |row| row.get(0),
+            )
+            .map_err(|err| map_sql(err, SqlSite::Read))
+    }
+
+    /// Hash of the first snapshot. Later pulls do not change it.
+    pub fn observation_base_row_hash(&self, observation_id: &str) -> Result<Option<String>, Error> {
+        self.conn
+            .query_row(
+                "SELECT row_hash FROM observations WHERE id = ?1",
+                [observation_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|err| map_sql(err, SqlSite::Read))
+    }
+
+    /// Live (not voided) observations for one feed and financial account.
+    /// Dates are the current occurred date. Payloads are not returned.
+    pub fn live_observations_for_account(
+        &self,
+        feed_id: &str,
+        financial_account_id: &str,
+    ) -> Result<Vec<LiveObservation>, Error> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT o.id, o.external_id, c.occurred_date
+                 FROM observations o
+                 JOIN observation_current c ON c.id = o.id
+                 WHERE o.feed_id = ?1 AND o.financial_account_id = ?2
+                   AND NOT EXISTS (
+                     SELECT 1 FROM observation_voids v WHERE v.observation_id = o.id
+                   )
+                 ORDER BY o.external_id",
+            )
+            .map_err(|err| map_sql(err, SqlSite::Read))?;
+        let rows = stmt
+            .query_map(params![feed_id, financial_account_id], |row| {
+                Ok(LiveObservation {
+                    id: row.get(0)?,
+                    external_id: row.get(1)?,
+                    occurred_date: row.get(2)?,
+                })
+            })
+            .map_err(|err| map_sql(err, SqlSite::Read))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|err| map_sql(err, SqlSite::Read))?);
+        }
+        Ok(out)
     }
 
     pub fn observation_review_state(&self, observation_id: &str) -> Result<Option<String>, Error> {

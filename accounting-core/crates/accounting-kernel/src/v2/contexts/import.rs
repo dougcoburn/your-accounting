@@ -2,9 +2,11 @@
 //!
 //! Stores already-keyed feed rows and links them to kernel lines by position.
 //! A void tombstones the observation and ends its live links. It does not
-//! reverse or correct the kernel event. `row_hash` is the
-//! adapter's hash: a Monarch `Date` is the posted date when the adapter copies
-//! it into `posted_date` (U23). This module does not read feed files.
+//! reverse or correct the kernel event. `row_hash` is the adapter's hash of
+//! the raw source row. The same identity and the same hash is a no-op. A
+//! different hash appends `observation_revisions` and leaves the first snapshot
+//! in place (proposed ADR 0012). A Monarch `Date` is the posted date when the
+//! adapter copies it into `posted_date` (U23). This module does not read feed files.
 //!
 //! Evidence bytes are not a schema column. `put_evidence` writes them into the
 //! directory given at registration, then stores `sha256` and size. A file with
@@ -38,6 +40,7 @@ const TABLES: &[&str] = &[
     "feeds",
     "import_runs",
     "observations",
+    "observation_revisions",
     "observation_voids",
     "posting_observations",
     "evidence_objects",
@@ -63,6 +66,7 @@ const UNSEALED_TABLES: &[&str] = &[
     "evidence_links",
     "import_runs",
     "observations",
+    "observation_revisions",
     "observation_voids",
     "posting_observations",
 ];
@@ -183,6 +187,7 @@ pub struct ImportBatch {
 pub struct ImportOutcome {
     pub import_run_id: Option<String>,
     pub inserted: u32,
+    pub revised: u32,
     pub observation_ids: Vec<String>,
 }
 
@@ -266,12 +271,14 @@ impl Transaction<'_> {
             return Err(self.fail(Error::new(Code::InvalidShape, &[], vec![])));
         }
         let mut allocated = Vec::with_capacity(batch.rows.len());
+        let mut revision_ids = Vec::with_capacity(batch.rows.len());
         for row in &batch.rows {
             allocated.push(self.allocate(row.id.clone())?);
+            revision_ids.push(self.allocate(None)?);
         }
         let run_id = self.allocate(None)?;
         let work = self.with_participant(PARTICIPANT_ID, true, |tx| {
-            stage_import(tx, &batch, &allocated, &run_id)
+            stage_import(tx, &batch, &allocated, &revision_ids, &run_id)
         })?;
         for subject in work.subjects {
             self.note_subject(subject)?;
@@ -459,12 +466,14 @@ struct StoredObservation {
     row_hash: String,
     commit_id: String,
     seq: i64,
+    voided: bool,
 }
 
 fn stage_import(
     tx: &mut ContextTx<'_>,
     batch: &ImportBatch,
     allocated: &[String],
+    revision_ids: &[String],
     run_id: &str,
 ) -> Result<ImportWork, Error> {
     let feed = tx.query_optional(
@@ -497,31 +506,35 @@ fn stage_import(
         }
     }
     let mut inserted_ids = Vec::new();
+    let mut revisions = Vec::new();
     let mut observation_ids = Vec::with_capacity(batch.rows.len());
     let mut subjects = Vec::new();
-    for (row, new_id) in batch.rows.iter().zip(allocated.iter()) {
+    for (index, (row, new_id)) in batch.rows.iter().zip(allocated.iter()).enumerate() {
         check_row(tx, row, new_id)?;
-        if let Some(stored) = stored_observation(tx, &batch.feed_id, &row.external_id)? {
-            if stored.row_hash != row.row_hash {
-                return Err(Error::new(
-                    Code::ImportConflict,
-                    &[],
-                    vec![batch.feed_id.clone(), row.external_id.clone(), stored.id],
-                ));
+        if let Some(stored) = stored_observation(
+            tx,
+            &batch.feed_id,
+            &row.external_id,
+            &row.financial_account_id,
+        )? {
+            if stored.voided || stored.row_hash == row.row_hash {
+                subjects.push(Subject::Observation {
+                    feed_id: batch.feed_id.clone(),
+                    external_id: row.external_id.clone(),
+                    commit_id: stored.commit_id,
+                    seq: stored.seq,
+                });
+                observation_ids.push(stored.id);
+                continue;
             }
-            subjects.push(Subject::Observation {
-                feed_id: batch.feed_id.clone(),
-                external_id: row.external_id.clone(),
-                commit_id: stored.commit_id,
-                seq: stored.seq,
-            });
-            observation_ids.push(stored.id);
+            observation_ids.push(stored.id.clone());
+            revisions.push((revision_ids[index].clone(), stored.id, row));
             continue;
         }
         inserted_ids.push((new_id.clone(), row));
         observation_ids.push(new_id.clone());
     }
-    let import_run_id = if inserted_ids.is_empty() {
+    let import_run_id = if inserted_ids.is_empty() && revisions.is_empty() {
         None
     } else {
         let commit_id = tx.commit_id().to_string();
@@ -545,12 +558,16 @@ fn stage_import(
         for (id, row) in &inserted_ids {
             insert_observation(tx, id, &batch.feed_id, run_id, row)?;
         }
+        for (id, observation_id, row) in &revisions {
+            insert_revision(tx, id, observation_id, run_id, row)?;
+        }
         Some(run_id.to_string())
     };
     Ok(ImportWork {
         outcome: ImportOutcome {
             import_run_id,
             inserted: u32::try_from(inserted_ids.len()).unwrap_or(u32::MAX),
+            revised: u32::try_from(revisions.len()).unwrap_or(u32::MAX),
             observation_ids,
         },
         subjects,
@@ -639,21 +656,59 @@ fn stored_observation(
     tx: &ContextTx<'_>,
     feed_id: &str,
     external_id: &str,
+    financial_account_id: &str,
 ) -> Result<Option<StoredObservation>, Error> {
     tx.query_optional(
-        "SELECT o.id, o.row_hash, o.commit_id, c.seq
+        "SELECT o.id, cur.row_hash, o.commit_id, c.seq,
+                EXISTS(SELECT 1 FROM observation_voids v WHERE v.observation_id = o.id)
          FROM observations o
+         JOIN observation_current cur ON cur.id = o.id
          JOIN commits c ON c.id = o.commit_id
-         WHERE o.feed_id = ?1 AND o.external_id = ?2",
-        params![feed_id, external_id],
+         WHERE o.feed_id = ?1 AND o.external_id = ?2 AND o.financial_account_id = ?3",
+        params![feed_id, external_id, financial_account_id],
         |row| {
             Ok(StoredObservation {
                 id: row.get(0)?,
                 row_hash: row.get(1)?,
                 commit_id: row.get(2)?,
                 seq: row.get(3)?,
+                voided: row.get::<_, i64>(4)? != 0,
             })
         },
+    )
+}
+
+fn insert_revision(
+    tx: &mut ContextTx<'_>,
+    id: &str,
+    observation_id: &str,
+    run_id: &str,
+    row: &ObservationInput,
+) -> Result<(), Error> {
+    let commit_id = tx.commit_id().to_string();
+    let recorded_at = tx.recorded_at().to_string();
+    tx.insert_row(
+        "observation_revisions",
+        id,
+        "INSERT INTO observation_revisions(
+            id, observation_id, import_run_id, occurred_date, posted_date, direction,
+            amount_minor, currency, description, row_hash, payload_json, commit_id, recorded_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        params![
+            id,
+            observation_id,
+            run_id,
+            row.occurred_date,
+            row.posted_date,
+            row.direction,
+            row.amount_minor,
+            row.currency,
+            row.description,
+            row.row_hash,
+            row.payload_json,
+            commit_id,
+            recorded_at
+        ],
     )
 }
 
@@ -728,7 +783,7 @@ fn link_posting(
     let observation = tx.query_optional(
         "SELECT financial_account_id, amount_minor, currency, direction,
                 EXISTS(SELECT 1 FROM observation_voids v WHERE v.observation_id = o.id)
-         FROM observations o WHERE o.id = ?1",
+         FROM observation_current o WHERE o.id = ?1",
         [observation_id],
         |row| {
             Ok((
@@ -1169,6 +1224,7 @@ fn subject_sql(table: &str) -> Option<&'static str> {
         "evidence_links" => "SELECT id FROM evidence_links WHERE rowid = ?1",
         "import_runs" => "SELECT id FROM import_runs WHERE rowid = ?1",
         "observations" => "SELECT id FROM observations WHERE rowid = ?1",
+        "observation_revisions" => "SELECT id FROM observation_revisions WHERE rowid = ?1",
         "observation_voids" => "SELECT id FROM observation_voids WHERE rowid = ?1",
         "posting_observations" => "SELECT posting_id FROM posting_observations WHERE rowid = ?1",
         _ => return None,
@@ -1531,7 +1587,7 @@ mod tests {
         assert_eq!(count(&kernel, "SELECT count(*) FROM import_runs"), 1);
 
         let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
-        let err = tx
+        let revised = tx
             .import_observations(batch(
                 &feed,
                 vec![row(
@@ -1542,17 +1598,41 @@ mod tests {
                     "USD",
                 )],
             ))
-            .expect_err("conflict");
-        assert_eq!(err.code, Code::ImportConflict);
-        assert_eq!(err.class, Class::Import);
-        assert!(err.ids.iter().any(|id| id == "row-posted"));
-        assert!(!err.to_string().contains(&hash_of(0x33)));
-        assert!(!err.to_string().contains("Synthetic row"));
-        assert!(!err.to_string().contains("synthetic"));
-        drop(tx);
+            .expect("revise");
+        assert_eq!(revised.inserted, 0);
+        assert_eq!(revised.revised, 1);
+        let sealed = tx.commit().expect("revision commit");
+        assert!(!sealed.noop);
+        assert_eq!(sealed.seq, 3);
+        assert_eq!(
+            kernel.commit_at_seq(3).expect("row").expect("info").kind,
+            "import"
+        );
         assert_eq!(count(&kernel, "SELECT count(*) FROM observations"), 2);
+        assert_eq!(
+            count(&kernel, "SELECT count(*) FROM observation_revisions"),
+            1
+        );
+        let base_hash: String = kernel
+            .connection()
+            .query_row(
+                "SELECT row_hash FROM observations WHERE external_id = 'row-posted'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("base");
+        assert_eq!(base_hash, hash_of(0x11));
+        let current_hash: String = kernel
+            .connection()
+            .query_row(
+                "SELECT row_hash FROM observation_current WHERE external_id = 'row-posted'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("current");
+        assert_eq!(current_hash, hash_of(0x33));
 
-        let mut tx = kernel.begin_transaction(Some(2)).expect("begin");
+        let mut tx = kernel.begin_transaction(Some(3)).expect("begin");
         let err = tx
             .import_observations(batch(
                 &feed,
@@ -1562,7 +1642,7 @@ mod tests {
         assert_eq!(err.code, Code::CurrencyMismatch);
         assert_eq!(err.class, Class::User);
         drop(tx);
-        let report = kernel.doctor(Some(2)).expect("doctor");
+        let report = kernel.doctor(Some(3)).expect("doctor");
         assert_eq!(report.exit_status, 0);
         assert!(report.freeze.is_none());
     }

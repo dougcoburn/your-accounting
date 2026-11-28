@@ -5,7 +5,7 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::error::{column_at, ColumnDiff, RowFault, COLUMNS};
+use crate::error::{column_at, RowFault, COLUMNS};
 
 const HASH_PREFIX: &str = "monarch-row-v1\n";
 const UNTAGGED_RULE: &str = "account_owner_or_same_owner_transfer";
@@ -13,7 +13,6 @@ const UNTAGGED_RULE: &str = "account_owner_or_same_owner_transfer";
 #[derive(Debug, Clone)]
 pub struct SourceRow {
     pub line: u32,
-    pub values: [String; 14],
     pub external_id: String,
     pub occurred_date: String,
     pub direction: &'static str,
@@ -21,9 +20,7 @@ pub struct SourceRow {
     pub row_hash: String,
     pub description: String,
     pub payload_json: String,
-    pub category: String,
     pub last4: String,
-    pub pending: bool,
 }
 
 pub fn interpret(line: u32, fields: &[String]) -> Result<SourceRow, Vec<RowFault>> {
@@ -99,37 +96,11 @@ pub fn interpret(line: u32, fields: &[String]) -> Result<SourceRow, Vec<RowFault
         description: values[1].clone(),
         external_id: values[13].clone(),
         occurred_date: values[0].clone(),
-        category: values[2].clone(),
         last4,
         direction,
         amount_minor: minor,
         payload_json,
-        pending,
-        values,
     })
-}
-
-pub fn proposal(row: &SourceRow, stored_payload: &str) -> ColumnDiff {
-    let mut columns = differing_columns(&row.values, stored_payload);
-    if columns.is_empty() {
-        columns.push("Id");
-    }
-    ColumnDiff {
-        row: row.line,
-        columns,
-    }
-}
-
-fn differing_columns(values: &[String; 14], payload: &str) -> Vec<&'static str> {
-    let Some(stored) = columns_from_payload(payload) else {
-        return COLUMNS.to_vec();
-    };
-    COLUMNS
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| stored[*index].as_deref() != Some(values[*index].as_str()))
-        .map(|(_, name)| *name)
-        .collect()
 }
 
 fn fault(row: u32, column: &'static str) -> RowFault {
@@ -188,78 +159,6 @@ fn payload(
     }
     out.push('}');
     out
-}
-
-fn columns_from_payload(payload: &str) -> Option<[Option<String>; 14]> {
-    let marker = "\"columns\":{";
-    let start = payload.find(marker)? + marker.len();
-    let mut index = start;
-    let mut found = std::array::from_fn(|_| None);
-    let bytes = payload.as_bytes();
-    if index < bytes.len() && bytes[index] == b'}' {
-        return Some(found);
-    }
-    loop {
-        let key = parse_json_string(payload, &mut index)?;
-        if index >= bytes.len() || bytes[index] != b':' {
-            return None;
-        }
-        index += 1;
-        let value = parse_json_string(payload, &mut index)?;
-        if let Some(slot) = COLUMNS.iter().position(|name| *name == key) {
-            found[slot] = Some(value);
-        }
-        if index >= bytes.len() {
-            return None;
-        }
-        match bytes[index] {
-            b',' => index += 1,
-            b'}' => return Some(found),
-            _ => return None,
-        }
-    }
-}
-
-fn parse_json_string(input: &str, index: &mut usize) -> Option<String> {
-    let mut rest = input.get(*index..)?.chars();
-    if rest.next() != Some('"') {
-        return None;
-    }
-    *index += 1;
-    let mut out = String::new();
-    loop {
-        let ch = rest.next()?;
-        *index += ch.len_utf8();
-        match ch {
-            '"' => return Some(out),
-            '\\' => {
-                let esc = rest.next()?;
-                *index += esc.len_utf8();
-                match esc {
-                    '"' => out.push('"'),
-                    '\\' => out.push('\\'),
-                    'n' => out.push('\n'),
-                    'r' => out.push('\r'),
-                    't' => out.push('\t'),
-                    'u' => {
-                        let mut hex = String::new();
-                        for _ in 0..4 {
-                            let digit = rest.next()?;
-                            if !digit.is_ascii_hexdigit() {
-                                return None;
-                            }
-                            *index += digit.len_utf8();
-                            hex.push(digit);
-                        }
-                        let code = u32::from_str_radix(&hex, 16).ok()?;
-                        out.push(char::from_u32(code)?);
-                    }
-                    _ => return None,
-                }
-            }
-            other => out.push(other),
-        }
-    }
 }
 
 fn push_json_str(out: &mut String, value: &str) {
@@ -458,11 +357,10 @@ mod tests {
     }
 
     #[test]
-    fn a_changed_column_is_named_without_its_text() {
+    fn a_changed_amount_changes_the_raw_hash() {
         let first = interpret(3, &fields("-12.50", "false")).expect("first");
         let second = interpret(9, &fields("-13.50", "false")).expect("second");
-        let diff = proposal(&second, &first.payload_json);
-        assert_eq!(diff.row, 9);
-        assert_eq!(diff.columns, vec!["Amount"]);
+        assert_ne!(first.row_hash, second.row_hash);
+        assert!(second.payload_json.contains("\"pending_hint\":false"));
     }
 }

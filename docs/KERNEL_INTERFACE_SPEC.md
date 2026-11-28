@@ -208,15 +208,15 @@ A void writes only import-context rows. `observation_voids.commit_id` needs a `c
 
 **Owner moved (ADR 0011):** this is an observation import context operation, not a kernel operation. It writes through its `ContextTx` inside a kernel transaction (§3.14). The rules below stand, enforced by that context. The §2.2 no-op applies when neither the kernel nor any participant staged a row.
 
-The kernel stores facts. The adapter has already turned a feed file into rows. Natural key is `(feed_id, external_id)` (ADR 0007).
+The kernel stores facts. The adapter has already turned a feed file into rows. Identity is `(feed_id, external_id, financial_account_id)` (ADR 0007, proposed ADR 0012).
 
 | | |
 |---|---|
 | Preconditions | Inside `begin_transaction`. Each row has a known feed, a non-empty `external_id`, a financial account in this database, `occurred_date`, optional `posted_date`, direction `inflow` or `outflow`, `amount_minor > 0`, the account's currency, a 64-character hex `row_hash`, and `payload_json` that is valid JSON. `corroborates_id`, when set, is an observation on the same financial account and is not this row. `payload_json` stays in this database. |
-| Postconditions | Same natural key and same `row_hash`: no new observation row, success, idempotent. The stored row is not replaced. When the transaction staged nothing else, `commit` is the §2.2 no-op: the caller receives `IdempotentNoop` naming this observation's original `commit_id` and `seq`, and the kernel seals no new commit. Same natural key and a different `row_hash`: the transaction rolls back with `ImportConflict` and the stored observation is unchanged (INV-014). The importer proposes a difference outside the kernel; it does not silently replace the row. A new key is staged. A later feed row for the same movement uses `corroborates_id` instead of a second independent observation. Review state of a brand-new observation is `unreviewed` unless this same transaction also interprets it. |
-| Invariants | ADR 0007. INV-005, INV-014. SPEC §8 (re-import proposes differences). §2.2. |
-| Typed error | `ImportConflict` (class import), `CorroborationMismatch` (class import), `CurrencyMismatch` (class user, §4.1), `InvalidId`, `InvalidMoney`, `InvalidDate`, `InvalidShape`, `UnknownTarget`, `AppendOnlyViolation`. |
-| Enforced by | Storage: UNIQUE `(feed_id, external_id)`, `observations_currency_valid`, `observations_corroborate_valid`, append-only triggers, open-commit trigger. The kernel **MUST** compare `row_hash` before insert so an identical re-import does not depend on catching the UNIQUE failure and does not seal an empty commit (§2.2). U21 does not rewrite observations. |
+| Postconditions | Same identity and same current `row_hash`: no new row, success, idempotent. When the transaction staged nothing else, `commit` is the §2.2 no-op. Same identity and a different `row_hash`: append one `observation_revisions` row with the new attributes and seal a commit of kind `import`. The `observations` row stays the first snapshot and is not updated (INV-014, proposed ADR 0012). Current attributes are `observation_current`. A voided identity is left as it is: no second insert and no revision. A new identity is staged. Review state of a brand-new observation is `unreviewed` unless this same transaction also interprets it. |
+| Invariants | ADR 0007. Proposed ADR 0012. INV-005, INV-014. §2.2. |
+| Typed error | `ImportConflict` (class import; unique-key race only), `CorroborationMismatch` (class import), `CurrencyMismatch` (class user, §4.1), `InvalidId`, `InvalidMoney`, `InvalidDate`, `InvalidShape`, `UnknownTarget`, `AppendOnlyViolation`. |
+| Enforced by | Storage: UNIQUE `(feed_id, external_id, financial_account_id)`, `observations_currency_valid`, `observation_revisions_currency_valid`, `observations_corroborate_valid`, append-only triggers, open-commit triggers. The import context compares the current `row_hash` before insert so an identical re-import does not depend on catching the UNIQUE failure and does not seal an empty commit (§2.2). The first snapshot is never rewritten. |
 
 `payload_json`, descriptions, and hashes **MUST NOT** appear in the error or the log. The ids are the feed id, the external id, and the observation id.
 
@@ -492,7 +492,7 @@ The SQL text in this section is the mapping key for the adapter. It **MUST NOT**
 | `ObservationAlreadyVoided` | user | A second tombstone for the same observation. |
 | `ObservationMismatch` | user | INV-007. Link does not match account, amount, currency, and direction. |
 | `ObservationDoubleConsumed` | user | INV-007. Two current events interpret one observation. |
-| `ImportConflict` | import | Same `(feed_id, external_id)`, different `row_hash`. Stored row kept. |
+| `ImportConflict` | import | Unique identity `(feed_id, external_id, financial_account_id)` inserted when the pre-check missed the stored row. A changed `row_hash` is a revision, not this code (proposed ADR 0012). |
 | `CorroborationMismatch` | import | `corroborates_id` is a different financial account. |
 | `DraftHasPostings` | user | INV-006. |
 | `ReconciledGroupEmpty` | user | INV-008. Reconciled state with no postings. |
@@ -591,7 +591,7 @@ SQLite constraint text that is not a RAISE. The first matching row wins. A ULID 
 |---|---|
 | `seq = expected_revision + 1` | `RevisionMismatch` |
 | `UNIQUE constraint failed: entity.singleton` | `SecondEntity` |
-| `UNIQUE constraint failed: observations.feed_id, observations.external_id` | `ImportConflict` |
+| `UNIQUE constraint failed: observations.feed_id, observations.external_id, observations.financial_account_id` | `ImportConflict` |
 | `UNIQUE constraint failed: settlement_postings.posting_id` | `PostingAlreadySettled` |
 | `UNIQUE constraint failed: observation_voids.observation_id` | `ObservationAlreadyVoided` |
 | `UNIQUE constraint failed: accounting_events.recipe_instance_id` | `IdempotencyConflict`. The kernel compares the payload before insert, so an identical retry never reaches this failure. |
@@ -794,6 +794,10 @@ Doug, 2026-11-26: tags, evidence (file) links, observation links, and refund lin
 Choice: owners are observation import (`feeds`, `import_runs`, `observations`, `observation_voids`, `posting_observations`, evidence tables and `evidence_links`), recipes (`refund_links`), and the application (`tags`, `posting_tags`). `docs/schema-v2.sql` is unchanged; its triggers on those tables are storage backstops owned by those contexts. Decided (Doug, 2026-11-26, ADR 0011 option (i)): context rows commit in the kernel's transaction through the two-method participant hook in §3.14. A separate post-commit transaction and a separate application database were rejected.
 
 ## 9. Changelog
+
+### 2026-11-28 — Proposed ADR 0012: revisions instead of `ImportConflict` on a changed hash
+
+Proposed, implemented for review, not accepted. §3.6 identity is `(feed_id, external_id, financial_account_id)`. The same identity and a different `row_hash` appends `observation_revisions` and leaves the first `observations` snapshot in place. Current attributes are `observation_current`. `ImportConflict` is only the unique-key race. §4.1 and §4.3 match that. `observation_revisions` is commit-scoped, so the open-commit count in the smoke script is 24. Provisional journal entries for pending rows are not in this contract; ADR 0012 states that follow-up.
 
 ### 2026-11-27 — `VoidWithoutReversal` leaves the closed list
 

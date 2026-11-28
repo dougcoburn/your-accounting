@@ -33,16 +33,14 @@ pub struct RowFault {
     pub column: &'static str,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ColumnDiff {
-    pub row: u32,
-    pub columns: Vec<&'static str>,
-}
-
-/// A failed import wrote nothing. Display is `row` and `column`, or a kernel `code`.
+/// A failed import wrote nothing. Display is a file row and a column, a
+/// map-or-create account message, an identity-strategy note, or a kernel `code`.
 #[derive(Debug)]
 pub enum ImportError {
     Rows(Vec<RowFault>),
+    /// Every listed file row failed to bind to exactly one usable account.
+    UnmappedAccounts(Vec<u32>),
+    Identity(crate::identity::IdentityError),
     Kernel(KernelError),
 }
 
@@ -53,6 +51,10 @@ impl ImportError {
 
     pub fn kernel(err: KernelError) -> Self {
         Self::Kernel(err)
+    }
+
+    pub fn unmapped(rows: Vec<u32>) -> Self {
+        Self::UnmappedAccounts(rows)
     }
 }
 
@@ -68,6 +70,19 @@ impl fmt::Display for ImportError {
                 }
                 Ok(())
             }
+            Self::UnmappedAccounts(rows) => {
+                for (index, row) in rows.iter().enumerate() {
+                    if index > 0 {
+                        f.write_str("; ")?;
+                    }
+                    write!(
+                        f,
+                        "row={row} column=Account: map this account to an existing financial account or create one"
+                    )?;
+                }
+                Ok(())
+            }
+            Self::Identity(err) => write!(f, "{err}"),
             Self::Kernel(err) => write!(f, "code={}", err.code.as_str()),
         }
     }

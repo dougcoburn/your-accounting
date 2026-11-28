@@ -79,23 +79,29 @@ impl DoctorCheck for IntegrityCheck {
         Scope::SingleDb
     }
     fn run(&self, db: &Connection) -> Result<Vec<Finding>, Error> {
-        let mut stmt = db.prepare("PRAGMA integrity_check").map_err(read_err)?;
-        let rows = stmt
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(read_err)?;
+        // A corrupt page can fail the pragma with a SQLite error instead of a
+        // diagnostic row. That is still IntegrityFailed, and the finding stays
+        // quiet: no engine text.
+        let failed = bugcheck(CHECK_INTEGRITY, Code::IntegrityFailed, &[], vec![]);
+        let mut stmt = match db.prepare("PRAGMA integrity_check") {
+            Ok(stmt) => stmt,
+            Err(_) => return Ok(vec![failed]),
+        };
+        let rows = match stmt.query_map([], |row| row.get::<_, String>(0)) {
+            Ok(rows) => rows,
+            Err(_) => return Ok(vec![failed]),
+        };
         let mut messages = Vec::new();
         for row in rows {
-            messages.push(row.map_err(read_err)?);
+            match row {
+                Ok(message) => messages.push(message),
+                Err(_) => return Ok(vec![failed]),
+            }
         }
         if messages.as_slice() == ["ok"] {
             return Ok(Vec::new());
         }
-        Ok(vec![bugcheck(
-            CHECK_INTEGRITY,
-            Code::IntegrityFailed,
-            &[],
-            vec![],
-        )])
+        Ok(vec![failed])
     }
 }
 
@@ -113,19 +119,29 @@ impl DoctorCheck for ForeignKeyCheck {
         Scope::SingleDb
     }
     fn run(&self, db: &Connection) -> Result<Vec<Finding>, Error> {
-        let mut stmt = db.prepare("PRAGMA foreign_key_check").map_err(read_err)?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-            })
-            .map_err(read_err)?;
+        let failed = bugcheck(CHECK_FOREIGN_KEYS, Code::ForeignKeyCheckFailed, &[], vec![]);
+        let mut stmt = match db.prepare("PRAGMA foreign_key_check") {
+            Ok(stmt) => stmt,
+            Err(_) => return Ok(vec![failed]),
+        };
+        let rows = match stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        }) {
+            Ok(rows) => rows,
+            Err(_) => return Ok(vec![failed]),
+        };
         let mut ids = Vec::new();
         let mut any = false;
         for row in rows {
-            let (table, rowid) = row.map_err(read_err)?;
+            let (table, rowid) = match row {
+                Ok(pair) => pair,
+                Err(_) => return Ok(vec![failed]),
+            };
             any = true;
-            if let Some(id) = subject_id(db, &table, rowid)? {
-                push_ulid(&mut ids, id);
+            match subject_id(db, &table, rowid) {
+                Ok(Some(id)) => push_ulid(&mut ids, id),
+                Ok(None) => {}
+                Err(_) => return Ok(vec![failed]),
             }
         }
         if !any {

@@ -1,6 +1,7 @@
 # ADR 0011: The kernel stages only events and their lines
 
 Status: **Accepted** (Doug, 2026-11-26, relayed by Captain). Atomicity decided by Doug on 2026-11-26: option (i). No open decisions remain. Docs only: no schema or code change in this ADR.
+Proposed follow-up, not part of this decision: [ADR 0012](0012-feed-revisions-and-identity.md) would widen the observation identity with `financial_account_id` and append a revision on a changed hash instead of `ImportConflict`.
 Amends: [ADR 0007](0007-layering.md) (its 2026-11-25 amendment, which made import and stored tag rows kernel operations) and [ADR 0010](0010-bounded-contexts-small-agent-context.md) (context map: ledger core and observation import).
 
 ## Context

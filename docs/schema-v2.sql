@@ -21,6 +21,9 @@
 --                         snapshots on non-cash asset accounts only
 --   ADR 0006              settlement exclusivity per posting; drafts never post
 --   ADR 0007              observation natural key = feed id + external id
+--   ADR 0012 (proposed)   identity is feed id + external id + financial account.
+--                         A later pull appends observation_revisions. The first
+--                         observations row is never updated.
 --   ADR 0008              typed ledger accounts; categories are income/expense
 --                         ledger accounts; no categories/allocations tables
 --   2026-11-22 decision   the occurred date decides the period for everything,
@@ -346,8 +349,11 @@ CREATE TABLE import_runs (
     recorded_at      TEXT NOT NULL CHECK (recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z')
 ) STRICT;
 
--- An observation is an immutable accepted source fact (SPEC §2.5, INV-014).
--- Natural key = (feed_id, external_id) (ADR 0007): re-import is idempotent.
+-- An observation's first snapshot is an immutable accepted source fact
+-- (SPEC §2.5, INV-014). Identity = (feed_id, external_id, financial_account_id)
+-- (ADR 0007, proposed ADR 0012). A later pull of the same identity appends
+-- observation_revisions and does not update this row. Current attributes are
+-- the view observation_current. An identical row_hash is a no-op.
 -- occurred_date assigns the period; posted_date is optional and only explains
 -- in-flight items against a statement (2026-11-22). direction is the sign of
 -- the source row; amount_minor is unsigned. payload_json lives only in the
@@ -369,7 +375,7 @@ CREATE TABLE observations (
     corroborates_id      TEXT REFERENCES observations(id),   -- ADR 0007: a later row for the same movement corroborates, never duplicates
     commit_id            TEXT NOT NULL REFERENCES commits(id) DEFERRABLE INITIALLY DEFERRED,
     recorded_at          TEXT NOT NULL CHECK (recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z'),
-    UNIQUE (feed_id, external_id),
+    UNIQUE (feed_id, external_id, financial_account_id),
     CHECK (corroborates_id IS NULL OR corroborates_id <> id)
 ) STRICT;
 CREATE INDEX observations_account_date ON observations(financial_account_id, occurred_date);
@@ -395,6 +401,45 @@ CREATE TABLE posting_observations (
     PRIMARY KEY (posting_id, observation_id)
 ) STRICT;
 CREATE INDEX posting_observations_observation ON posting_observations(observation_id);
+
+-- Proposed (ADR 0012): each later pull of the same identity appends the new
+-- source attributes, including the raw payload. The observations row stays
+-- the first snapshot. Nothing here is updated or deleted.
+CREATE TABLE observation_revisions (
+    id             TEXT PRIMARY KEY CHECK (length(id) = 26 AND id NOT GLOB '*[^0-9A-HJKMNP-TV-Z]*'),
+    observation_id TEXT NOT NULL REFERENCES observations(id),
+    import_run_id  TEXT REFERENCES import_runs(id),
+    occurred_date  TEXT NOT NULL CHECK (date(occurred_date) IS occurred_date),
+    posted_date    TEXT CHECK (posted_date IS NULL OR date(posted_date) IS posted_date),
+    direction      TEXT NOT NULL CHECK (direction IN ('inflow','outflow')),
+    amount_minor   INTEGER NOT NULL CHECK (amount_minor > 0),
+    currency       TEXT NOT NULL CHECK (length(currency) = 3 AND currency NOT GLOB '*[^A-Z]*'),
+    description    TEXT NOT NULL DEFAULT '',
+    row_hash       TEXT NOT NULL CHECK (length(row_hash) = 64 AND row_hash NOT GLOB '*[^0-9a-f]*'),
+    payload_json   TEXT NOT NULL CHECK (json_valid(payload_json)),
+    commit_id      TEXT NOT NULL REFERENCES commits(id) DEFERRABLE INITIALLY DEFERRED,
+    recorded_at    TEXT NOT NULL CHECK (recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z')
+) STRICT;
+CREATE INDEX observation_revisions_observation ON observation_revisions(observation_id, recorded_at);
+
+-- Current source attributes: the latest revision, or the first snapshot.
+CREATE VIEW observation_current AS
+SELECT o.id, o.feed_id, o.external_id, o.financial_account_id, o.corroborates_id,
+       CASE WHEN r.id IS NULL THEN o.occurred_date ELSE r.occurred_date END AS occurred_date,
+       CASE WHEN r.id IS NULL THEN o.posted_date ELSE r.posted_date END AS posted_date,
+       CASE WHEN r.id IS NULL THEN o.direction ELSE r.direction END AS direction,
+       CASE WHEN r.id IS NULL THEN o.amount_minor ELSE r.amount_minor END AS amount_minor,
+       CASE WHEN r.id IS NULL THEN o.currency ELSE r.currency END AS currency,
+       CASE WHEN r.id IS NULL THEN o.description ELSE r.description END AS description,
+       CASE WHEN r.id IS NULL THEN o.row_hash ELSE r.row_hash END AS row_hash,
+       CASE WHEN r.id IS NULL THEN o.payload_json ELSE r.payload_json END AS payload_json
+FROM observations o
+LEFT JOIN observation_revisions r ON r.id = (
+    SELECT r2.id FROM observation_revisions r2
+    WHERE r2.observation_id = o.id
+    ORDER BY r2.recorded_at DESC, r2.id DESC
+    LIMIT 1
+);
 
 -- Document-level evidence links (SPEC §2.5). Exactly one target.
 CREATE TABLE evidence_links (
@@ -629,6 +674,8 @@ CREATE TRIGGER import_runs_no_update BEFORE UPDATE ON import_runs BEGIN SELECT R
 CREATE TRIGGER import_runs_no_delete BEFORE DELETE ON import_runs BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: import_runs rows are never deleted'); END;
 CREATE TRIGGER observations_no_update BEFORE UPDATE ON observations BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: observations rows are never updated'); END;
 CREATE TRIGGER observations_no_delete BEFORE DELETE ON observations BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: observations rows are never deleted; void an observation with observation_voids'); END;
+CREATE TRIGGER observation_revisions_no_update BEFORE UPDATE ON observation_revisions BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: observation_revisions rows are never updated'); END;
+CREATE TRIGGER observation_revisions_no_delete BEFORE DELETE ON observation_revisions BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: observation_revisions rows are never deleted'); END;
 CREATE TRIGGER observation_voids_no_update BEFORE UPDATE ON observation_voids BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: observation_voids rows are never updated'); END;
 CREATE TRIGGER observation_voids_no_delete BEFORE DELETE ON observation_voids BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: observation_voids rows are never deleted'); END;
 CREATE TRIGGER event_counterpart_expectations_no_update BEFORE UPDATE ON event_counterpart_expectations BEGIN SELECT RAISE(ABORT, 'ADR 0002 append-only: event_counterpart_expectations rows are never updated'); END;
@@ -664,6 +711,7 @@ CREATE TRIGGER evidence_deletions_open_commit BEFORE INSERT ON evidence_deletion
 CREATE TRIGGER evidence_links_open_commit BEFORE INSERT ON evidence_links WHEN EXISTS (SELECT 1 FROM commits WHERE id = NEW.commit_id) BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed'); END;
 CREATE TRIGGER import_runs_open_commit BEFORE INSERT ON import_runs WHEN EXISTS (SELECT 1 FROM commits WHERE id = NEW.commit_id) BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed'); END;
 CREATE TRIGGER observations_open_commit BEFORE INSERT ON observations WHEN EXISTS (SELECT 1 FROM commits WHERE id = NEW.commit_id) BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed'); END;
+CREATE TRIGGER observation_revisions_open_commit BEFORE INSERT ON observation_revisions WHEN EXISTS (SELECT 1 FROM commits WHERE id = NEW.commit_id) BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed'); END;
 CREATE TRIGGER observation_voids_open_commit BEFORE INSERT ON observation_voids WHEN EXISTS (SELECT 1 FROM commits WHERE id = NEW.commit_id) BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed'); END;
 CREATE TRIGGER settlement_groups_open_commit BEFORE INSERT ON settlement_groups WHEN EXISTS (SELECT 1 FROM commits WHERE id = NEW.commit_id) BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed'); END;
 CREATE TRIGGER settlement_group_states_open_commit BEFORE INSERT ON settlement_group_states WHEN EXISTS (SELECT 1 FROM commits WHERE id = NEW.commit_id) BEGIN SELECT RAISE(ABORT, 'ADR 0002: commit already sealed'); END;
@@ -768,6 +816,9 @@ BEGIN SELECT RAISE(ABORT, 'INV-015: refund links exceed the refundable purchase 
 CREATE TRIGGER observations_currency_valid BEFORE INSERT ON observations
 WHEN (SELECT currency FROM financial_accounts WHERE id = NEW.financial_account_id) IS NOT NEW.currency
 BEGIN SELECT RAISE(ABORT, 'INV-005: observation currency must match its financial account'); END;
+CREATE TRIGGER observation_revisions_currency_valid BEFORE INSERT ON observation_revisions
+WHEN (SELECT f.currency FROM observations o JOIN financial_accounts f ON f.id = o.financial_account_id WHERE o.id = NEW.observation_id) IS NOT NEW.currency
+BEGIN SELECT RAISE(ABORT, 'INV-005: observation currency must match its financial account'); END;
 CREATE TRIGGER observations_corroborate_valid BEFORE INSERT ON observations
 WHEN NEW.corroborates_id IS NOT NULL AND (SELECT financial_account_id FROM observations WHERE id = NEW.corroborates_id) IS NOT NEW.financial_account_id
 BEGIN SELECT RAISE(ABORT, 'ADR 0007: a corroborating row must be for the same financial account'); END;
@@ -776,10 +827,10 @@ BEGIN SELECT RAISE(ABORT, 'ADR 0007: a corroborating row must be for the same fi
 -- (for both asset and liability accounts).
 CREATE TRIGGER posting_observations_valid BEFORE INSERT ON posting_observations
 WHEN (SELECT a.financial_account_id FROM journal_postings p JOIN ledger_accounts a ON a.id = p.ledger_account_id WHERE p.id = NEW.posting_id)
-       IS NOT (SELECT financial_account_id FROM observations WHERE id = NEW.observation_id)
-  OR (SELECT amount_minor FROM journal_postings WHERE id = NEW.posting_id) IS NOT (SELECT amount_minor FROM observations WHERE id = NEW.observation_id)
-  OR (SELECT currency FROM journal_postings WHERE id = NEW.posting_id) IS NOT (SELECT currency FROM observations WHERE id = NEW.observation_id)
-  OR (SELECT side FROM journal_postings WHERE id = NEW.posting_id) IS NOT (SELECT CASE direction WHEN 'inflow' THEN 'debit' ELSE 'credit' END FROM observations WHERE id = NEW.observation_id)
+       IS NOT (SELECT financial_account_id FROM observation_current WHERE id = NEW.observation_id)
+  OR (SELECT amount_minor FROM journal_postings WHERE id = NEW.posting_id) IS NOT (SELECT amount_minor FROM observation_current WHERE id = NEW.observation_id)
+  OR (SELECT currency FROM journal_postings WHERE id = NEW.posting_id) IS NOT (SELECT currency FROM observation_current WHERE id = NEW.observation_id)
+  OR (SELECT side FROM journal_postings WHERE id = NEW.posting_id) IS NOT (SELECT CASE direction WHEN 'inflow' THEN 'debit' ELSE 'credit' END FROM observation_current WHERE id = NEW.observation_id)
 BEGIN SELECT RAISE(ABORT, 'INV-007: posting must match its observation (account, amount, currency, direction)'); END;
 CREATE TRIGGER posting_observations_not_voided BEFORE INSERT ON posting_observations
 WHEN EXISTS (SELECT 1 FROM observation_voids WHERE observation_id = NEW.observation_id)
@@ -988,6 +1039,7 @@ UNION ALL SELECT 'evidence_deletions' AS table_name, t.rowid AS row_id, t.commit
 UNION ALL SELECT 'evidence_links' AS table_name, t.rowid AS row_id, t.commit_id FROM evidence_links t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
 UNION ALL SELECT 'import_runs' AS table_name, t.rowid AS row_id, t.commit_id FROM import_runs t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
 UNION ALL SELECT 'observations' AS table_name, t.rowid AS row_id, t.commit_id FROM observations t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
+UNION ALL SELECT 'observation_revisions' AS table_name, t.rowid AS row_id, t.commit_id FROM observation_revisions t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
 UNION ALL SELECT 'observation_voids' AS table_name, t.rowid AS row_id, t.commit_id FROM observation_voids t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
 UNION ALL SELECT 'settlement_groups' AS table_name, t.rowid AS row_id, t.commit_id FROM settlement_groups t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)
 UNION ALL SELECT 'settlement_group_states' AS table_name, t.rowid AS row_id, t.commit_id FROM settlement_group_states t WHERE NOT EXISTS (SELECT 1 FROM commits c WHERE c.id = t.commit_id)

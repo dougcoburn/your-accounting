@@ -8,9 +8,7 @@ use accounting_kernel::v2::{
     NewEvent, NewFinancialAccount, NewLedgerAccount, NewPosting, ObservationImport,
     ObservationLink, SequenceIds, Side, TrackingMode,
 };
-use monarch_adapter::{
-    import_monarch_csv, month1_category_classes, ImportRequest, EXPENSE_PARENT, INCOME_PARENT,
-};
+use monarch_adapter::{import_monarch_csv, ImportRequest};
 
 const WHEN: &str = "2026-01-02T03:04:05Z";
 const FEED: &str = "01ARZ3NDEKTSV4RRFFQ69GFEED";
@@ -61,17 +59,12 @@ fn open(dir: &Path) -> Kernel {
     kernel
 }
 
-fn request<'a>(
-    csv: &'a str,
-    revision: i64,
-    classes: &'a [monarch_adapter::CategoryClass],
-) -> ImportRequest<'a> {
+fn request(csv: &str, revision: i64) -> ImportRequest<'_> {
     ImportRequest {
         csv,
         feed_id: FEED,
         feed_name: "Synthetic October",
         expected_revision: revision,
-        categories: classes,
     }
 }
 
@@ -222,16 +215,13 @@ fn fixture_imports_one_to_one_and_reimport_is_a_noop() {
             .join("../../../fixtures/monarch/october-2025-synthetic.csv"),
     )
     .expect("fixture");
-    let classes = month1_category_classes();
-    let first =
-        import_monarch_csv(&mut kernel, &request(&csv, revision, &classes)).expect("import");
+    let first = import_monarch_csv(&mut kernel, &request(&csv, revision)).expect("import");
     assert_eq!(first.data_rows, 200);
     assert_eq!(first.inserted, 200);
     assert_eq!(first.observation_ids.len(), 200);
     assert_eq!(first.unchanged, 0);
-    assert!(first.withheld_pending.is_empty());
-    assert!(first.proposals.is_empty());
-    assert!(first.leaves_created > 0);
+    assert_eq!(first.revised, 0);
+    assert_eq!(first.voided, 0);
     assert!(!first.noop);
     assert_eq!(kernel.observation_count().expect("count"), 200);
     assert_eq!(kernel.tag_count().expect("tags"), 0);
@@ -292,57 +282,21 @@ fn fixture_imports_one_to_one_and_reimport_is_a_noop() {
         );
     }
 
-    let groceries = kernel
+    assert!(kernel
         .ledger_categories_named("Groceries")
-        .expect("groceries");
-    assert_eq!(groceries.len(), 1);
-    assert_eq!(groceries[0].account_type, "expense");
-    let expense = kernel
-        .ledger_categories_named(EXPENSE_PARENT)
-        .expect("expense parent");
-    let parent_id = expense
-        .iter()
-        .find(|row| row.parent_id.is_none())
-        .expect("parent")
-        .id
-        .clone();
-    assert_eq!(groceries[0].parent_id.as_deref(), Some(parent_id.as_str()));
+        .expect("groceries")
+        .is_empty());
+    assert!(kernel
+        .ledger_categories_named("Paychecks")
+        .expect("paychecks")
+        .is_empty());
+    assert_eq!(kernel.posting_count().expect("postings"), 0);
 
-    let paychecks = kernel.ledger_categories_named("Paychecks").expect("pay");
-    assert_eq!(paychecks.len(), 1);
-    assert_eq!(paychecks[0].account_type, "income");
-    let income = kernel
-        .ledger_categories_named(INCOME_PARENT)
-        .expect("income");
-    let income_id = income
-        .iter()
-        .find(|row| row.parent_id.is_none())
-        .expect("income parent")
-        .id
-        .clone();
-    assert_eq!(paychecks[0].parent_id.as_deref(), Some(income_id.as_str()));
-
-    for name in [
-        "Credit Card Payment",
-        "Transfer",
-        "HSA Contribution",
-        "Reimbursements",
-    ] {
-        assert!(
-            kernel
-                .ledger_categories_named(name)
-                .expect("lookup")
-                .is_empty(),
-            "category was seeded"
-        );
-    }
-
-    let second =
-        import_monarch_csv(&mut kernel, &request(&csv, first.seq, &classes)).expect("reimport");
+    let second = import_monarch_csv(&mut kernel, &request(&csv, first.seq)).expect("reimport");
     assert_eq!(second.inserted, 0);
+    assert_eq!(second.revised, 0);
+    assert_eq!(second.voided, 0);
     assert_eq!(second.unchanged, 200);
-    assert_eq!(second.leaves_created, 0);
-    assert!(second.proposals.is_empty());
     assert!(second.noop);
     assert_eq!(second.seq, first.seq);
     assert_eq!(kernel.observation_count().expect("count"), 200);
@@ -351,30 +305,20 @@ fn fixture_imports_one_to_one_and_reimport_is_a_noop() {
 }
 
 #[test]
-fn pending_rows_are_withheld_until_a_later_export_clears_the_flag() {
+fn pending_rows_are_stored_and_a_later_pull_updates_the_flag() {
     let tmp = Tmp::new("pending");
     let mut kernel = open(tmp.path());
     let revision = setup_checking(&mut kernel).0;
-    let classes = month1_category_classes();
     let held = tiny("-12.50", "true", "true", "nw-01");
-    let first = import_monarch_csv(&mut kernel, &request(&held, revision, &classes)).expect("hold");
-    assert_eq!(first.withheld_pending, vec![3]);
-    assert_eq!(first.inserted, 0);
-    assert!(first.noop);
-    assert_eq!(kernel.observation_count().expect("count"), 0);
-    assert_eq!(kernel.revision().expect("rev"), revision);
-
-    let posted = tiny("-12.50", "false", "true", "nw-01");
-    let second =
-        import_monarch_csv(&mut kernel, &request(&posted, revision, &classes)).expect("post");
-    assert_eq!(second.inserted, 1);
-    assert!(second.withheld_pending.is_empty());
+    let first = import_monarch_csv(&mut kernel, &request(&held, revision)).expect("hold");
+    assert_eq!(first.inserted, 1);
+    assert!(!first.noop);
+    assert_eq!(kernel.posting_count().expect("postings"), 0);
     let fact = kernel
         .observation_by_external_id(FEED, "nw-01")
         .expect("read")
         .expect("row");
-    assert_eq!(fact.amount_minor, 1250);
-    assert_eq!(fact.direction, "outflow");
+    hint(&fact.payload_json, "\"pending_hint\":true");
     hint(&fact.payload_json, "\"pending_authoritative\":false");
     hint(&fact.payload_json, "\"reviewed_authoritative\":false");
     assert_eq!(
@@ -385,44 +329,61 @@ fn pending_rows_are_withheld_until_a_later_export_clears_the_flag() {
         Some("unreviewed")
     );
 
-    let again =
-        import_monarch_csv(&mut kernel, &request(&posted, second.seq, &classes)).expect("again");
-    assert!(again.noop);
-    assert_eq!(again.inserted, 0);
-    assert_eq!(again.unchanged, 1);
+    let posted = tiny("-12.50", "false", "true", "nw-01");
+    let second = import_monarch_csv(&mut kernel, &request(&posted, first.seq)).expect("post");
+    assert_eq!(second.inserted, 0);
+    assert_eq!(second.revised, 1);
+    let current = kernel
+        .observation_by_external_id(FEED, "nw-01")
+        .expect("read")
+        .expect("current");
+    hint(&current.payload_json, "\"pending_hint\":false");
+    let base = kernel
+        .observation_base_row_hash(&current.id)
+        .expect("base")
+        .expect("hash");
+    assert_ne!(base, current.row_hash);
+    assert_eq!(
+        kernel
+            .observation_revision_count(&current.id)
+            .expect("revs"),
+        1
+    );
     assert_eq!(kernel.observation_count().expect("count"), 1);
+    assert_eq!(kernel.posting_count().expect("postings"), 0);
 }
 
 #[test]
-fn a_changed_export_keeps_the_stored_row_and_names_the_column() {
+fn a_changed_export_appends_a_revision_and_keeps_the_first_snapshot() {
     let tmp = Tmp::new("change");
     let mut kernel = open(tmp.path());
     let revision = setup_checking(&mut kernel).0;
-    let classes = month1_category_classes();
     let original = format!(
         "# synthetic\n{HEADER}\n2025-10-02,Northwind Market,Groceries,Checking ...1234,POS NORTHWIND,,-12.50,e-household,Casey Sample,true,2025-10-02 10:00:00,Rowan Checker,false,nw-01\n2025-10-03,Harbor Books,Shopping,Checking ...1234,POS HARBOR,,-3.00,,Casey Sample,false,2025-10-03 11:00:00,Rowan Checker,false,nw-02\n"
     );
-    let first =
-        import_monarch_csv(&mut kernel, &request(&original, revision, &classes)).expect("first");
+    let first = import_monarch_csv(&mut kernel, &request(&original, revision)).expect("first");
     assert_eq!(first.inserted, 2);
     let changed = original.replace("-12.50", "-13.50");
-    let second =
-        import_monarch_csv(&mut kernel, &request(&changed, first.seq, &classes)).expect("second");
+    let second = import_monarch_csv(&mut kernel, &request(&changed, first.seq)).expect("second");
     assert_eq!(second.inserted, 0);
-    assert_eq!(second.proposals.len(), 1);
-    assert_eq!(second.proposals[0].row, 3);
-    assert_eq!(second.proposals[0].columns, vec!["Amount"]);
-    let shown = format!(
-        "row={} column={}",
-        second.proposals[0].row, second.proposals[0].columns[0]
-    );
-    assert!(!shown.contains("13.50"));
-    assert!(!shown.contains("Northwind"));
-    let kept = kernel
+    assert_eq!(second.revised, 1);
+    assert_eq!(second.unchanged, 1);
+    let current = kernel
         .observation_by_external_id(FEED, "nw-01")
         .expect("read")
-        .expect("kept");
-    assert_eq!(kept.amount_minor, 1250);
+        .expect("current");
+    assert_eq!(current.amount_minor, 1350);
+    let base = kernel
+        .observation_base_row_hash(&current.id)
+        .expect("base")
+        .expect("hash");
+    assert_ne!(base, current.row_hash);
+    assert_eq!(
+        kernel
+            .observation_revision_count(&current.id)
+            .expect("revs"),
+        1
+    );
     let sibling = kernel
         .observation_by_external_id(FEED, "nw-02")
         .expect("read")
@@ -443,26 +404,22 @@ fn a_new_row_still_lands_when_another_row_conflicts() {
     let tmp = Tmp::new("partial");
     let mut kernel = open(tmp.path());
     let revision = setup_checking(&mut kernel).0;
-    let classes = month1_category_classes();
     let original = tiny("-12.50", "false", "true", "nw-01");
-    let first =
-        import_monarch_csv(&mut kernel, &request(&original, revision, &classes)).expect("first");
+    let first = import_monarch_csv(&mut kernel, &request(&original, revision)).expect("first");
     let both = format!(
         "{original}2025-10-04,Harbor Books,Shopping,Checking ...1234,POS HARBOR,,-3.00,e-household,Casey Sample,true,2025-10-04 11:00:00,Rowan Checker,false,nw-02\n"
     )
     .replace("-12.50", "-9.00");
-    let second =
-        import_monarch_csv(&mut kernel, &request(&both, first.seq, &classes)).expect("second");
+    let second = import_monarch_csv(&mut kernel, &request(&both, first.seq)).expect("second");
     assert_eq!(second.inserted, 1);
-    assert_eq!(second.proposals.len(), 1);
-    assert_eq!(second.proposals[0].columns, vec!["Amount"]);
+    assert_eq!(second.revised, 1);
     assert_eq!(
         kernel
             .observation_by_external_id(FEED, "nw-01")
             .expect("read")
             .expect("old")
             .amount_minor,
-        1250
+        900
     );
     assert_eq!(
         kernel
@@ -479,10 +436,8 @@ fn malformed_cells_name_the_row_and_column_and_write_nothing() {
     let tmp = Tmp::new("bad");
     let mut kernel = open(tmp.path());
     let revision = setup_checking(&mut kernel).0;
-    let classes = month1_category_classes();
     let bad_amount = tiny("nope", "false", "true", "nw-01");
-    let err = import_monarch_csv(&mut kernel, &request(&bad_amount, revision, &classes))
-        .expect_err("amount");
+    let err = import_monarch_csv(&mut kernel, &request(&bad_amount, revision)).expect_err("amount");
     let shown = err.to_string();
     assert_eq!(shown, "row=3 column=Amount");
     assert!(!shown.contains("nope"));
@@ -493,17 +448,19 @@ fn malformed_cells_name_the_row_and_column_and_write_nothing() {
     let bad_account = "# synthetic\n".to_string()
         + HEADER
         + "\n2025-10-02,Northwind Market,Groceries,Mystery Checking ...9999,POS,,-1.00,e-household,Casey Sample,true,2025-10-02 10:00:00,Rowan Checker,false,nw-09\n";
-    let err = import_monarch_csv(&mut kernel, &request(&bad_account, revision, &classes))
-        .expect_err("account");
+    let err =
+        import_monarch_csv(&mut kernel, &request(&bad_account, revision)).expect_err("account");
     let shown = err.to_string();
-    assert_eq!(shown, "row=3 column=Account");
+    assert_eq!(
+        shown,
+        "row=3 column=Account: map this account to an existing financial account or create one"
+    );
     assert!(!shown.contains("Mystery"));
     assert!(!shown.contains("9999"));
     assert!(!shown.contains("Northwind"));
 
     let bad_header = "# synthetic\nDate,Merchant,Nope,Account,Original Statement,Notes,Amount,Tags,Owner,Reviewed,Reviewed At,Reviewed By,Pending,Id\n";
-    let err = import_monarch_csv(&mut kernel, &request(bad_header, revision, &classes))
-        .expect_err("header");
+    let err = import_monarch_csv(&mut kernel, &request(bad_header, revision)).expect_err("header");
     let shown = err.to_string();
     assert_eq!(shown, "row=2 column=Category");
     assert!(!shown.contains("Nope"));
@@ -514,9 +471,8 @@ fn duplicate_ids_in_one_file_are_rejected() {
     let tmp = Tmp::new("dup");
     let mut kernel = open(tmp.path());
     let revision = setup_checking(&mut kernel).0;
-    let classes = month1_category_classes();
     let csv = format!("{}{}", tiny("-1.00", "false", "true", "nw-01"), "2025-10-03,Harbor Books,Shopping,Checking ...1234,POS,,-2.00,e-household,Casey Sample,true,2025-10-03 10:00:00,Rowan Checker,false,nw-01\n");
-    let err = import_monarch_csv(&mut kernel, &request(&csv, revision, &classes)).expect_err("dup");
+    let err = import_monarch_csv(&mut kernel, &request(&csv, revision)).expect_err("dup");
     assert_eq!(err.to_string(), "row=4 column=Id");
     assert_eq!(kernel.observation_count().expect("count"), 0);
 }
@@ -526,16 +482,22 @@ fn link_and_void_use_the_imported_observation() {
     let tmp = Tmp::new("void");
     let mut kernel = open(tmp.path());
     let (revision, cash) = setup_checking(&mut kernel);
-    let classes = month1_category_classes();
     let csv = tiny("-12.50", "false", "true", "nw-01");
-    let imported =
-        import_monarch_csv(&mut kernel, &request(&csv, revision, &classes)).expect("import");
+    let imported = import_monarch_csv(&mut kernel, &request(&csv, revision)).expect("import");
     let observation = imported.observation_ids[0].clone();
-    let groceries = kernel.ledger_categories_named("Groceries").expect("cat");
-    assert_eq!(groceries.len(), 1);
     let debit = "01ARZ3NDEKTSV4RRFFQ69GDBT1";
     let credit = "01ARZ3NDEKTSV4RRFFQ69GCDT1";
     let mut tx = kernel.begin_transaction(Some(imported.seq)).expect("begin");
+    let groceries = tx
+        .create_ledger_account(NewLedgerAccount {
+            id: None,
+            financial_account_id: None,
+            account_type: AccountType::Expense,
+            kind: LedgerKind::Category,
+            parent_id: None,
+            name: "Groceries".to_string(),
+        })
+        .expect("category");
     tx.register_recipe("u23_probe", "1").expect("recipe");
     tx.append_event_with(
         NewEvent {
@@ -547,7 +509,7 @@ fn link_and_void_use_the_imported_observation() {
             postings: vec![
                 NewPosting {
                     id: Some(debit.to_string()),
-                    ledger_account_id: groceries[0].id.clone(),
+                    ledger_account_id: groceries,
                     currency: "USD".to_string(),
                     side: Side::Debit,
                     amount_minor: 1250,
@@ -598,4 +560,85 @@ fn link_and_void_use_the_imported_observation() {
         .observation_by_external_id(FEED, "nw-01")
         .expect("read")
         .is_some());
+}
+
+#[test]
+fn a_wide_pull_voids_a_missing_row_and_a_narrow_pull_does_not() {
+    let tmp = Tmp::new("window");
+    let mut kernel = open(tmp.path());
+    let revision = setup_checking(&mut kernel).0;
+    let first_csv = format!(
+        "# synthetic\n{HEADER}\n2025-10-01,Northwind Market,Groceries,Checking ...1234,POS,,-1.00,e-household,Casey Sample,false,2025-10-01 10:00:00,Rowan Checker,false,early\n2025-10-15,Northwind Market,Groceries,Checking ...1234,POS,,-2.00,e-household,Casey Sample,false,2025-10-15 10:00:00,Rowan Checker,false,mid\n2025-10-31,Northwind Market,Groceries,Checking ...1234,POS,,-3.00,e-household,Casey Sample,false,2025-10-31 10:00:00,Rowan Checker,false,late\n"
+    );
+    let first = import_monarch_csv(&mut kernel, &request(&first_csv, revision)).expect("first");
+    assert_eq!(first.inserted, 3);
+    assert_eq!(first.voided, 0);
+
+    let narrow = format!(
+        "# synthetic\n{HEADER}\n2025-10-02,Harbor Books,Shopping,Checking ...1234,POS,,-4.00,e-household,Casey Sample,false,2025-10-02 11:00:00,Rowan Checker,false,other\n"
+    );
+    let second = import_monarch_csv(&mut kernel, &request(&narrow, first.seq)).expect("narrow");
+    assert_eq!(second.voided, 0);
+    assert_eq!(second.inserted, 1);
+    assert!(kernel
+        .observation_review_state(
+            &kernel
+                .observation_by_external_id(FEED, "mid")
+                .expect("read")
+                .expect("mid")
+                .id
+        )
+        .expect("review")
+        .is_some());
+
+    let wide = format!(
+        "# synthetic\n{HEADER}\n2025-10-01,Harbor Books,Shopping,Checking ...1234,POS,,-5.00,e-household,Casey Sample,false,2025-10-01 10:00:00,Rowan Checker,false,edge\n2025-10-31,Northwind Market,Groceries,Checking ...1234,POS,,-3.00,e-household,Casey Sample,false,2025-10-31 10:00:00,Rowan Checker,false,late\n"
+    );
+    let third = import_monarch_csv(&mut kernel, &request(&wide, second.seq)).expect("wide");
+    assert_eq!(third.voided, 1);
+    let mid = kernel
+        .observation_by_external_id(FEED, "mid")
+        .expect("read")
+        .expect("mid still stored");
+    assert_eq!(
+        kernel.observation_review_state(&mid.id).expect("review"),
+        None
+    );
+    let early = kernel
+        .observation_by_external_id(FEED, "early")
+        .expect("read")
+        .expect("early");
+    assert_eq!(
+        kernel
+            .observation_review_state(&early.id)
+            .expect("review")
+            .as_deref(),
+        Some("unreviewed")
+    );
+    let late = kernel
+        .observation_by_external_id(FEED, "late")
+        .expect("read")
+        .expect("late");
+    assert_eq!(late.amount_minor, 300);
+}
+
+#[test]
+fn an_unresolved_account_fails_the_whole_import() {
+    let tmp = Tmp::new("unmap");
+    let mut kernel = open(tmp.path());
+    let revision = setup_checking(&mut kernel).0;
+    let csv = format!(
+        "# synthetic\n{HEADER}\n2025-10-02,Northwind Market,Groceries,Checking ...1234,POS,,-1.00,e-household,Casey Sample,true,2025-10-02 10:00:00,Rowan Checker,false,ok-01\n2025-10-03,Harbor Books,Shopping,Mystery Checking ...9999,POS,,-2.00,e-household,Casey Sample,true,2025-10-03 10:00:00,Rowan Checker,false,bad-01\n"
+    );
+    let err = import_monarch_csv(&mut kernel, &request(&csv, revision)).expect_err("unmap");
+    let shown = err.to_string();
+    assert_eq!(
+        shown,
+        "row=4 column=Account: map this account to an existing financial account or create one"
+    );
+    assert!(!shown.contains("9999"));
+    assert!(!shown.contains("Harbor"));
+    assert!(!shown.contains("Northwind"));
+    assert_eq!(kernel.observation_count().expect("count"), 0);
+    assert_eq!(kernel.revision().expect("rev"), revision);
 }

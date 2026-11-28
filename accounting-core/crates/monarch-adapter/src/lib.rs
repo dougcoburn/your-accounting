@@ -1,49 +1,72 @@
 //! Monarch CSV feed (U23).
 //!
 //! Translates a Monarch export into observation rows and writes them through
-//! the observation import context (`import_observations`). The kernel learns
-//! no Monarch column. `Id` is the external id. The Date column is both the
-//! occurred date and the posted date. Reviewed is stored as a hint and does
-//! not reconcile the row. Pending rows are not stored, so a later posted
-//! export can insert under the same id. A row whose hash changed is reported
-//! by file line and column name and is not replaced.
+//! the observation import context. The kernel learns no Monarch column. With
+//! a feed id, identity is that id plus the financial account. The raw-text
+//! hash only detects change: the same hash is a no-op, and a different hash
+//! appends a revision while the first snapshot stays. `Date` is both the
+//! occurred date and the posted date. `Reviewed` and `Pending` are attributes
+//! on the observation, not a reconciliation and not a reason to skip the row.
+//! Category is a hint in the payload. This feed creates no ledger accounts
+//! and no financial accounts, and it does not post kernel events.
 //!
-//! Category names in the caller-supplied class list become leaf ledger
-//! accounts under an Income or Expense parent. The adapter does not create
-//! financial accounts: the local account map is `financial_accounts.last4`.
-//! It does not write `tags` or `posting_tags`.
+//! A later pull voids an observation only when that pull, for the same
+//! account, covers at least seven days on either side of the observation's
+//! date and the id is absent. A narrower export voids nothing. The void is
+//! the import-context tombstone (commit kind `import`, no kernel reversal).
 //!
-//! The kernel must be opened with the observation-import participant. Commit
-//! runs that participant's `validate`. Linking and voiding stay on the
-//! transaction (`observation_links`, `void_observation`); this feed does not
-//! post events.
+//! The kernel must be opened with the observation-import participant.
 
 mod csv;
+mod dates;
 mod error;
+mod identity;
 mod row;
-mod seed;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use accounting_kernel::v2::{
-    AccountType, Code, Error as KernelError, ImportBatch, Kernel, LedgerAccountRow, LedgerKind,
-    NewFeed, NewLedgerAccount, ObservationInput, Transaction,
+    Code, Error as KernelError, ImportBatch, Kernel, NewFeed, ObservationInput,
 };
 
-pub use error::{ColumnDiff, ImportError, RowFault, COLUMNS};
-pub use seed::{month1_category_classes, CategoryClass, EXPENSE_PARENT, INCOME_PARENT};
+pub use dates::Coverage;
+pub use error::{ImportError, RowFault, COLUMNS};
+pub use identity::{FeedIdStrategy, FeedIdentity, IdLessStrategy, IdentityError, IdentityStrategy};
 
 pub const IMPORTER_ID: &str = "monarch_csv";
 pub const IMPORTER_VERSION: &str = "1";
 
-/// One import of a Monarch export into an entity database that already has
-/// its financial accounts.
+/// One import of a Monarch export. Financial accounts must already exist.
 pub struct ImportRequest<'a> {
     pub csv: &'a str,
     pub feed_id: &'a str,
     pub feed_name: &'a str,
     pub expected_revision: i64,
-    pub categories: &'a [CategoryClass],
+}
+
+/// A financial-movement observation already bound to one account.
+pub struct FinancialObservation {
+    pub external_id: String,
+    pub occurred_date: String,
+    pub posted_date: Option<String>,
+    pub direction: String,
+    pub amount_minor: i64,
+    pub description: String,
+    pub row_hash: String,
+    pub payload_json: String,
+}
+
+/// App-layer entry. Every observation is for `financial_account_id`.
+/// `coverage` is the pull's date span for that account. `None`, and an empty
+/// list, void nothing.
+pub struct AddObservations<'a> {
+    pub financial_account_id: &'a str,
+    pub feed_id: &'a str,
+    pub feed_name: &'a str,
+    pub expected_revision: i64,
+    pub strategy: &'a dyn IdentityStrategy,
+    pub observations: &'a [FinancialObservation],
+    pub coverage: Option<Coverage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,13 +74,10 @@ pub struct ImportReport {
     pub feed_id: String,
     pub data_rows: u32,
     pub inserted: u32,
+    pub revised: u32,
     pub unchanged: u32,
-    /// Physical lines of pending rows that were not stored.
-    pub withheld_pending: Vec<u32>,
-    /// Same external id, different column text. The stored observation is unchanged.
-    pub proposals: Vec<ColumnDiff>,
+    pub voided: u32,
     pub observation_ids: Vec<String>,
-    pub leaves_created: u32,
     pub noop: bool,
     pub seq: i64,
 }
@@ -67,106 +87,68 @@ struct ResolvedAccount {
     currency: String,
 }
 
-/// Import `request.csv`. A parse or account fault writes nothing.
-///
-/// Pending rows with no stored observation are withheld. Rows whose stored
-/// hash differs are left in place and listed on `proposals`; every other
-/// accepted row is written in the same commit.
+struct AccountScope {
+    present: HashSet<String>,
+    dates: Vec<String>,
+}
+
+/// Import `request.csv`. A parse fault or an account that is not exactly one
+/// usable account writes nothing.
 pub fn import_monarch_csv(
     kernel: &mut Kernel,
     request: &ImportRequest<'_>,
 ) -> Result<ImportReport, ImportError> {
     let sources = read_sources(request.csv)?;
     let data_rows = u32::try_from(sources.len()).unwrap_or(u32::MAX);
-    let accounts = resolve_accounts(kernel, &sources)?;
-    let Classified {
-        batch,
-        withheld_pending,
-        proposals,
-    } = classify(kernel, request.feed_id, &sources)?;
-    if batch.is_empty() {
-        return Ok(ImportReport {
-            feed_id: request.feed_id.to_string(),
+    if sources.is_empty() {
+        return Ok(empty_report(
+            request.feed_id,
             data_rows,
-            inserted: 0,
-            unchanged: 0,
-            withheld_pending,
-            proposals,
-            observation_ids: Vec::new(),
-            leaves_created: 0,
-            noop: true,
-            seq: request.expected_revision,
-        });
+            request.expected_revision,
+        ));
     }
-    let classes = class_map(request.categories);
+    let accounts = resolve_accounts(kernel, &sources)?;
+    let strategy = FeedIdStrategy;
+    let mut rows = Vec::with_capacity(sources.len());
+    let mut scopes: BTreeMap<String, AccountScope> = BTreeMap::new();
+    for source in &sources {
+        let account = &accounts[&source.last4];
+        let identity = strategy
+            .identify(&source.external_id, &account.id)
+            .map_err(ImportError::Identity)?;
+        let scope = scopes
+            .entry(identity.financial_account_id.clone())
+            .or_insert_with(|| AccountScope {
+                present: HashSet::new(),
+                dates: Vec::new(),
+            });
+        scope.present.insert(identity.external_id.clone());
+        scope.dates.push(source.occurred_date.clone());
+        rows.push(observation_input(
+            identity,
+            &account.currency,
+            &FinancialObservation {
+                external_id: source.external_id.clone(),
+                occurred_date: source.occurred_date.clone(),
+                posted_date: Some(source.occurred_date.clone()),
+                direction: source.direction.to_string(),
+                amount_minor: source.amount_minor,
+                description: source.description.clone(),
+                row_hash: source.row_hash.clone(),
+                payload_json: source.payload_json.clone(),
+            },
+        ));
+    }
+    let voids = absent_ids(kernel, request.feed_id, &scopes)?;
     let mut tx = kernel
         .begin_transaction(Some(request.expected_revision))
         .map_err(ImportError::kernel)?;
-    let outcome = match write_batch(&mut tx, request, &classes, &accounts, &batch) {
-        Ok(outcome) => outcome,
-        Err(err) => return Err(err),
-    };
-    let sealed = tx.commit().map_err(ImportError::kernel)?;
-    let unchanged = u32::try_from(outcome.observation_ids.len())
-        .unwrap_or(u32::MAX)
-        .saturating_sub(outcome.inserted);
-    Ok(ImportReport {
-        feed_id: request.feed_id.to_string(),
-        data_rows,
-        inserted: outcome.inserted,
-        unchanged,
-        withheld_pending,
-        proposals,
-        observation_ids: outcome.observation_ids,
-        leaves_created: outcome.leaves_created,
-        noop: sealed.noop,
-        seq: sealed.seq,
-    })
-}
-
-struct WriteOutcome {
-    inserted: u32,
-    observation_ids: Vec<String>,
-    leaves_created: u32,
-}
-
-fn write_batch(
-    tx: &mut Transaction<'_>,
-    request: &ImportRequest<'_>,
-    classes: &HashMap<&str, AccountType>,
-    accounts: &HashMap<String, ResolvedAccount>,
-    batch: &[&row::SourceRow],
-) -> Result<WriteOutcome, ImportError> {
     tx.ensure_feed(NewFeed {
         id: Some(request.feed_id.to_string()),
         kind: "monarch_csv".to_string(),
         name: request.feed_name.to_string(),
     })
     .map_err(ImportError::kernel)?;
-    let leaves_created = seed_categories(tx, classes, batch)?;
-    let mut rows = Vec::with_capacity(batch.len());
-    for source in batch {
-        let Some(account) = accounts.get(&source.last4) else {
-            return Err(ImportError::rows(vec![RowFault {
-                row: source.line,
-                column: "Account",
-            }]));
-        };
-        rows.push(ObservationInput {
-            id: None,
-            external_id: source.external_id.clone(),
-            financial_account_id: account.id.clone(),
-            occurred_date: source.occurred_date.clone(),
-            posted_date: Some(source.occurred_date.clone()),
-            direction: source.direction.to_string(),
-            amount_minor: source.amount_minor,
-            currency: account.currency.clone(),
-            description: source.description.clone(),
-            row_hash: source.row_hash.clone(),
-            payload_json: source.payload_json.clone(),
-            corroborates_id: None,
-        });
-    }
     let imported = tx
         .import_observations(ImportBatch {
             feed_id: request.feed_id.to_string(),
@@ -175,31 +157,182 @@ fn write_batch(
             document_id: None,
             rows,
         })
-        .map_err(|err| map_conflict(err, batch))?;
-    Ok(WriteOutcome {
-        inserted: imported.inserted,
-        observation_ids: imported.observation_ids,
-        leaves_created,
-    })
+        .map_err(ImportError::kernel)?;
+    for id in &voids {
+        tx.void_observation(id, "other")
+            .map_err(ImportError::kernel)?;
+    }
+    let sealed = tx.commit().map_err(ImportError::kernel)?;
+    Ok(finish(
+        request.feed_id,
+        &sealed,
+        data_rows,
+        &imported,
+        voids.len(),
+    ))
 }
 
-fn map_conflict(err: KernelError, batch: &[&row::SourceRow]) -> ImportError {
-    if err.code != Code::ImportConflict {
-        return ImportError::kernel(err);
+/// Store observations that are already bound to one financial account.
+pub fn add_observations(
+    kernel: &mut Kernel,
+    request: &AddObservations<'_>,
+) -> Result<ImportReport, ImportError> {
+    let data_rows = u32::try_from(request.observations.len()).unwrap_or(u32::MAX);
+    if request.observations.is_empty() {
+        return Ok(empty_report(
+            request.feed_id,
+            data_rows,
+            request.expected_revision,
+        ));
     }
-    let Some(external_id) = err.ids.get(1) else {
-        return ImportError::kernel(err);
+    let account = kernel
+        .financial_account(request.financial_account_id)
+        .map_err(ImportError::kernel)?
+        .ok_or_else(|| ImportError::kernel(KernelError::new(Code::UnknownTarget, &[], vec![])))?;
+    let mut seen = HashSet::new();
+    let mut rows = Vec::with_capacity(request.observations.len());
+    let mut present = HashSet::new();
+    for observation in request.observations {
+        let identity = request
+            .strategy
+            .identify(&observation.external_id, request.financial_account_id)
+            .map_err(ImportError::Identity)?;
+        if !seen.insert(identity.external_id.clone()) {
+            return Err(ImportError::rows(vec![RowFault {
+                row: 0,
+                column: "Id",
+            }]));
+        }
+        present.insert(identity.external_id.clone());
+        rows.push(observation_input(identity, &account.currency, observation));
+    }
+    let voids = if let Some(coverage) = &request.coverage {
+        let live = kernel
+            .live_observations_for_account(request.feed_id, request.financial_account_id)
+            .map_err(ImportError::kernel)?;
+        live.into_iter()
+            .filter(|obs| {
+                !present.contains(&obs.external_id) && dates::covers(coverage, &obs.occurred_date)
+            })
+            .map(|obs| obs.id)
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
     };
-    if let Some(source) = batch
-        .iter()
-        .find(|source| &source.external_id == external_id)
-    {
-        return ImportError::rows(vec![RowFault {
-            row: source.line,
-            column: "Id",
-        }]);
+    let mut tx = kernel
+        .begin_transaction(Some(request.expected_revision))
+        .map_err(ImportError::kernel)?;
+    tx.ensure_feed(NewFeed {
+        id: Some(request.feed_id.to_string()),
+        kind: "monarch_csv".to_string(),
+        name: request.feed_name.to_string(),
+    })
+    .map_err(ImportError::kernel)?;
+    let imported = tx
+        .import_observations(ImportBatch {
+            feed_id: request.feed_id.to_string(),
+            importer_id: IMPORTER_ID.to_string(),
+            importer_version: IMPORTER_VERSION.to_string(),
+            document_id: None,
+            rows,
+        })
+        .map_err(ImportError::kernel)?;
+    for id in &voids {
+        tx.void_observation(id, "other")
+            .map_err(ImportError::kernel)?;
     }
-    ImportError::kernel(err)
+    let sealed = tx.commit().map_err(ImportError::kernel)?;
+    Ok(finish(
+        request.feed_id,
+        &sealed,
+        data_rows,
+        &imported,
+        voids.len(),
+    ))
+}
+
+fn observation_input(
+    identity: FeedIdentity,
+    currency: &str,
+    observation: &FinancialObservation,
+) -> ObservationInput {
+    ObservationInput {
+        id: None,
+        external_id: identity.external_id,
+        financial_account_id: identity.financial_account_id,
+        occurred_date: observation.occurred_date.clone(),
+        posted_date: observation.posted_date.clone(),
+        direction: observation.direction.clone(),
+        amount_minor: observation.amount_minor,
+        currency: currency.to_string(),
+        description: observation.description.clone(),
+        row_hash: observation.row_hash.clone(),
+        payload_json: observation.payload_json.clone(),
+        corroborates_id: None,
+    }
+}
+
+fn absent_ids(
+    kernel: &Kernel,
+    feed_id: &str,
+    scopes: &BTreeMap<String, AccountScope>,
+) -> Result<Vec<String>, ImportError> {
+    let mut voids = Vec::new();
+    for (account_id, scope) in scopes {
+        let Some(coverage) = dates::span(scope.dates.iter().map(String::as_str)) else {
+            continue;
+        };
+        let live = kernel
+            .live_observations_for_account(feed_id, account_id)
+            .map_err(ImportError::kernel)?;
+        for obs in live {
+            if scope.present.contains(&obs.external_id) {
+                continue;
+            }
+            if dates::covers(&coverage, &obs.occurred_date) {
+                voids.push(obs.id);
+            }
+        }
+    }
+    Ok(voids)
+}
+
+fn empty_report(feed_id: &str, data_rows: u32, seq: i64) -> ImportReport {
+    ImportReport {
+        feed_id: feed_id.to_string(),
+        data_rows,
+        inserted: 0,
+        revised: 0,
+        unchanged: 0,
+        voided: 0,
+        observation_ids: Vec::new(),
+        noop: true,
+        seq,
+    }
+}
+
+fn finish(
+    feed_id: &str,
+    sealed: &accounting_kernel::v2::CommitResult,
+    data_rows: u32,
+    imported: &accounting_kernel::v2::ImportOutcome,
+    voided: usize,
+) -> ImportReport {
+    let unchanged = u32::try_from(imported.observation_ids.len())
+        .unwrap_or(u32::MAX)
+        .saturating_sub(imported.inserted)
+        .saturating_sub(imported.revised);
+    ImportReport {
+        feed_id: feed_id.to_string(),
+        data_rows,
+        inserted: imported.inserted,
+        revised: imported.revised,
+        unchanged,
+        voided: u32::try_from(voided).unwrap_or(u32::MAX),
+        observation_ids: imported.observation_ids.clone(),
+        noop: sealed.noop,
+        seq: sealed.seq,
+    }
 }
 
 fn read_sources(csv: &str) -> Result<Vec<row::SourceRow>, ImportError> {
@@ -257,7 +390,7 @@ fn read_sources(csv: &str) -> Result<Vec<row::SourceRow>, ImportError> {
     }
     let mut seen = HashSet::new();
     for source in &sources {
-        if !seen.insert(source.external_id.clone()) {
+        if !seen.insert((source.last4.clone(), source.external_id.clone())) {
             faults.push(RowFault {
                 row: source.line,
                 column: "Id",
@@ -277,7 +410,7 @@ fn resolve_accounts(
     sources: &[row::SourceRow],
 ) -> Result<HashMap<String, ResolvedAccount>, ImportError> {
     let mut resolved = HashMap::new();
-    let mut faults = Vec::new();
+    let mut unmapped = Vec::new();
     let mut last4s = BTreeSet::new();
     for source in sources {
         last4s.insert(source.last4.clone());
@@ -288,10 +421,7 @@ fn resolve_accounts(
             .map_err(ImportError::kernel)?;
         if found.len() != 1 || found[0].currency != "USD" {
             for source in sources.iter().filter(|source| source.last4 == last4) {
-                faults.push(RowFault {
-                    row: source.line,
-                    column: "Account",
-                });
+                unmapped.push(source.line);
             }
             continue;
         }
@@ -303,154 +433,10 @@ fn resolve_accounts(
             },
         );
     }
-    if !faults.is_empty() {
-        return Err(ImportError::rows(faults));
+    if !unmapped.is_empty() {
+        unmapped.sort_unstable();
+        unmapped.dedup();
+        return Err(ImportError::unmapped(unmapped));
     }
     Ok(resolved)
-}
-
-struct Classified<'a> {
-    batch: Vec<&'a row::SourceRow>,
-    withheld_pending: Vec<u32>,
-    proposals: Vec<ColumnDiff>,
-}
-
-fn classify<'a>(
-    kernel: &Kernel,
-    feed_id: &str,
-    sources: &'a [row::SourceRow],
-) -> Result<Classified<'a>, ImportError> {
-    let mut batch = Vec::new();
-    let mut withheld_pending = Vec::new();
-    let mut proposals = Vec::new();
-    for source in sources {
-        let stored = kernel
-            .observation_by_external_id(feed_id, &source.external_id)
-            .map_err(ImportError::kernel)?;
-        match stored {
-            Some(fact) if fact.row_hash == source.row_hash => batch.push(source),
-            Some(fact) => proposals.push(row::proposal(source, &fact.payload_json)),
-            None if source.pending => withheld_pending.push(source.line),
-            None => batch.push(source),
-        }
-    }
-    Ok(Classified {
-        batch,
-        withheld_pending,
-        proposals,
-    })
-}
-
-fn class_map(categories: &[CategoryClass]) -> HashMap<&str, AccountType> {
-    let mut classes = HashMap::new();
-    for class in categories {
-        classes
-            .entry(class.name.as_str())
-            .or_insert(class.account_type);
-    }
-    classes
-}
-
-fn seed_categories(
-    tx: &mut Transaction<'_>,
-    classes: &HashMap<&str, AccountType>,
-    batch: &[&row::SourceRow],
-) -> Result<u32, ImportError> {
-    let mut names = BTreeMap::new();
-    for source in batch {
-        if classes.contains_key(source.category.as_str()) {
-            names.entry(source.category.as_str()).or_insert(source.line);
-        }
-    }
-    let mut parents = Parents::default();
-    let mut created = 0u32;
-    for (name, line) in names {
-        let account_type = classes[name];
-        let existing = tx
-            .ledger_categories_named(name)
-            .map_err(ImportError::kernel)?;
-        if find_leaf(&existing).is_some() {
-            continue;
-        }
-        let parent_id = ensure_parent(tx, &mut parents, account_type, line)?;
-        tx.create_ledger_account(NewLedgerAccount {
-            id: None,
-            financial_account_id: None,
-            account_type,
-            kind: LedgerKind::Category,
-            parent_id: Some(parent_id),
-            name: name.to_string(),
-        })
-        .map_err(ImportError::kernel)?;
-        created = created.saturating_add(1);
-    }
-    Ok(created)
-}
-
-#[derive(Default)]
-struct Parents {
-    income: Option<String>,
-    expense: Option<String>,
-}
-
-fn ensure_parent(
-    tx: &mut Transaction<'_>,
-    parents: &mut Parents,
-    account_type: AccountType,
-    line: u32,
-) -> Result<String, ImportError> {
-    let slot = match account_type {
-        AccountType::Income => &mut parents.income,
-        AccountType::Expense => &mut parents.expense,
-        _ => {
-            return Err(ImportError::rows(vec![RowFault {
-                row: line,
-                column: "Category",
-            }]))
-        }
-    };
-    if let Some(id) = slot.clone() {
-        return Ok(id);
-    }
-    let name = match account_type {
-        AccountType::Income => INCOME_PARENT,
-        AccountType::Expense => EXPENSE_PARENT,
-        _ => INCOME_PARENT,
-    };
-    let existing = tx
-        .ledger_categories_named(name)
-        .map_err(ImportError::kernel)?;
-    if let Some(id) = find_parent(&existing, account_type.as_str(), name) {
-        *slot = Some(id.clone());
-        return Ok(id);
-    }
-    let id = tx
-        .create_ledger_account(NewLedgerAccount {
-            id: None,
-            financial_account_id: None,
-            account_type,
-            kind: LedgerKind::Category,
-            parent_id: None,
-            name: name.to_string(),
-        })
-        .map_err(ImportError::kernel)?;
-    *slot = Some(id.clone());
-    Ok(id)
-}
-
-fn find_parent(rows: &[LedgerAccountRow], account_type: &str, name: &str) -> Option<String> {
-    rows.iter()
-        .find(|row| {
-            row.parent_id.is_none()
-                && row.account_type == account_type
-                && row.kind == "category"
-                && row.name == name
-        })
-        .map(|row| row.id.clone())
-}
-
-fn find_leaf(rows: &[LedgerAccountRow]) -> Option<String> {
-    rows.iter()
-        .find(|row| row.kind == "category" && row.parent_id.is_some())
-        .map(|row| row.id.clone())
 }
