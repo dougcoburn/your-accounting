@@ -21,7 +21,7 @@
 --                         snapshots on non-cash asset accounts only
 --   ADR 0006              settlement exclusivity per posting; drafts never post
 --   ADR 0007              observation natural key = feed id + external id
---   ADR 0012 (proposed)   identity is feed id + external id + financial account.
+--   ADR 0012 (accepted 2026-11-27) identity is feed id + external id + financial account.
 --                         A later pull appends observation_revisions. The first
 --                         observations row is never updated.
 --   ADR 0008              typed ledger accounts; categories are income/expense
@@ -181,7 +181,7 @@ CREATE TABLE financial_accounts (
     created_at    TEXT NOT NULL CHECK (created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z')
 ) STRICT;
 
--- Proposed (ADR 0012): a non-financial role for feed rows that are stored and
+-- Accepted (ADR 0012, 2026-11-27): a non-financial role for feed rows that are stored and
 -- never posted. Month 1 has one role, payroll. The Monarch account name that
 -- binds to it is import configuration, not a column here. One row per role.
 CREATE TABLE cross_check_accounts (
@@ -361,7 +361,7 @@ CREATE TABLE import_runs (
 -- An observation's first snapshot is an immutable accepted source fact
 -- (SPEC §2.5, INV-014). Identity = (feed_id, external_id, financial_account_id)
 -- or, for a payroll cross-check row, (feed_id, external_id, cross_check_account_id)
--- (ADR 0007, proposed ADR 0012). Exactly one of those account columns is set.
+-- (ADR 0007, ADR 0012 accepted 2026-11-27). Exactly one of those account columns is set.
 -- A later pull of the same identity appends
 -- observation_revisions and does not update this row. Current attributes are
 -- the view observation_current. An identical row_hash is a no-op.
@@ -421,7 +421,7 @@ CREATE TABLE posting_observations (
 ) STRICT;
 CREATE INDEX posting_observations_observation ON posting_observations(observation_id);
 
--- Proposed (ADR 0012): each later pull of the same identity appends the new
+-- Accepted (ADR 0012, 2026-11-27): each later pull of the same identity appends the new
 -- source attributes, including the raw payload. The observations row stays
 -- the first snapshot. Nothing here is updated or deleted.
 CREATE TABLE observation_revisions (

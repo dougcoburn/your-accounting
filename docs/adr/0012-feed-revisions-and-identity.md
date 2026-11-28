@@ -1,8 +1,8 @@
 # ADR 0012: Feed identity, observation revisions, and provisional transactions
 
-Status: **Proposed** (2026-11-28). Doug decided the U23 behavior on PR #81, and on 2026-11-28 decided the two items this note had left open: where a provisional transaction lives, and what happens when a voided row reappears. The ADR stays Proposed. The revision table is implemented for review and becomes the contract when this ADR is accepted. The provisional event (U41) and the explicit restore (U42) are specified below and are not built. U23 does not post provisional journal entries.
+Status: **Accepted** (2026-11-27). Doug approved the schema shape by merging #84: `observations.financial_account_id` is nullable, the `cross_check_accounts` table exists, and exactly one of `financial_account_id` and `cross_check_account_id` is set. Doug decided the U23 behavior on PR #81, and on 2026-11-28 decided where a provisional transaction lives and what happens when a voided row reappears. The provisional event (U41) and the explicit restore (U42) are specified below and are not built. U23 does not post provisional journal entries.
 
-Amends, once accepted: [ADR 0007](0007-layering.md) (natural key and `ImportConflict` on a changed hash) and INV-014 as applied to a later pull of the same feed. Does not amend ADR 0002. Observations stay append-only: a later pull appends a row and does not update the first snapshot. A provisional event that changes or is voided also appends a reversal and a replacement. It does not update a sealed event in place.
+Amends [ADR 0007](0007-layering.md) (natural key and `ImportConflict` on a changed hash) and INV-014 as applied to a later pull of the same feed. Does not amend ADR 0002. Observations stay append-only: a later pull appends a row and does not update the first snapshot. A provisional event that changes or is voided also appends a reversal and a replacement. It does not update a sealed event in place.
 
 ## Context
 
@@ -14,7 +14,7 @@ Doug's answers on PR #81:
 4. The app entry is `add_observations(account, observations[])`. The importer resolves the account first. If it cannot resolve exactly one usable account, the whole import fails and asks the user to map the account or create one. The adapter never creates accounts.
 5. With a feed id, identity is that id plus the account. The raw-text hash only detects change. Hints update when the raw row changes, and each raw payload is kept so matching can be re-run. Id-less CSV matching is a follow-up. Doug's expected cadence for that follow-up is below: weekly bank CSV or QFX/OFX, then a month-end statement. U23 does not implement it.
 
-## Decision proposed
+## Decision
 
 ### Identity
 
@@ -26,7 +26,7 @@ The same Monarch id on two accounts is two observations. `row_hash` is not part 
 
 A payroll cross-check row has no financial account. Its identity is `(feed_id, external_id, cross_check_account_id)`. The two identities are separate partial unique indexes, because a table UNIQUE treats NULL as distinct and would allow duplicate payroll ids.
 
-### Payroll cross-check (proposed, implemented for review)
+### Payroll cross-check
 
 Doug decided this on 2026-11-28 after the real October export. Monarch has a net-zero payroll tracking account with no last 4. Each paycheck is one positive row (gross plus employer benefits minus net) and negative rows for taxes, 401(k), employer benefits, employer HSA, and employee deductions. The paystub is the source of truth (U28). These rows are observations used only to cross-check that paystub group. They never post on their own.
 
@@ -36,7 +36,7 @@ Doug decided this on 2026-11-28 after the real October export. Monarch has a net
 - A cell that has a last 4 is resolved as a financial account. The payroll name is not consulted.
 - Comparing each stored row to the matching paystub line, and flagging a difference such as a tax line off by a stale Social Security amount while the account still nets to zero, is U28. This unit stores the rows and does not compare them.
 
-The schema for the role is in `docs/schema-v2.sql` for review. Accepting this ADR is what makes it the contract. The comparison is [U28](../MONTH1_IMPLEMENTATION_PLAN.md).
+The schema for the role is in `docs/schema-v2.sql`. Doug approved that shape by merging #84. The comparison is [U28](../MONTH1_IMPLEMENTATION_PLAN.md).
 
 `IdLessStrategy` is the seam for a source with no stable id. Calling it does not match and does not write. The follow-up unit plugs in behind `IdentityStrategy`. U23 does not implement that unit. Its contract is the next section.
 
@@ -134,7 +134,7 @@ Categories are hints on `payload_json` only. No income or expense ledger account
 ## Consequences
 
 - `docs/schema-v2.sql` in this revision adds `observation_revisions` and `observation_current`, and widens the observation unique key to `(feed_id, external_id, financial_account_id)`. Smoke counts 24 commit-scoped tables.
-- KERNEL_INTERFACE_SPEC §3.6 describes the revision behavior so the spec matches the code under review. Acceptance of this ADR is what makes that text normative.
+- KERNEL_INTERFACE_SPEC §3.6 describes the revision behavior. This ADR is accepted, so that text is normative.
 - Id-less matching and the weekly CSV / QFX cadence are a follow-up. They are not U23. The cadence rules above are the spec for that unit.
 - Provisional events are U41. Explicit restore, and surfacing voided observations when a statement ending balance does not reconcile, are U42. Both are decided here and not built.
-- A configured payroll-tracking name binds to `cross_check_accounts` role `payroll`. `observations.financial_account_id` is nullable, `cross_check_account_id` is the other binding, and exactly one is set. Those rows are stored and are not posted. The paystub comparison is U28. This schema is proposed with the rest of this ADR.
+- A configured payroll-tracking name binds to `cross_check_accounts` role `payroll`. `observations.financial_account_id` is nullable, `cross_check_account_id` is the other binding, and exactly one is set. Those rows are stored and are not posted. The paystub comparison is U28. Doug approved that schema shape by merging #84.
