@@ -166,6 +166,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "monarch-adapter"
+version = "0.1.0"
+dependencies = [
+ "accounting-kernel",
+ "sha2",
+]
+
+[[package]]
 name = "monarch-synth"
 version = "0.1.0"
 

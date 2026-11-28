@@ -6,6 +6,7 @@ members = [
     "crates/accounting-cli",
     "crates/accounting-privacy",
     "crates/monarch-synth",
+    "crates/monarch-adapter",
 ]
 
 [workspace.package]

@@ -16,7 +16,7 @@ pub(crate) fn map_message(msg: &str) -> Option<Error> {
     if let Some((code, refs)) = raise(msg) {
         return Some(Error::new(code, refs, vec![]));
     }
-    if msg.contains("UNIQUE constraint failed: observations.feed_id, observations.external_id") {
+    if msg.contains("UNIQUE constraint failed: observations.feed_id, observations.external_id, observations.financial_account_id") {
         return Some(Error::new(Code::ImportConflict, &[], vec![]));
     }
     if msg.contains("UNIQUE constraint failed: observation_voids.observation_id") {
@@ -109,7 +109,7 @@ mod tests {
     #[test]
     fn observation_text_maps_here_and_through_the_kernel_fallback() {
         let conflict =
-            map_message("UNIQUE constraint failed: observations.feed_id, observations.external_id")
+            map_message("UNIQUE constraint failed: observations.feed_id, observations.external_id, observations.financial_account_id")
                 .expect("import");
         assert_eq!(conflict.code, Code::ImportConflict);
         assert_eq!(conflict.class, Class::Import);

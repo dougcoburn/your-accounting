@@ -167,7 +167,7 @@ INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_da
 INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS14','${P}EV10','${P}AX11','USD','debit',12.5);
 COMMIT;"
 rejects "ids must be ULIDs" "CHECK constraint failed" "INSERT INTO parties(id,name,created_at) VALUES('je_1','Bad id','$T');"
-rejects "observation natural key is unique (feed + external id)" "UNIQUE constraint failed: observations.feed_id, observations.external_id" "
+rejects "observation natural key is unique (feed + external id + account)" "UNIQUE constraint failed: observations.feed_id, observations.external_id, observations.financial_account_id" "
 BEGIN;
 INSERT INTO observations(id,feed_id,external_id,financial_account_id,occurred_date,direction,amount_minor,currency,row_hash,payload_json,commit_id,recorded_at)
   VALUES('${P}B002','${P}FED1','synthetic-1','${P}FAC1','2025-10-30','outflow',4250,'USD','$(printf 'a%.0s' {1..64})','{}','${P}C004','$T');
@@ -248,6 +248,7 @@ sealed evidence_deletions "INSERT INTO evidence_deletions(id,sha256,reason,commi
 sealed evidence_links "INSERT INTO evidence_links(id,document_id,event_id,commit_id) VALUES('${P}E701','${P}D0C1','${P}EV01','$S');"
 sealed import_runs "INSERT INTO import_runs(id,feed_id,importer_id,importer_version,commit_id,recorded_at) VALUES('${P}1R01','${P}FED1','monarch','0.1','$S','$T');"
 sealed observations "INSERT INTO observations(id,feed_id,external_id,financial_account_id,occurred_date,direction,amount_minor,currency,row_hash,payload_json,commit_id,recorded_at) VALUES('${P}B009','${P}FED1','synthetic-9','${P}FAC1','2025-10-31','outflow',100,'USD','$HC','{}','$S','$T');"
+sealed observation_revisions "INSERT INTO observation_revisions(id,observation_id,occurred_date,direction,amount_minor,currency,row_hash,payload_json,commit_id,recorded_at) VALUES('${P}RV09','${P}B001','2025-10-30','outflow',100,'USD','$HC','{}','$S','$T');"
 sealed observation_voids "INSERT INTO observation_voids(id,observation_id,reason,commit_id,recorded_at) VALUES('${P}V009','${P}B001','duplicate','$S','$T');"
 sealed settlement_groups "INSERT INTO settlement_groups(id,recipe_id,recipe_version,commit_id,recorded_at) VALUES('${P}GRP9','card_purchase','1.0.0','$S','$T');"
 sealed settlement_group_states "INSERT INTO settlement_group_states(id,group_id,seq,state,commit_id,recorded_at) VALUES('${P}GS29','${P}GRP2',2,'dissolved','$S','$T');"
@@ -264,7 +265,7 @@ sealed refund_links "INSERT INTO refund_links(id,refund_posting_id,purchase_post
 sealed obligation_postings "INSERT INTO obligation_postings VALUES('${P}0B01','${P}PS01');"
 sealed settlement_draft_participants "INSERT INTO settlement_draft_participants(id,group_state_id,role,expected_json) VALUES('${P}DP01','${P}GS11','expected','{}');"
 sealed kernel_state "INSERT INTO kernel_state(id,state_key,active,code,commit_id,recorded_at) VALUES('${P}FRZ9','freeze',1,'UnsealedRows','$S','$T');"
-equals "all 23 commit-scoped tables are covered by doctor_unsealed_rows" "23|23" "SELECT count(*), sum(instr((SELECT sql FROM sqlite_master WHERE name='doctor_unsealed_rows'), char(39)||t||char(39)) > 0) FROM (SELECT DISTINCT tbl_name AS t FROM sqlite_master WHERE type='trigger' AND name GLOB '*_open_commit');"
+equals "all 24 commit-scoped tables are covered by doctor_unsealed_rows" "24|24" "SELECT count(*), sum(instr((SELECT sql FROM sqlite_master WHERE name='doctor_unsealed_rows'), char(39)||t||char(39)) > 0) FROM (SELECT DISTINCT tbl_name AS t FROM sqlite_master WHERE type='trigger' AND name GLOB '*_open_commit');"
 
 # --- read models ----------------------------------------------------------------
 equals "register hides the superseded entry and its reversal" "${P}EV03
