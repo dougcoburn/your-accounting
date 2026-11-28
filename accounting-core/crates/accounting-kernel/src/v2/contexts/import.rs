@@ -164,6 +164,9 @@ pub struct ObservationInput {
     pub id: Option<String>,
     pub external_id: String,
     pub financial_account_id: String,
+    /// Set for a payroll cross-check row. `financial_account_id` is then empty
+    /// and is stored as NULL. Exactly one binding is set.
+    pub cross_check_account_id: Option<String>,
     pub occurred_date: String,
     pub posted_date: Option<String>,
     pub direction: String,
@@ -511,12 +514,12 @@ fn stage_import(
     let mut subjects = Vec::new();
     for (index, (row, new_id)) in batch.rows.iter().zip(allocated.iter()).enumerate() {
         check_row(tx, row, new_id)?;
-        if let Some(stored) = stored_observation(
-            tx,
-            &batch.feed_id,
-            &row.external_id,
-            &row.financial_account_id,
-        )? {
+        let account_id = row
+            .cross_check_account_id
+            .as_deref()
+            .unwrap_or(row.financial_account_id.as_str());
+        if let Some(stored) = stored_observation(tx, &batch.feed_id, &row.external_id, account_id)?
+        {
             if stored.voided || stored.row_hash == row.row_hash {
                 subjects.push(Subject::Observation {
                     feed_id: batch.feed_id.clone(),
@@ -587,7 +590,9 @@ fn check_row(tx: &ContextTx<'_>, row: &ObservationInput, new_id: &str) -> Result
     if row.amount_minor <= 0 {
         return Err(Error::new(Code::InvalidMoney, &[], vec![]));
     }
-    if !is_ulid(&row.financial_account_id) {
+    if row.cross_check_account_id.is_some() {
+        check_cross_check(tx, row)?;
+    } else if !is_ulid(&row.financial_account_id) {
         return Err(Error::new(Code::InvalidId, &[], vec![]));
     }
     if !date_ok(tx, &row.occurred_date)? {
@@ -601,6 +606,9 @@ fn check_row(tx: &ContextTx<'_>, row: &ObservationInput, new_id: &str) -> Result
     let json_ok: i64 = tx.query_row("SELECT json_valid(?1)", [&row.payload_json], |r| r.get(0))?;
     if json_ok != 1 {
         return Err(Error::new(Code::InvalidShape, &[], vec![]));
+    }
+    if row.cross_check_account_id.is_some() {
+        return Ok(());
     }
     let account_currency = tx.query_optional(
         "SELECT currency FROM financial_accounts WHERE id = ?1",
@@ -652,6 +660,38 @@ fn check_row(tx: &ContextTx<'_>, row: &ObservationInput, new_id: &str) -> Result
     Ok(())
 }
 
+fn financial_binding(financial_account_id: &str, cross_check: bool) -> Option<&str> {
+    if cross_check {
+        None
+    } else {
+        Some(financial_account_id)
+    }
+}
+
+fn check_cross_check(tx: &ContextTx<'_>, row: &ObservationInput) -> Result<(), Error> {
+    if !row.financial_account_id.is_empty() {
+        return Err(Error::new(Code::InvalidShape, &[], vec![]));
+    }
+    let Some(cross_id) = &row.cross_check_account_id else {
+        return Err(Error::new(Code::InvalidShape, &[], vec![]));
+    };
+    if !is_ulid(cross_id) {
+        return Err(Error::new(Code::InvalidId, &[], vec![]));
+    }
+    if row.currency != "USD" {
+        return Err(Error::new(Code::CurrencyMismatch, &["INV-005"], vec![]));
+    }
+    let found = tx.query_optional(
+        "SELECT id FROM cross_check_accounts WHERE id = ?1 AND role = 'payroll'",
+        [cross_id.as_str()],
+        |r| r.get::<_, String>(0),
+    )?;
+    if found.is_none() {
+        return Err(Error::new(Code::UnknownTarget, &[], vec![]));
+    }
+    Ok(())
+}
+
 fn stored_observation(
     tx: &ContextTx<'_>,
     feed_id: &str,
@@ -664,7 +704,8 @@ fn stored_observation(
          FROM observations o
          JOIN observation_current cur ON cur.id = o.id
          JOIN commits c ON c.id = o.commit_id
-         WHERE o.feed_id = ?1 AND o.external_id = ?2 AND o.financial_account_id = ?3",
+         WHERE o.feed_id = ?1 AND o.external_id = ?2
+           AND (o.financial_account_id = ?3 OR o.cross_check_account_id = ?3)",
         params![feed_id, external_id, financial_account_id],
         |row| {
             Ok(StoredObservation {
@@ -726,15 +767,19 @@ fn insert_observation(
         id,
         "INSERT INTO observations(
             id, feed_id, external_id, import_run_id, financial_account_id,
-            occurred_date, posted_date, direction, amount_minor, currency,
+            cross_check_account_id, occurred_date, posted_date, direction, amount_minor, currency,
             description, row_hash, payload_json, corroborates_id, commit_id, recorded_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         params![
             id,
             feed_id,
             row.external_id,
             run_id,
-            row.financial_account_id,
+            financial_binding(
+                &row.financial_account_id,
+                row.cross_check_account_id.is_some()
+            ),
+            row.cross_check_account_id,
             row.occurred_date,
             row.posted_date,
             row.direction,
@@ -1399,6 +1444,7 @@ mod tests {
             row_hash: hash.to_string(),
             payload_json: r#"{"source":"synthetic"}"#.to_string(),
             corroborates_id: None,
+            cross_check_account_id: None,
         }
     }
 

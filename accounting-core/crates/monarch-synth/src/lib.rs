@@ -1,7 +1,8 @@
 //! Seeded, deterministic synthetic Monarch Money export for October 2025.
 //!
-//! Every merchant, note, and id is invented. Account names carry at most a
-//! last-4. The same seed always renders the same CSV bytes. Scenario rows keep
+//! Every merchant, note, and id is invented. Account names carry a last-4, or
+//! no digits when the account is the payroll cross-check name. The same seed
+//! always renders the same CSV bytes. Scenario rows keep
 //! their ids for every seed; the seed only changes filler merchants, amounts,
 //! and days.
 
@@ -40,7 +41,8 @@ const PEBBLE_CHECKING: &str = "Pebble Checking ...2210";
 const PEBBLE_SAVINGS: &str = "Pebble Savings ...2218";
 const HARBOR_JOINT: &str = "Harbor Joint Checking ...3340";
 const LUMEN_CASH: &str = "Lumen Cash ...4471";
-const CINDER_VISA: &str = "Cinder Visa ...5582";
+const CINDER_VISA: &str = "Cinder Visa (...5582)";
+const PAYROLL: &str = "Payroll Tracking";
 const CINDER_MC: &str = "Cinder Mastercard ...5590";
 const FABLE: &str = "Fable Rewards ...6603";
 const NIMBUS: &str = "Nimbus Store Card ...7714";
@@ -204,6 +206,9 @@ fn fixture_dir() -> PathBuf {
 pub fn generate(seed: u64) -> Fixture {
     assert_catalog_disjoint();
     let mut rows = canonical_rows();
+    if let Some(row) = rows.iter_mut().find(|row| row.id == "s-fly-01") {
+        row.reviewed.clear();
+    }
     rows.extend(filler_rows(seed));
     rows.sort_by(|a, b| a.date.cmp(&b.date).then_with(|| a.id.cmp(&b.id)));
     let scenarios = scenario_catalog();
@@ -270,7 +275,7 @@ pub fn render_coverage(fixture: &Fixture) -> String {
     let mut out = String::new();
     out.push_str("# synthetic October 2025 Monarch fixture\n\n");
     out.push_str(
-        "Invented Monarch Money export for October 2025. Merchants, notes, and ids are fictional. Account names show at most a last-4.\n\n",
+        "Invented Monarch Money export for October 2025. Merchants, notes, and ids are fictional. Account names show a last-4, except `Payroll Tracking`, which has no last 4.\n\n",
     );
     out.push_str(
         "`monarch-synth` writes `october-2025-synthetic.csv` beside this file. From `accounting-core`:\n\n",
@@ -279,7 +284,7 @@ pub fn render_coverage(fixture: &Fixture) -> String {
     out.push_str(
         "`--check` confirms the committed CSV and this file match the default seed (`DEFAULT_SEED`, the digits of 2025-10-15). `--seed` changes filler merchants, amounts, and days. Scenario rows, and the ids in the table below, stay put.\n\n",
     );
-    out.push_str("Every `Date` is in October 2025 (2025-10-01 through 2025-10-31). Amounts are signed: negative is an outflow, positive is an inflow, and none are zero. Every row has `Pending` false, `Reviewed` true, a `Reviewed At` timestamp, and a `Reviewed By` value.\n\n");
+    out.push_str("Every `Date` is in October 2025 (2025-10-01 through 2025-10-31). Amounts are signed: negative is an outflow, positive is an inflow, and none are zero. Every row has `Pending` false, a `Reviewed At` timestamp, and a `Reviewed By` value. `Reviewed` is the status word, except one blank cell.\n\n");
     out.push_str("## Columns\n\n");
     out.push_str(&format!("`{}`\n\n", COLUMNS.join(",")));
     out.push_str("## Shape\n\n");
@@ -622,6 +627,72 @@ fn canonical_rows() -> Vec<Row> {
             AMT_INFLIGHT,
             "e-household",
         ),
+        make_row(
+            "s-pr-pos",
+            "2025-10-03",
+            "Payroll Remainder (fictional)",
+            "Paychecks",
+            PAYROLL,
+            "PAYROLL",
+            "Synthetic: payroll cross-check remainder. These rows are not posted.",
+            80_000,
+            "e-acme",
+        ),
+        make_row(
+            "s-pr-tax",
+            "2025-10-03",
+            "Payroll Tax (fictional)",
+            "Taxes",
+            PAYROLL,
+            "PAYROLL",
+            "",
+            -30_000,
+            "e-acme",
+        ),
+        make_row(
+            "s-pr-ret",
+            "2025-10-03",
+            "Retirement Deferral (fictional)",
+            "Fees",
+            PAYROLL,
+            "PAYROLL",
+            "",
+            -20_000,
+            "e-acme",
+        ),
+        make_row(
+            "s-pr-ben",
+            "2025-10-03",
+            "Employer Benefits (fictional)",
+            "Insurance",
+            PAYROLL,
+            "PAYROLL",
+            "",
+            -15_000,
+            "e-acme",
+        ),
+        make_row(
+            "s-pr-hsa",
+            "2025-10-03",
+            "Employer HSA (fictional)",
+            "Medical",
+            PAYROLL,
+            "PAYROLL",
+            "",
+            -10_000,
+            "e-acme",
+        ),
+        make_row(
+            "s-pr-ded",
+            "2025-10-03",
+            "Employee Deduction (fictional)",
+            "Fees",
+            PAYROLL,
+            "PAYROLL",
+            "",
+            -5_000,
+            "e-acme",
+        ),
     ]
 }
 
@@ -677,6 +748,11 @@ fn scenario_catalog() -> Vec<Scenario> {
             &["s-fly-01"],
             "Late-October transfer outflow. The note says the other side posts in November and that side is absent from this file.",
         ),
+        scenario(
+            "Payroll cross-check",
+            &["s-pr-pos", "s-pr-tax", "s-pr-ret", "s-pr-ben", "s-pr-hsa", "s-pr-ded"],
+            "Net-zero payroll tracking rows for Acme Corp. They are observations for a later paystub cross-check and are not posted.",
+        ),
     ]
 }
 
@@ -704,11 +780,11 @@ fn filler_rows(seed: u64) -> Vec<Row> {
     for (index, category) in intro.iter().enumerate() {
         build.push_spend(category, index == 0, false);
     }
-    for index in 0..108 {
+    for index in 0..102 {
         let category = EXPENSE[index % EXPENSE.len()];
         build.push_spend(category, false, index < 2);
     }
-    assert_eq!(build.draft.seq, 184, "filler row count drifted");
+    assert_eq!(build.draft.seq, 178, "filler row count drifted");
     build.rows
 }
 
@@ -1033,7 +1109,7 @@ fn make_row(
     assert!(!id.is_empty(), "id is empty");
     assert_october_2025(date);
     assert!(
-        ACCOUNTS.contains(&account),
+        ACCOUNTS.contains(&account) || account == PAYROLL,
         "unknown account {account} on {id}"
     );
     assert!(
@@ -1054,7 +1130,7 @@ fn make_row(
         amount,
         tags: tags.to_string(),
         owner: OWNER.to_string(),
-        reviewed: "true".to_string(),
+        reviewed: "Reviewed".to_string(),
         reviewed_at: reviewed_at(date, merchant, amount_cents),
         reviewed_by: REVIEWED_BY.to_string(),
         pending: "false".to_string(),
@@ -1103,7 +1179,7 @@ fn assert_october_2025(date: &str) {
 
 fn check_shape(rows: &[Row], scenarios: &[Scenario]) {
     assert_eq!(rows.len(), 200, "row count");
-    assert_eq!(scenarios.len(), 10, "scenario count");
+    assert_eq!(scenarios.len(), 11, "scenario count");
     for scenario in scenarios {
         assert!(!scenario.ids.is_empty(), "{}", scenario.name);
         for id in &scenario.ids {
@@ -1152,23 +1228,34 @@ fn check_shape(rows: &[Row], scenarios: &[Scenario]) {
             transfer += 1;
         }
         assert_eq!(row.owner, OWNER);
-        assert_eq!(row.reviewed, "true");
+        if row.id == "s-fly-01" {
+            assert!(row.reviewed.is_empty(), "blank reviewed");
+        } else {
+            assert_eq!(row.reviewed, "Reviewed");
+        }
         assert_eq!(row.pending, "false");
         assert_eq!(row.reviewed_by, REVIEWED_BY);
         assert!(!row.reviewed_at.is_empty());
         content_counts.push((content_key(row), row.id.clone()));
     }
 
-    assert_eq!(negative, 160, "negative rows");
-    assert_eq!(positive, 40, "positive rows");
+    assert_eq!(negative, 159, "negative rows");
+    assert_eq!(positive, 41, "positive rows");
     assert_eq!(transfer, 30, "transfer or payment rows");
     assert_eq!(untagged, 2, "untagged rows");
-    assert_eq!(noted, 6, "rows with notes");
+    assert_eq!(noted, 7, "rows with notes");
     assert!(multiline >= 2, "multiline fields");
-    assert_eq!(accounts.len(), ACCOUNTS.len());
+    assert_eq!(accounts.len(), ACCOUNTS.len() + 1);
     for account in ACCOUNTS {
         assert!(accounts.contains(account), "missing account {account}");
     }
+    assert!(accounts.contains(PAYROLL), "missing payroll account");
+    let payroll_net: i64 = rows
+        .iter()
+        .filter(|row| row.account == PAYROLL)
+        .map(|row| parse_amount(&row.amount).expect("payroll amount"))
+        .sum();
+    assert_eq!(payroll_net, 0, "payroll tracking nets to zero");
     assert_eq!(categories.len(), 44, "category count");
     for category in TRANSFER.into_iter().chain(INCOME).chain(EXPENSE) {
         assert!(categories.contains(category), "missing category {category}");

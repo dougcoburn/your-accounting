@@ -24,6 +24,20 @@ For a source that has a stable id (Monarch `Id`):
 
 The same Monarch id on two accounts is two observations. `row_hash` is not part of the identity. It is SHA-256 of the raw column text. The same identity and the same hash is a no-op (§2.2). A different hash is a new revision, not `ImportConflict`.
 
+A payroll cross-check row has no financial account. Its identity is `(feed_id, external_id, cross_check_account_id)`. The two identities are separate partial unique indexes, because a table UNIQUE treats NULL as distinct and would allow duplicate payroll ids.
+
+### Payroll cross-check (proposed, implemented for review)
+
+Doug decided this on 2026-11-28 after the real October export. Monarch has a net-zero payroll tracking account with no last 4. Each paycheck is one positive row (gross plus employer benefits minus net) and negative rows for taxes, 401(k), employer benefits, employer HSA, and employee deductions. The paystub is the source of truth (U28). These rows are observations used only to cross-check that paystub group. They never post on their own.
+
+- The binding is explicit and configured by Monarch account name, because there is no last 4. The name is import configuration, not a schema column.
+- With that mapping, the adapter binds the name to the non-financial role `payroll` and stores the rows. It does not create a financial account. It does insert the one `cross_check_accounts` row for that role, inside the import transaction.
+- Without the mapping, a name-only account fails the whole import with the existing map-or-create message. No account text is in the error.
+- A cell that has a last 4 is resolved as a financial account. The payroll name is not consulted.
+- Comparing each stored row to the matching paystub line, and flagging a difference such as a tax line off by a stale Social Security amount while the account still nets to zero, is U28. This unit stores the rows and does not compare them.
+
+The schema for the role is in `docs/schema-v2.sql` for review. Accepting this ADR is what makes it the contract. The comparison is [U28](../MONTH1_IMPLEMENTATION_PLAN.md).
+
 `IdLessStrategy` is the seam for a source with no stable id. Calling it does not match and does not write. The follow-up unit plugs in behind `IdentityStrategy`. U23 does not implement that unit. Its contract is the next section.
 
 ### Follow-up: weekly imports and the month-end statement
@@ -109,7 +123,7 @@ U42 acceptance:
 
 ### What this unit does not do
 
-Categories are hints on `payload_json` only. No income or expense ledger accounts are created from Monarch names. `Reviewed` stays `reviewed_hint` with `reviewed_authoritative: false`. U23 does not post the provisional event (U41) and does not restore a void (U42).
+Categories are hints on `payload_json` only. No income or expense ledger accounts are created from Monarch names. `Reviewed` is the status word `Reviewed` (hint true) or blank (hint false). `true` and `false` stay accepted aliases. `reviewed_authoritative` stays false. U23 does not post the provisional event (U41), does not restore a void (U42), and does not post a payroll cross-check row.
 
 ## Alternatives
 
@@ -123,3 +137,4 @@ Categories are hints on `payload_json` only. No income or expense ledger account
 - KERNEL_INTERFACE_SPEC §3.6 describes the revision behavior so the spec matches the code under review. Acceptance of this ADR is what makes that text normative.
 - Id-less matching and the weekly CSV / QFX cadence are a follow-up. They are not U23. The cadence rules above are the spec for that unit.
 - Provisional events are U41. Explicit restore, and surfacing voided observations when a statement ending balance does not reconcile, are U42. Both are decided here and not built.
+- A configured payroll-tracking name binds to `cross_check_accounts` role `payroll`. `observations.financial_account_id` is nullable, `cross_check_account_id` is the other binding, and exactly one is set. Those rows are stored and are not posted. The paystub comparison is U28. This schema is proposed with the rest of this ADR.

@@ -20,7 +20,10 @@ pub struct SourceRow {
     pub row_hash: String,
     pub description: String,
     pub payload_json: String,
-    pub last4: String,
+    /// Set when the account cell carries a last 4. Absent for a name-only
+    /// account, which the importer may bind to the payroll cross-check role.
+    pub last4: Option<String>,
+    pub account_name: String,
 }
 
 pub fn interpret(line: u32, fields: &[String]) -> Result<SourceRow, Vec<RowFault>> {
@@ -52,11 +55,12 @@ pub fn interpret(line: u32, fields: &[String]) -> Result<SourceRow, Vec<RowFault
     if values[2].is_empty() || values[2].contains(['\n', '\r']) {
         faults.push(fault(line, "Category"));
     }
-    let last4 = match account_last4(&values[3]) {
-        Some(last4) => last4,
-        None => {
+    let (last4, account_name) = match parse_account(&values[3]) {
+        AccountParse::Last4(last4) => (Some(last4), values[3].trim().to_string()),
+        AccountParse::Name(name) => (None, name),
+        AccountParse::Fault => {
             faults.push(fault(line, "Account"));
-            String::new()
+            (None, String::new())
         }
     };
     let amount = match parse_amount(&values[6]) {
@@ -66,7 +70,7 @@ pub fn interpret(line: u32, fields: &[String]) -> Result<SourceRow, Vec<RowFault
             (true, 1)
         }
     };
-    let reviewed = match parse_bool(&values[9]) {
+    let reviewed = match parse_reviewed(&values[9]) {
         Some(value) => value,
         None => {
             faults.push(fault(line, "Reviewed"));
@@ -97,6 +101,7 @@ pub fn interpret(line: u32, fields: &[String]) -> Result<SourceRow, Vec<RowFault
         external_id: values[13].clone(),
         occurred_date: values[0].clone(),
         last4,
+        account_name,
         direction,
         amount_minor: minor,
         payload_json,
@@ -157,8 +162,19 @@ fn payload(
     } else {
         out.push_str("null");
     }
-    out.push('}');
+    out.push_str(",\"cross_check_role\":null}");
     out
+}
+
+/// Mark a parsed payload as the payroll cross-check role. The marker is the
+/// final key, so a source column cannot spoof it.
+pub fn mark_payroll(payload: &str) -> String {
+    const SUFFIX: &str = ",\"cross_check_role\":null}";
+    const PAYROLL: &str = ",\"cross_check_role\":\"payroll\"}";
+    match payload.strip_suffix(SUFFIX) {
+        Some(head) => format!("{head}{PAYROLL}"),
+        None => payload.to_string(),
+    }
 }
 
 fn push_json_str(out: &mut String, value: &str) {
@@ -201,6 +217,55 @@ fn parse_bool(value: &str) -> Option<bool> {
     }
 }
 
+/// Monarch writes the status word `Reviewed`, or leaves the cell blank.
+/// `true` / `false` stay accepted aliases for the synthetic exports that
+/// already used them.
+fn parse_reviewed(value: &str) -> Option<bool> {
+    match value {
+        "Reviewed" => Some(true),
+        "" => Some(false),
+        other => parse_bool(other),
+    }
+}
+
+enum AccountParse {
+    Last4(String),
+    Name(String),
+    Fault,
+}
+
+fn parse_account(account: &str) -> AccountParse {
+    let account = account.trim();
+    if account.is_empty() {
+        return AccountParse::Fault;
+    }
+    if let Some(interior) = trailing_paren(account) {
+        return match trailing_last4(interior) {
+            Some(last4) => AccountParse::Last4(last4),
+            None => AccountParse::Fault,
+        };
+    }
+    if let Some(last4) = trailing_last4(account) {
+        return AccountParse::Last4(last4);
+    }
+    if account
+        .bytes()
+        .last()
+        .is_some_and(|byte| byte.is_ascii_digit())
+    {
+        return AccountParse::Fault;
+    }
+    AccountParse::Name(account.to_string())
+}
+
+fn trailing_paren(account: &str) -> Option<&str> {
+    if !account.ends_with(')') {
+        return None;
+    }
+    let open = account.rfind('(')?;
+    Some(account[open + 1..account.len() - 1].trim())
+}
+
 /// Signed minor units for a 2-decimal currency. `None` when the text is not that shape.
 pub fn parse_amount(amount: &str) -> Option<(bool, i64)> {
     let (negative, rest) = match amount.strip_prefix('-') {
@@ -224,7 +289,7 @@ pub fn parse_amount(amount: &str) -> Option<(bool, i64)> {
     Some((negative, minor))
 }
 
-fn account_last4(account: &str) -> Option<String> {
+fn trailing_last4(account: &str) -> Option<String> {
     let bytes = account.as_bytes();
     if bytes.len() < 4 {
         return None;
@@ -315,7 +380,7 @@ mod tests {
         let outflow = interpret(3, &fields("-12.50", "false")).expect("out");
         assert_eq!(outflow.direction, "outflow");
         assert_eq!(outflow.amount_minor, 1250);
-        assert_eq!(outflow.last4, "1234");
+        assert_eq!(outflow.last4.as_deref(), Some("1234"));
         assert!(outflow
             .payload_json
             .contains("\"reviewed_authoritative\":false"));
@@ -362,5 +427,38 @@ mod tests {
         let second = interpret(9, &fields("-13.50", "false")).expect("second");
         assert_ne!(first.row_hash, second.row_hash);
         assert!(second.payload_json.contains("\"pending_hint\":false"));
+    }
+
+    #[test]
+    fn a_trailing_parenthetical_is_a_last4_and_a_name_only_account_is_not() {
+        let mut paren = fields("-1.00", "false");
+        paren[3] = "Harbor Checking (...1234)".to_string();
+        let source = interpret(7, &paren).expect("paren");
+        assert_eq!(source.last4.as_deref(), Some("1234"));
+        let mut named = fields("-1.00", "false");
+        named[3] = "Payroll Tracking".to_string();
+        let payroll = interpret(8, &named).expect("payroll");
+        assert_eq!(payroll.last4, None);
+        assert_eq!(payroll.account_name, "Payroll Tracking");
+    }
+
+    #[test]
+    fn reviewed_is_a_status_word_and_true_false_stays_an_alias() {
+        let mut word = fields("-1.00", "false");
+        word[9] = "Reviewed".to_string();
+        let reviewed = interpret(9, &word).expect("reviewed");
+        assert!(reviewed.payload_json.contains("\"reviewed_hint\":true"));
+        let mut blank = fields("-1.00", "false");
+        blank[9].clear();
+        let open = interpret(10, &blank).expect("blank");
+        assert!(open.payload_json.contains("\"reviewed_hint\":false"));
+        let alias = interpret(11, &fields("-1.00", "false")).expect("alias");
+        assert!(alias.payload_json.contains("\"reviewed_hint\":true"));
+        let mut other = fields("-1.00", "false");
+        other[9] = "Nope".to_string();
+        let faults = interpret(12, &other).expect_err("word");
+        assert_eq!(faults, vec![fault(12, "Reviewed")]);
+        let shown = format!("row={} column={}", faults[0].row, faults[0].column);
+        assert!(!shown.contains("Nope"));
     }
 }

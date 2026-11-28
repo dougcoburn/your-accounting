@@ -167,6 +167,9 @@ INSERT INTO accounting_events(id,commit_id,recipe_id,recipe_version,effective_da
 INSERT INTO journal_postings(id,event_id,ledger_account_id,currency,side,amount_minor) VALUES('${P}PS14','${P}EV10','${P}AX11','USD','debit',12.5);
 COMMIT;"
 rejects "ids must be ULIDs" "CHECK constraint failed" "INSERT INTO parties(id,name,created_at) VALUES('je_1','Bad id','$T');"
+rejects "an observation binds a financial account or a cross-check account, not neither" "CHECK constraint failed" "
+INSERT INTO observations(id,feed_id,external_id,occurred_date,direction,amount_minor,currency,row_hash,payload_json,commit_id,recorded_at)
+  VALUES('${P}B00X','${P}FED1','synthetic-x','2025-10-30','outflow',100,'USD','$(printf 'b%.0s' {1..64})','{}','${P}C004','$T');"
 rejects "observation natural key is unique (feed + external id + account)" "UNIQUE constraint failed: observations.feed_id, observations.external_id, observations.financial_account_id" "
 BEGIN;
 INSERT INTO observations(id,feed_id,external_id,financial_account_id,occurred_date,direction,amount_minor,currency,row_hash,payload_json,commit_id,recorded_at)

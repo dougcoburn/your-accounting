@@ -65,6 +65,7 @@ fn request(csv: &str, revision: i64) -> ImportRequest<'_> {
         feed_id: FEED,
         feed_name: "Synthetic October",
         expected_revision: revision,
+        payroll_cross_check_name: Some("Payroll Tracking"),
     }
 }
 
@@ -232,6 +233,15 @@ fn fixture_imports_one_to_one_and_reimport_is_a_noop() {
         .expect("commit");
     assert_eq!(commit.kind, "import");
 
+    let payroll = kernel
+        .observation_by_external_id(FEED, "s-pr-pos")
+        .expect("read")
+        .expect("payroll");
+    assert!(payroll.financial_account_id.is_none());
+    assert!(payroll.cross_check_account_id.is_some());
+    hint(&payroll.payload_json, "\"cross_check_role\":\"payroll\"");
+    assert_eq!(kernel.posting_count().expect("postings"), 0);
+
     let card = kernel
         .observation_by_external_id(FEED, "s-card-01")
         .expect("read")
@@ -241,6 +251,7 @@ fn fixture_imports_one_to_one_and_reimport_is_a_noop() {
     assert_eq!(card.occurred_date, "2025-10-02");
     assert_eq!(card.posted_date.as_deref(), Some("2025-10-02"));
     assert_eq!(card.currency, "USD");
+    hint(&card.payload_json, "\"reviewed_hint\":true");
     hint(&card.payload_json, "\"reviewed_authoritative\":false");
     hint(&card.payload_json, "\"e_tag_hints\":[\"e-household\"]");
     assert_eq!(
@@ -259,6 +270,12 @@ fn fixture_imports_one_to_one_and_reimport_is_a_noop() {
     assert_eq!(pay.amount_minor, 218_042);
     assert_eq!(pay.occurred_date, "2025-10-03");
     assert_eq!(pay.posted_date.as_deref(), Some("2025-10-03"));
+    let open_review = kernel
+        .observation_by_external_id(FEED, "s-fly-01")
+        .expect("read")
+        .expect("fly");
+    hint(&open_review.payload_json, "\"reviewed_hint\":false");
+
     hint(&pay.payload_json, "\"e_tag_hints\":[\"e-acme\"]");
     hint(&pay.payload_json, "\"untagged_rule\":null");
 
@@ -641,4 +658,80 @@ fn an_unresolved_account_fails_the_whole_import() {
     assert!(!shown.contains("Northwind"));
     assert_eq!(kernel.observation_count().expect("count"), 0);
     assert_eq!(kernel.revision().expect("rev"), revision);
+}
+
+#[test]
+fn a_parenthetical_last4_and_the_reviewed_status_word_import() {
+    let tmp = Tmp::new("paren");
+    let mut kernel = open(tmp.path());
+    let revision = setup_checking(&mut kernel).0;
+    let csv = "# synthetic\n".to_string()
+        + HEADER
+        + "\n2025-10-02,Northwind Market,Groceries,Harbor Checking (...1234),POS,,-1.00,e-household,Casey Sample,Reviewed,2025-10-02 10:00:00,Rowan Checker,false,nw-01\n2025-10-03,Harbor Books,Shopping,Checking ...1234,POS,,-2.00,e-household,Casey Sample,,2025-10-03 10:00:00,Rowan Checker,false,nw-02\n";
+    let imported = import_monarch_csv(&mut kernel, &request(&csv, revision)).expect("import");
+    assert_eq!(imported.inserted, 2);
+    let reviewed = kernel
+        .observation_by_external_id(FEED, "nw-01")
+        .expect("read")
+        .expect("row");
+    hint(&reviewed.payload_json, "\"reviewed_hint\":true");
+    assert!(reviewed.financial_account_id.is_some());
+    let blank = kernel
+        .observation_by_external_id(FEED, "nw-02")
+        .expect("read")
+        .expect("blank");
+    hint(&blank.payload_json, "\"reviewed_hint\":false");
+
+    let bad = "# synthetic\n".to_string()
+        + HEADER
+        + "\n2025-10-04,Northwind Market,Groceries,Checking ...1234,POS,,-1.00,e-household,Casey Sample,Nope,,Rowan Checker,false,nw-03\n";
+    let err = import_monarch_csv(&mut kernel, &request(&bad, imported.seq)).expect_err("word");
+    let shown = err.to_string();
+    assert_eq!(shown, "row=3 column=Reviewed");
+    assert!(!shown.contains("Nope"));
+    assert_eq!(kernel.observation_count().expect("count"), 2);
+}
+
+#[test]
+fn payroll_without_a_mapping_fails_the_whole_import() {
+    let tmp = Tmp::new("payroll-unmap");
+    let mut kernel = open(tmp.path());
+    let revision = setup_checking(&mut kernel).0;
+    let csv = "# synthetic\n".to_string()
+        + HEADER
+        + "\n2025-10-02,Northwind Market,Groceries,Checking ...1234,POS,,-1.00,e-household,Casey Sample,Reviewed,,Rowan Checker,false,ok-01\n2025-10-03,Payroll Remainder (fictional),Paychecks,Payroll Tracking,PAYROLL,,800.00,e-acme,Casey Sample,Reviewed,,Rowan Checker,false,pr-01\n";
+    let mut bare = request(&csv, revision);
+    bare.payroll_cross_check_name = None;
+    let err = import_monarch_csv(&mut kernel, &bare).expect_err("unmap");
+    let shown = err.to_string();
+    assert_eq!(
+        shown,
+        "row=4 column=Account: map this account to an existing financial account or create one"
+    );
+    assert!(!shown.contains("Payroll"));
+    assert!(!shown.contains("800"));
+    assert_eq!(kernel.observation_count().expect("count"), 0);
+}
+
+#[test]
+fn a_mapped_payroll_account_is_stored_and_not_posted() {
+    let tmp = Tmp::new("payroll");
+    let mut kernel = open(tmp.path());
+    let revision = setup_checking(&mut kernel).0;
+    let csv = "# synthetic\n".to_string()
+        + HEADER
+        + "\n2025-10-03,Payroll Remainder (fictional),Paychecks,Payroll Tracking,PAYROLL,,800.00,e-acme,Casey Sample,Reviewed,,Rowan Checker,false,pr-pos\n2025-10-03,Payroll Tax (fictional),Taxes,Payroll Tracking,PAYROLL,,-800.00,e-acme,Casey Sample,Reviewed,,Rowan Checker,false,pr-tax\n";
+    let imported = import_monarch_csv(&mut kernel, &request(&csv, revision)).expect("import");
+    assert_eq!(imported.inserted, 2);
+    assert_eq!(kernel.posting_count().expect("postings"), 0);
+    let row = kernel
+        .observation_by_external_id(FEED, "pr-pos")
+        .expect("read")
+        .expect("row");
+    assert!(row.financial_account_id.is_none());
+    assert!(row.cross_check_account_id.is_some());
+    hint(&row.payload_json, "\"cross_check_role\":\"payroll\"");
+    let again = import_monarch_csv(&mut kernel, &request(&csv, imported.seq)).expect("again");
+    assert!(again.noop);
+    assert_eq!(kernel.observation_count().expect("count"), 2);
 }
