@@ -12,7 +12,7 @@ Doug's answers on PR #81:
 2. A changed row (same feed id, different values) updates attributes and records history. Void an observation only when a later pull for the same account covers at least ±7 days around the observation's date and the row is absent. A narrower export never voids. Voids stay import-context tombstones (commit kind `import`, no kernel reversal).
 3. A Monarch category is a hint. This unit creates no chart accounts from it and does not auto-reconcile a Monarch-reviewed row.
 4. The app entry is `add_observations(account, observations[])`. The importer resolves the account first. If it cannot resolve exactly one usable account, the whole import fails and asks the user to map the account or create one. The adapter never creates accounts.
-5. With a feed id, identity is that id plus the account. The raw-text hash only detects change. Hints update when the raw row changes, and each raw payload is kept so matching can be re-run. Id-less CSV matching is a follow-up.
+5. With a feed id, identity is that id plus the account. The raw-text hash only detects change. Hints update when the raw row changes, and each raw payload is kept so matching can be re-run. Id-less CSV matching is a follow-up. Doug's expected cadence for that follow-up is below: weekly bank CSV or QFX/OFX, then a month-end statement. U23 does not implement it.
 
 ## Decision proposed
 
@@ -24,7 +24,31 @@ For a source that has a stable id (Monarch `Id`):
 
 The same Monarch id on two accounts is two observations. `row_hash` is not part of the identity. It is SHA-256 of the raw column text. The same identity and the same hash is a no-op (§2.2). A different hash is a new revision, not `ImportConflict`.
 
-`IdLessStrategy` is the seam for a CSV or statement with no stable id. It does not match in this unit. The follow-up unit classifies each row as confident, possible-for-review, or new, and uses the statement balance to catch duplicate and missing rows. That unit plugs in behind `IdentityStrategy`. U23 does not implement it.
+`IdLessStrategy` is the seam for a source with no stable id. Calling it does not match and does not write. The follow-up unit plugs in behind `IdentityStrategy`. U23 does not implement that unit. Its contract is the next section.
+
+### Follow-up: weekly imports and the month-end statement
+
+Spec note only. Not implemented in U23. No new table, no fuzzy matcher, and no statement importer in this revision.
+
+Doug's expected cadence (2026-11-28):
+
+- Each week, import either a bank CSV for a time range or a Quicken QFX/OFX download.
+- At month end, import the statement. That import catches and fixes any duplicates the weekly imports left.
+
+Rules for the follow-up unit:
+
+- A QFX/OFX FITID is a feed-provided id. Identity is FITID + account, the same strategy as Monarch `Id` + account: `(feed_id, FITID, financial_account_id)` through `FeedIdStrategy`.
+- A time-range CSV with no id uses fuzzy matching against earlier observations, expected transactions, and ledger entries. Each row is one outcome: a confident match, a possible match for review, or new.
+- Overlap between weekly import windows must never create a second observation for the same movement.
+- The statement is the reconciliation authority through its start and end balances. Those balances are what show a duplicate or a missing row, and the statement import is what fixes them.
+- A row must not appear on two statements.
+- Raw rows stay stored, on the first snapshot and on each revision, so matching can be re-run.
+
+Still open, and not decided by this note:
+
+- How a confident match is scored, and what a possible match shows the user.
+- How the statement import fixes a duplicate. A void still does not free a feed-id key, so restoring or merging a voided FITID would be a new operation.
+- Where statement membership is stored so "a row must not appear on two statements" can be checked. This note adds no table.
 
 ### Revisions
 
@@ -59,4 +83,4 @@ Categories are hints on `payload_json` only. No income or expense ledger account
 
 - `docs/schema-v2.sql` in this revision adds `observation_revisions` and `observation_current`, and widens the observation unique key to `(feed_id, external_id, financial_account_id)`. Smoke counts 24 commit-scoped tables.
 - KERNEL_INTERFACE_SPEC §3.6 describes the revision behavior so the spec matches the code under review. Acceptance of this ADR is what makes that text normative.
-- Id-less matching, statement-balance reconciliation, and provisional transactions are a follow-up unit. They are not U23.
+- Id-less matching, the weekly CSV / QFX cadence, statement-balance reconciliation, and provisional transactions are a follow-up unit. They are not U23. The cadence rules above are the spec for that unit.

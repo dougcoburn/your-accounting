@@ -797,7 +797,7 @@ Choice: owners are observation import (`feeds`, `import_runs`, `observations`, `
 
 ### 2026-11-28 — Proposed ADR 0012: revisions instead of `ImportConflict` on a changed hash
 
-Proposed, implemented for review, not accepted. §3.6 identity is `(feed_id, external_id, financial_account_id)`. The same identity and a different `row_hash` appends `observation_revisions` and leaves the first `observations` snapshot in place. Current attributes are `observation_current`. `ImportConflict` is only the unique-key race. §4.1 and §4.3 match that. `observation_revisions` is commit-scoped, so the open-commit count in the smoke script is 24. Provisional journal entries for pending rows are not in this contract; ADR 0012 states that follow-up.
+Proposed, implemented for review, not accepted. §3.6 identity is `(feed_id, external_id, financial_account_id)`. The same identity and a different `row_hash` appends `observation_revisions` and leaves the first `observations` snapshot in place. Current attributes are `observation_current`. `ImportConflict` is only the unique-key race. §4.1 and §4.3 match that. `observation_revisions` is commit-scoped, so the open-commit count in the smoke script is 24. Provisional journal entries for pending rows are not in this contract; ADR 0012 states that follow-up. The same ADR specifies the weekly bank-CSV or QFX/OFX import and the month-end statement. Those matching rules are not part of this kernel contract, and U23 does not implement them.
 
 ### 2026-11-27 — `VoidWithoutReversal` leaves the closed list
 

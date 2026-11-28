@@ -86,9 +86,9 @@ Each context gets a one-page `docs/contexts/<name>/INTERFACE.md` (§7). Below is
 - **Why evidence lives here, not in the application:** most evidence is produced by import (`import_runs.document_id` references `evidence_documents`), and the hash and orphan checks were already U22's. User-attached receipts use the same `put_evidence` / `link_evidence`.
 - **Errors:** `ImportConflict`, `CorroborationMismatch`, `VoidedObservation`, `ObservationAlreadyVoided`, `ObservationMismatch`, `ObservationDoubleConsumed`, `OrphanEvidence`, `EvidenceHashMismatch`. Tokens `void_reason`, `observation_direction`, `feed_kind`, `evidence_link_target`, `hash`.
 - **Owns terms:** Observation, Feed, Evidence, Void, Posted date, Origin, observation link, evidence (file) link.
-- **Load:** KIS §2.2, §3.5, §3.6, §8.7, §8.16. ADR 0011. Delta §2.5 and §3.4. ADR 0007 (the adapter boundary). Tables: `feeds`, `import_runs`, `observations`, `observation_voids`, `posting_observations`, `evidence_objects`, `evidence_documents`, `evidence_deletions`, `evidence_links`.
+- **Load:** KIS §2.2, §3.5, §3.6, §8.7, §8.16. ADR 0011. Delta §2.5 and §3.4. ADR 0007 (the adapter boundary). ADR 0012 (proposed identity, revisions, and the weekly / statement cadence). Tables: `feeds`, `import_runs`, `observations`, `observation_voids`, `posting_observations`, `evidence_objects`, `evidence_documents`, `evidence_deletions`, `evidence_links`.
 - **Must NOT need to know:** recipes, settlement, Monarch CSV columns, or FX.
-- **Anti-corruption layer:** each feed adapter (the Monarch adapter, U23) translates its file into observation rows. Monarch vocabulary (Reviewed, Pending, `Id`) stops at the adapter.
+- **Anti-corruption layer:** each feed adapter (the Monarch adapter, U23) translates its file into observation rows. Monarch vocabulary (Reviewed, Pending, `Id`) stops at the adapter. A QFX/OFX FITID is the same feed-id identity. Id-less matching and the month-end statement are the follow-up in proposed ADR 0012, not this unit.
 - **Units:** U22, U23 (adapter), U24.
 
 ### 3.3 Settlement and reconciliation (kernel-hosted module)

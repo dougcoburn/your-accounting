@@ -1,6 +1,8 @@
 //! Source identity. A feed that has a stable id keys a movement by that id
-//! plus the financial account. An id-less source plugs in here later; this
-//! unit does not match one.
+//! plus the financial account. Monarch `Id` and a QFX/OFX FITID both use
+//! [`FeedIdStrategy`]. A time-range CSV with no id plugs in through
+//! [`IdLessStrategy`] later. The weekly cadence and the month-end statement
+//! rules are proposed ADR 0012. This unit does not match an id-less source.
 
 use std::fmt;
 
@@ -36,10 +38,10 @@ impl IdentityStrategy for FeedIdStrategy {
     }
 }
 
-/// Seam for a CSV or statement with no stable id. Fuzzy match against earlier
-/// observations, expected transactions, and ledger entries, plus statement
-/// balance reconciliation, is a follow-up unit (proposed ADR 0012). Calling
-/// this strategy does not match and does not write.
+/// Seam for a time-range CSV or statement with no stable id. The follow-up
+/// unit (proposed ADR 0012) classifies each row as a confident match, a
+/// possible match for review, or new. Calling this strategy does not match
+/// and does not write.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct IdLessStrategy;
 
